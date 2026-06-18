@@ -70,6 +70,11 @@ const TURRET_COLOR = 0xf5f6fa // a light turret cap so the body center reads (di
 // constants.ts owner / the verifier-imported path, exactly like the HULL_INSET/TREAD_W locals above — D6/D4).
 const HIT_FLASH_SEC = 0.08 // s — the white-tint pop on a NON-lethal hit (decays in update; restores spec.color).
 const HIT_FLASH_COLOR = 0xffffff // the white flash tint (programmer-art primitive — like the telegraph fill).
+// A RESTING hull tint for multi-hit tanks (ARMOR, boss) that darkens as HP drops — the classic "the armored
+// tank visibly wears down" cue (the per-hit flash above is a momentary pop; THIS is the sustained read of how
+// much wall is left). A LOCAL render constant (owned by this ONE file — render-only feel, not shared, so it
+// stays out of the constants.ts owner / the verifier-imported path, like the HIT_FLASH_* locals above — D6/D4).
+const DAMAGED_TINT = 0x4a3b3b // the dark, desaturated shade the hull lerps TOWARD as hp/maxHp drops (full HP = spec.color).
 
 export class Tank {
   scene: Phaser.Scene
@@ -337,6 +342,18 @@ export class Tank {
       this.hitFlashTimer = Math.max(0, this.hitFlashTimer - dt)
       this.hull.setFillStyle(this.hitFlashTimer > 0 ? HIT_FLASH_COLOR : this.spec.color) // white pop; restores on elapse.
     }
+
+    // HP-stage resting hull tint (D2/D3) — the FINAL gated fill-cue branch, so it is the colour the hull RESTS
+    // at when none of the transient cues (carrier/telegraph/hit-flash) is active. Computed ONLY for maxHp > 1
+    // (ARMOR, boss) — a 1-HP archetype + the player NEVER enter it, so they rest at exactly spec.color
+    // (byte-unchanged). Lerp spec.color (full HP) → DAMAGED_TINT as hp/maxHp drops, so the armored tank visibly
+    // wears down (the classic combat-state read). Gated on spawnIframe <= 0 + touches ONLY setFillStyle (never
+    // setAlpha), the SAME discipline the branches above document — so it can never fight the spawn-blink alpha.
+    // A pure per-frame derivation of live hp/maxHp (no tween, no timer — D1); respawnAt resets the fill, then this
+    // re-settles next tick from the refilled HP (a fresh spawn is full HP → spec.color).
+    else if (this.maxHp > 1 && this.spawnIframe <= 0) {
+      this.hull.setFillStyle(lerpColor(this.spec.color, DAMAGED_TINT, 1 - this.hp / this.maxHp))
+    }
   }
 
   // ── Turn-time cross-axis re-center (Decision 6, §5.3 step 4 → feel-balance D1) — snap the body's CROSS
@@ -573,4 +590,19 @@ export class Tank {
     this.barrel.setFillStyle(BARREL_COLOR).setVisible(true)
     this._orient()
   }
+}
+
+// Lerp between two 0xRRGGBB colours per channel (t in [0,1]) — the HP-stage tint's hull recolour (the same
+// channel-lerp Base.ts proves; a LOCAL helper, no new util for a single call site — KISS, D4).
+function lerpColor(from: number, to: number, t: number): number {
+  const fr = (from >> 16) & 0xff
+  const fg = (from >> 8) & 0xff
+  const fb = from & 0xff
+  const tr = (to >> 16) & 0xff
+  const tg = (to >> 8) & 0xff
+  const tb = to & 0xff
+  const r = Math.round(fr + (tr - fr) * t)
+  const g = Math.round(fg + (tg - fg) * t)
+  const b = Math.round(fb + (tb - fb) * t)
+  return (r << 16) | (g << 8) | b
 }
