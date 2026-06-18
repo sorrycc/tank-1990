@@ -94,6 +94,18 @@ const IDLE_INTENT = { up: false, down: false, left: false, right: false, dirX: 0
 // (the classic "STAGE N" curtain). A coupled-scene tunable (not a shared pure number), so it lives here, not in
 // constants.ts. ~1.4 s sits in the spec's ~1.2–1.6 s window — long enough to read the stage, short enough to feel snappy.
 const STAGE_INTRO_SEC = 1.4 // s — how long the STAGE-N intro curtain holds before enemy spawning/AI resumes.
+
+// ── F9 Eagle-destroyed loss sequence (F9 §5.3, D3/D4) ── the run's most dramatic beat gets a HEAVIER blast than a
+// generic kill: 2–3 big blooms STAGGERED at the eagle center + a stronger camera flash/shake, then the unchanged
+// run-over. Coupled-scene tunables (cosmetic FX, not shared pure numbers), so they live here, not in constants.ts.
+const EAGLE_BLAST_OFFSETS = [
+  { dx: 0, dy: 0, ms: 0 }, // the first burst — immediate, dead center on the eagle.
+  { dx: -12, dy: -8, ms: 90 }, // a second roll, up-left.
+  { dx: 14, dy: 6, ms: 180 }, // a third roll, down-right — the staggered multi-burst reads as a drawn-out blast.
+]
+const EAGLE_FLASH_MS = 220 // ms — the white camera flash punctuating the eagle's destruction (before the run-end red).
+const EAGLE_SHAKE_MS = 320 // ms — a longer, stronger shake than a kill's SHAKE_MS (the eagle blast hits hardest).
+const EAGLE_SHAKE_INTENSITY = 0.012 // fraction of viewport — well above a normal kill's shake (the heavier beat).
 // A solidBodies child carries F2's grid tags (tileKind/tileCol/…) + the F3 back-ref to the Base (the eagle's
 // TILE.BASE body, found + tagged in create()). The terrain callback reads these off the struck body (D2/D3).
 type SolidRect = Phaser.GameObjects.Rectangle & {
@@ -634,7 +646,17 @@ export class GameScene extends Phaser.Scene {
         this.bullets.release(bulletRect)
         return
       }
-      this.effects.explosion(bulletRect.x, bulletRect.y, { big: true }) // a big kill burst at the eagle.
+      // F9 (§5.3, D3/D4, AC2) — the loss is the run's most dramatic beat: fire 2–3 STAGGERED big blooms at the
+      // EAGLE CENTER (not the bullet point) via time.delayedCall + a stronger camera flash/shake, instead of the
+      // lone kill burst. The bursts tick on real dt, so they roll on while _triggerGameOver defers the swap 700 ms.
+      const ex = base.rect.x
+      const ey = base.rect.y
+      for (const o of EAGLE_BLAST_OFFSETS) {
+        if (o.ms === 0) this.effects.explosion(ex + o.dx, ey + o.dy, { big: true }) // first burst — immediate.
+        else this.time.delayedCall(o.ms, () => this.effects.explosion(ex + o.dx, ey + o.dy, { big: true }))
+      }
+      this.cameras.main.flash(EAGLE_FLASH_MS, 255, 255, 255) // a white camera punch (the run-end RED flash follows).
+      this.cameras.main.shake(EAGLE_SHAKE_MS, EAGLE_SHAKE_INTENSITY) // stronger than a kill's shake — the heaviest beat.
       this.sfx.explosion({ big: true }) // F6 (D6/AC6) — the eagle-hit burst (the run-end follows via the guard).
       this.bullets.release(bulletRect)
       base.onHit() // flips destroyed ONCE → onDestroyed → _triggerGameOver (the gameOver guard, AC6/AC10).
@@ -1010,7 +1032,8 @@ export class GameScene extends Phaser.Scene {
     this._bulletTerrainOverlap?.destroy() // ?. — first build had none; cleared so a re-teardown is a no-op too.
     this._bulletTerrainOverlap = undefined
     this.tileMap.destroy() // F2 — destroys the solid/water bodies + decorations (the eagle's body rode here).
-    this.base.rect.destroy() // the eagle VISUAL (its blocking body was a tilemap solid — already destroyed).
+    this.base.destroy() // F9 (D2/AC4) — kills the tracked white→rubble flash tween THEN destroys the eagle VISUAL
+    // (its blocking body was a tilemap solid — already gone), so a teardown mid-flash can't tick a dead rect.
   }
 
   // Destroy a tank's three GameObjects (the collider owning the body + the visible rect + the barrel). Phaser
