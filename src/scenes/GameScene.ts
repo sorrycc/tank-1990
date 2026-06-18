@@ -107,6 +107,11 @@ export class GameScene extends Phaser.Scene {
   private p1!: Tank
   private p2: Tank | null = null
   private tileMap!: TileMap
+  // The bullet×terrain overlap (bullets.group × tileMap.solidBodies). RUN-scoped × STAGE-scoped: bullets.group
+  // survives a teardown, but tileMap.destroy() nulls solidBodies.children. Phaser only drops a collider via
+  // Collider.destroy() (never when a referenced group dies), so _teardownStage() must destroy THIS handle before
+  // the next world.step — else collideGroupVsGroup reads the dead group's .children.size and throws (AC1/AC2).
+  private _bulletTerrainOverlap?: Phaser.Physics.Arcade.Collider
 
   // F3 combat state (§5.4) — the FX façade, the eagle entity, the spawn window-centers for respawn, and the
   // one-shot run-end / rebuild guards. F4 (§5.4, D10): the F3 `lives` ledger MOVED onto RunState (the source
@@ -321,7 +326,10 @@ export class GameScene extends Phaser.Scene {
     // bullet × terrain solids: ONE callback resolves brick (chip + despawn) / steel (despawn) / the eagle
     // (run over + despawn) by switching on the struck body's tileKind tag (D2/D3). The processCallback
     // early-returns while gameOver/transitioning (the reference's filter style) + on a stale bullet handle.
-    this.physics.add.overlap(
+    // Hold the handle (D1): bullets.group is RUN-scoped and outlives this stage's solidBodies, so _teardownStage()
+    // destroys THIS collider before tileMap.destroy() nulls solidBodies.children — otherwise the stale overlap
+    // crashes collideGroupVsGroup on the next world.step (AC2). Reassigning each _buildStage() keeps one source.
+    this._bulletTerrainOverlap = this.physics.add.overlap(
       this.bullets.group,
       this.tileMap.solidBodies,
       (bulletRect, solidRect) => this._onBulletHitSolid(bulletRect as BulletRect, solidRect as SolidRect),
@@ -962,6 +970,11 @@ export class GameScene extends Phaser.Scene {
     this.enemies = []
     for (const tank of this.playerTanks.values()) this._destroyTank(tank)
     this.playerTanks.clear()
+    // Drop the run-scoped × stage-scoped bullet×terrain overlap BEFORE tileMap.destroy() nulls solidBodies.children
+    // (D2/AC2). A destroyed tank's sprite-vs-group colliders fall through collideHandler harmlessly, but THIS
+    // group-vs-group overlap's surviving bullets.group keeps it live against the dead group — so destroy it by hand.
+    this._bulletTerrainOverlap?.destroy() // ?. — first build had none; cleared so a re-teardown is a no-op too.
+    this._bulletTerrainOverlap = undefined
     this.tileMap.destroy() // F2 — destroys the solid/water bodies + decorations (the eagle's body rode here).
     this.base.rect.destroy() // the eagle VISUAL (its blocking body was a tilemap solid — already destroyed).
   }
