@@ -24,6 +24,13 @@ const SHAKE_MS = 60 // ms — base camera shake on an impact.
 const SHAKE_INTENSITY = 0.003 // base shake intensity (fraction of viewport).
 const KILL_SHAKE_MULT = 2.2 // a kill shakes harder than a chip.
 
+// F8 (D4/D5, AC3) — the spawn-in materialize cue: a CONTRACTING ring (a pooled bloom played inward) at a spawn
+// center. A COOL colour distinct from the warm kill bloom so a spawn never reads as an impact. SHIELD_PEAK is
+// where the ring starts before it closes; SHIELD_LIFE the closing time. One truth so the three spawn sites match (D5).
+const SHIELD_COLOR = 0x74b9ff // cool blue spawn-in flash (programmer-art primitive — distinct from the kill bloom).
+const SHIELD_PEAK = 52 // px — the ring's starting width before it contracts to the spawn center.
+const SHIELD_LIFE = 0.35 // s — the spawn-in materialize duration (the default the spawn sites pass).
+
 export class Effects {
   private scene: Phaser.Scene
   private pool: ParticlePool
@@ -42,8 +49,20 @@ export class Effects {
       color: SPARK_COLOR,
       speed: big ? KILL_SPEED : IMPACT_SPEED,
     })
+    // F8 (D2/D3, AC1/AC2) — the staged expanding BLOOM (a flash that grows then fades), bigger + longer on a
+    // kill. Added INSIDE the façade so the single kill call site upgrades for FREE — no new GameScene call (D3).
+    this.pool.spawnBloom(x, y, { big })
     // Phaser applies the shake framerate-aware. A kill shakes harder than a chip (the strength cue).
     this.scene.cameras.main.shake(SHAKE_MS, SHAKE_INTENSITY * (big ? KILL_SHAKE_MULT : 1))
+  }
+
+  // ── spawnShield(x, y, duration?) (F8 §5.3, D4/D5, AC3 — the spawn-in JUICE) ── a CONTRACTING ring cue at a
+  // tank's spawn center (a pooled bloom played INWARD — reuses the bloom primitive, DRY). A cool colour distinct
+  // from the warm kill bloom so a spawn never reads as an impact. NO shake (a spawn is not an impact). One call
+  // per spawn site (GameScene's _buildPlayer / _spawnStep / _spawnBoss). Purely cosmetic — the real spawn-invuln
+  // is the existing SPAWN_BLINK_TIME i-frame (untouched).
+  spawnShield(x: number, y: number, duration: number = SHIELD_LIFE): void {
+    this.pool.spawnBloom(x, y, { contract: true, color: SHIELD_COLOR, peak: SHIELD_PEAK, life: duration })
   }
 
   // ── scorePopup(x, y, value) (F7 §5.4, D5, AC5 — the kill JUICE) ── a floating "+N" SCORE popup at a tank/boss

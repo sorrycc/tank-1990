@@ -395,6 +395,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.spawnPos.set(slot, { x, y })
     this.playerTanks.set(slot, tank)
+    this.effects.spawnShield(x, y) // F8 (D5/AC3) — the spawn-in materialize cue at the player spawn center.
     return tank
   }
 
@@ -843,6 +844,7 @@ export class GameScene extends Phaser.Scene {
     enemy.onDropFlag = enemy.carrier ? (x, y) => this._markDrop(x, y) : null
     this._registerTankOverlap(enemy) // the SAME bullet×tank overlap as players (F3 seam, D9/AC9).
     this.enemies.push(enemy)
+    this.effects.spawnShield(point.x, point.y) // F8 (D5/AC3) — the spawn-in materialize cue at the enemy spawn center.
 
     // Update the per-stage ledger (D8): one fewer queued, one more alive. enemiesRemaining = queued + alive
     // (kept in sync so the HUD/readout + the clear predicate read one truth).
@@ -949,6 +951,7 @@ export class GameScene extends Phaser.Scene {
     enemy.onDeath = () => this._onEnemyKilled(enemy) // the SAME kill/score/advance funnel (DRY — it's a Tank).
     this._registerTankOverlap(enemy) // the SAME bullet×tank overlap as every tank (the F3 seam, D9).
     this.enemies.push(enemy)
+    this.effects.spawnShield(point.x, point.y) // F8 (D5/AC3) — the spawn-in materialize cue at the boss spawn center.
     this.boss = enemy
     this.bossSpawned = true
     // The ledger: the boss is the ONE alive enemy now (extra over the cleared roster). enemiesRemaining=1 here (at

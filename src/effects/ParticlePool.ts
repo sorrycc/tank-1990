@@ -21,6 +21,18 @@ const SPARK_DRAG = 2.4 // 1/s — exponential velocity decay so sparks slow as t
 const NUMBER_RISE = 70 // px/s — floating SCORE numbers drift UP (F7 D5 — the reference's value).
 const NUMBER_LIFE = 0.7 // s — how long a score number lives before returning to the pool (F7 D5).
 
+// F8 (D1/D2/D4, AC1) — the staged expanding BLOOM: a bright square that GROWS from a small flash to a peak +
+// fades (the classic multi-frame explosion), OR — with `contract` — starts BIG + faint and CONTRACTS toward a
+// point (the spawn-in materialize cue). The base rect is BLOOM_BASE px; we SCALE it (no per-frame setSize
+// geometry regen — the spark pool's note). Defaults sized for a small chip; Effects scales `big` / passes the
+// shield's peak+life. Same flat-Float32Array + rotating-cursor + REAL-dt discipline as the spark pool (D1).
+const BLOOM_BASE = 8 // px — the bloom rect's base size (scaled to the chosen peak).
+const BLOOM_LIFE = 0.25 // s — a small (chip) bloom's lifetime (the classic flash→bloom→fade beat).
+const BLOOM_PEAK = 26 // px — a small bloom's peak width (the square at full expansion).
+const BLOOM_BIG_LIFE = 0.4 // s — a `big` (tank/base kill) bloom lives a touch longer.
+const BLOOM_BIG_PEAK = 56 // px — a `big` bloom's peak width (a fuller crunch).
+const BLOOM_COLOR = 0xfff3b0 // warm-white kill flash (programmer-art primitive — distinct from the spark yellow).
+
 // A pooled floating-number's lifetime state + the Text it drives (F7 D5 — the reference's NumberText shape).
 type NumberFx = { active: boolean; life: number; maxLife: number }
 type NumberText = Phaser.GameObjects.Text & { fx: NumberFx }
@@ -42,10 +54,26 @@ export class ParticlePool {
   private numberCap: number
   private _numbers: NumberText[]
   private _nNext: number
+  // F8 (D1/AC1) — the staged BLOOM pool: a small fixed pool of reused rects with flat parallel lifetime state
+  // (no per-bloom object in the hot path), a rotating cursor, advanced on REAL dt — the spark pool's discipline.
+  private bloomCap: number
+  private _blooms: Phaser.GameObjects.Rectangle[]
+  private _bx: Float32Array
+  private _by: Float32Array
+  private _blife: Float32Array
+  private _bmax: Float32Array
+  private _bpeak: Float32Array // peak width (px) the rect grows to / contracts from.
+  private _bcontract: Uint8Array // 1 = inward spawn-shield curve, 0 = outward kill bloom (D2/D4).
+  private _bactive: boolean[]
+  private _bNext: number
 
-  // scene: the GameScene. sparkCap/numberCap: pool high-water (sized for the worst-case concurrent on-screen
-  // bursts/pops; if exhausted the rotating cursor recycles the oldest so we NEVER allocate mid-combat — AC7).
-  constructor(scene: Phaser.Scene, { sparkCap = 96, numberCap = 16 }: { sparkCap?: number; numberCap?: number } = {}) {
+  // scene: the GameScene. sparkCap/numberCap/bloomCap: pool high-water (sized for the worst-case concurrent
+  // on-screen bursts/pops/blooms; if exhausted the rotating cursor recycles the oldest so we NEVER allocate
+  // mid-combat — AC7). bloomCap covers one bloom per kill + a few chips + the spawn shields, concurrently.
+  constructor(
+    scene: Phaser.Scene,
+    { sparkCap = 96, numberCap = 16, bloomCap = 24 }: { sparkCap?: number; numberCap?: number; bloomCap?: number } = {},
+  ) {
     this.scene = scene
 
     // ── Spark pool ── flat parallel state (no per-spark object in the hot path), members built ONCE here.
@@ -82,6 +110,24 @@ export class ParticlePool {
       this._numbers.push(t)
     }
     this._nNext = 0
+
+    // ── F8 (D1/D2/D4, AC1) — the staged BLOOM pool ── flat parallel lifetime state (no per-bloom object in the
+    // hot path), built ONCE here. Depth BETWEEN the sparks (50) and the numbers (60) so the flash reads OVER the
+    // debris but UNDER a "+N". A white BLOOM_BASE px rect recoloured/rescaled per bloom (programmer-art, AC1).
+    this.bloomCap = bloomCap
+    this._blooms = []
+    this._bx = new Float32Array(bloomCap)
+    this._by = new Float32Array(bloomCap)
+    this._blife = new Float32Array(bloomCap)
+    this._bmax = new Float32Array(bloomCap)
+    this._bpeak = new Float32Array(bloomCap)
+    this._bcontract = new Uint8Array(bloomCap)
+    this._bactive = new Array(bloomCap).fill(false)
+    this._bNext = 0
+    for (let i = 0; i < bloomCap; i++) {
+      const r = scene.add.rectangle(0, 0, BLOOM_BASE, BLOOM_BASE, 0xffffff).setVisible(false).setDepth(55)
+      this._blooms.push(r)
+    }
   }
 
   // ── Emit a spark burst at (x,y) — a NO-ALLOC reuse of pooled slots (AC7). count + color + speed scale
@@ -142,9 +188,43 @@ export class ParticlePool {
     t.fx.maxLife = NUMBER_LIFE
   }
 
-  // ── Advance every live spark + floating number on REAL dt (D9/D10/F7-D5, AC7/AC5); return finished ones to the
-  // pool. Sparks: integrate velocity (gravity + exponential drag), shrink + fade by the life ratio. Numbers: rise
-  // + fade by the life ratio. NO steady-state allocation. ──
+  // ── spawnBloom(x, y, opts?) (F8 §5.2, D1/D2/D4, AC1) ── pop a staged expanding BLOOM at (x,y) from the bloom
+  // pool: a bright square the existing tick() GROWS from a small flash to `peak` + fades over `life` (the classic
+  // multi-frame explosion). `big` (a tank/base kill) scales the default peak + life up. `contract` flips the
+  // curve INWARD — starts big + faint and contracts toward the point — for the spawn-in materialize cue (D4).
+  // A NO-ALLOC reuse of pooled slots (the spark pool's discipline — AC7).
+  spawnBloom(
+    x: number,
+    y: number,
+    {
+      big = false,
+      contract = false,
+      color = BLOOM_COLOR,
+      peak = big ? BLOOM_BIG_PEAK : BLOOM_PEAK,
+      life = big ? BLOOM_BIG_LIFE : BLOOM_LIFE,
+    }: { big?: boolean; contract?: boolean; color?: number; peak?: number; life?: number } = {},
+  ): void {
+    const slot = this._acquireBloom()
+    this._bx[slot] = x
+    this._by[slot] = y
+    this._blife[slot] = life
+    this._bmax[slot] = life
+    this._bpeak[slot] = peak
+    this._bcontract[slot] = contract ? 1 : 0
+    const r = this._blooms[slot]
+    r.setFillStyle(color)
+    r.setPosition(x, y)
+    // Seed the first frame's scale so there's no one-frame flash at the wrong size before tick() runs.
+    r.setScale((contract ? peak : BLOOM_BASE) / BLOOM_BASE)
+    r.setAlpha(contract ? 0.6 : 1)
+    r.setVisible(true)
+    r.setActive(true)
+  }
+
+  // ── Advance every live spark + floating number + bloom on REAL dt (D9/D10/F7-D5/F8-D6, AC7/AC5/AC1); return
+  // finished ones to the pool. Sparks: integrate velocity (gravity + exponential drag), shrink + fade by the life
+  // ratio. Numbers: rise + fade by the life ratio. Blooms: grow (or contract) + fade by the life ratio. NO
+  // steady-state allocation. ──
   tick(dt: number): void {
     const drag = Math.exp(-SPARK_DRAG * dt)
     for (let i = 0; i < this.sparkCap; i++) {
@@ -183,6 +263,30 @@ export class ParticlePool {
       t.setAlpha(k)
       t.setScale(0.9 + 0.25 * k) // starts a touch big, eases down as it fades.
     }
+
+    // F8 (D2/D4/D6, AC1) — the staged blooms: an OUTWARD kill bloom grows from a small flash to `peak` then fades;
+    // an INWARD spawn shield starts at `peak` and contracts toward the point as it fades. `p` is the life PROGRESS
+    // (0 → 1) — a square-root ease so the expansion punches early then settles (the classic flash). REAL dt (D6).
+    for (let i = 0; i < this.bloomCap; i++) {
+      if (!this._bactive[i]) continue
+      this._blife[i] -= dt
+      const r = this._blooms[i]
+      if (this._blife[i] <= 0) {
+        this._bactive[i] = false
+        r.setVisible(false).setActive(false)
+        continue
+      }
+      const p = 1 - this._blife[i] / this._bmax[i] // 0 → 1 over the life.
+      const ease = Math.sqrt(p) // punch early, settle late.
+      const peakScale = this._bpeak[i] / BLOOM_BASE
+      if (this._bcontract[i]) {
+        r.setScale(peakScale * (1 - ease)) // contract toward the point (the materialize-in cue).
+        r.setAlpha(0.6 * (1 - p)) // fade out as it closes.
+      } else {
+        r.setScale(peakScale * ease) // grow from the flash to the peak.
+        r.setAlpha(1 - p) // fade out as it expands.
+      }
+    }
   }
 
   // Acquire a free spark slot (or recycle the oldest via the rotating cursor — NEVER allocates, AC7).
@@ -215,6 +319,23 @@ export class ParticlePool {
     }
     const i = this._nNext
     this._nNext = (i + 1) % this.numberCap
+    return i
+  }
+
+  // Acquire a free bloom slot (or recycle the oldest via the rotating cursor — NEVER allocates, AC7). The same
+  // scan-from-cursor-then-recycle shape as the spark/number pools (DRY). A recycled bloom is cut short (cosmetic).
+  private _acquireBloom(): number {
+    for (let n = 0; n < this.bloomCap; n++) {
+      const i = (this._bNext + n) % this.bloomCap
+      if (!this._bactive[i]) {
+        this._bNext = (i + 1) % this.bloomCap
+        this._bactive[i] = true
+        return i
+      }
+    }
+    const i = this._bNext
+    this._bNext = (i + 1) % this.bloomCap
+    this._bactive[i] = true
     return i
   }
 }
