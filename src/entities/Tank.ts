@@ -24,9 +24,11 @@ import type { TankSpec } from '../config/tanks.js'
 // COLLIDER / RECT SPLIT (Decision 1/6 — the reference's review-issue #6 lesson): `collider` OWNS the
 // Arcade body and is INVISIBLE (alpha 0); Arcade owns ITS position (it writes the resolved x/y back in
 // postUpdate). We NEVER hand-move it except the ONE gated turn-time re-center (§5.3 step 4). The VISIBLE
-// `rect` + `barrel` are positioned TO the body's center each frame — scaling/moving them never touches
-// the body. Arcade derives the body position from the owning object's transform, so hand-setting the
-// body-owner's x/y each frame would fight Arcade's write-back → jitter. The split kills that.
+// `rect` (a composed Container — F8 §5.1) is positioned TO the body's center each frame + ROTATED by facing
+// — moving/rotating it never touches the body. Arcade derives the body position from the owning object's
+// transform, so hand-setting the body-owner's x/y each frame would fight Arcade's write-back → jitter. The
+// split kills that. (F8: the single flat visible rect became hull + treads + turret + barrel children — a
+// purely cosmetic swap; the collider/body and the no-diagonal spine below are byte-unchanged.)
 //
 // dt UNITS (the project's dt convention): GameScene converts at the boundary — `tank.update(delta/1000,…)`
 // clamped to MAX_DT — so `update(dt, intent)` here ALWAYS treats `dt` as SECONDS. The cooldown decay is in
@@ -52,12 +54,28 @@ const BARREL_COLOR = 0xdfe6e9 // light gun barrel marker so the facing reads.
 const BARREL_LEN = TANK_SIZE * 0.55 // px — barrel length along facing (auto-scales from the ~1-tile TANK_SIZE).
 const BARREL_THICK = 6 // px — barrel thickness across facing (matches the smaller ~1-tile tank).
 
+// ── F8 visual richness (§5.1, D1/D2) — the composed-silhouette geometry, drawn ONCE in LOCAL space with the
+// canonical facing UP (the container is rotated per facing). All sizes derive from TANK_SIZE so the look scales
+// with the ~1-tile tank (DRY). LOCAL render constants (owned by this ONE file — they are not shared, so they do
+// NOT belong in the constants.ts owner; D6). The tread/turret tints are fixed programmer-art (no asset, AC11).
+const HULL_INSET = 2 // px — the hull is a hair inside TANK_SIZE so the tread strips frame it.
+const TREAD_W = 5 // px — width of each side tread strip (across facing).
+const TREAD_COLOR = 0x2d3436 // dark slate tread (the dark "track" band down each side — reads against any hull).
+const TURRET_SIZE = TANK_SIZE * 0.42 // px — the small centered turret block.
+const TURRET_COLOR = 0xf5f6fa // a light turret cap so the body center reads (distinct from the hull fill).
+
 export class Tank {
   scene: Phaser.Scene
   collider: Phaser.GameObjects.Rectangle // OWNS the Arcade body (alpha 0); Arcade owns its position.
   body: Phaser.Physics.Arcade.Body
-  rect: Phaser.GameObjects.Rectangle // the visible tank; positioned TO the body center each frame.
-  barrel: Phaser.GameObjects.Rectangle // a small facing marker (the gun); positioned TO the body center.
+  // F8 (§5.1, D1/D2): the visible tank is now a composed CONTAINER (hull + two tread strips + a turret + the
+  // barrel), positioned TO the body center each frame + ROTATED by facing. Still named `rect` so GameScene's
+  // setVisible/destroy contract is byte-unchanged (a Container cascades both to its children). The `hull` child
+  // is the fill-cue target (a Rectangle has setFillStyle; a Container does not) — the carrier flash + the boss
+  // telegraph recolour it; the spawn-iframe blink sets the CONTAINER alpha (the whole tank blinks — D3).
+  rect: Phaser.GameObjects.Container // the visible tank; positioned + oriented TO the body each frame.
+  private hull: Phaser.GameObjects.Rectangle // the body fill (spec.color) — the fill-cue target (carrier/telegraph).
+  barrel: Phaser.GameObjects.Rectangle // a small facing marker (the gun); a container child (rides the rotation).
 
   side: TankSide
   behavior: string // 'player' for F1; the enemy FSM extends this later (D7 — 'basic'|'fast'|'power'|'armor'|'boss').
@@ -162,11 +180,23 @@ export class Tank {
     // stale F1 comment about a "test arena" of steel border walls that the procedural generator never builds.)
     this.body.setCollideWorldBounds(true)
 
-    // The VISIBLE tank rect + the barrel marker, positioned TO the body center each frame (decoupled from
-    // the body — moving them never touches the body). Drawn with primitives only (AC11).
-    this.rect = scene.add.rectangle(x, y, TANK_SIZE, TANK_SIZE, fill)
-    this.barrel = scene.add.rectangle(x, y, BARREL_THICK, BARREL_LEN, BARREL_COLOR)
-    this._orientBarrel() // initial orientation matches `facing`.
+    // ── F8 (§5.1, D1/D2) — the VISIBLE tank: a composed CONTAINER (hull + two tread strips + a turret + the
+    // barrel) built ONCE in LOCAL space (origin 0,0 = body center) with the canonical facing UP, then
+    // positioned TO the body center each frame + ROTATED by facing (cheap — no per-frame allocation, AC3).
+    // Children are LOCAL-relative; the container's transform places + orients them. Primitives only (AC11).
+    const hullSize = TANK_SIZE - HULL_INSET // the hull is a hair inside TANK_SIZE so the tread strips frame it.
+    this.hull = scene.add.rectangle(0, 0, hullSize, hullSize, fill) // the body fill (spec.color) — the fill-cue target.
+    // Two dark tread strips down the LEFT/RIGHT sides (the classic "track" bands) — run along the facing axis.
+    const treadX = (TANK_SIZE - TREAD_W) / 2
+    const treadL = scene.add.rectangle(-treadX, 0, TREAD_W, TANK_SIZE, TREAD_COLOR)
+    const treadR = scene.add.rectangle(treadX, 0, TREAD_W, TANK_SIZE, TREAD_COLOR)
+    // A small light turret cap at the body center so the center reads (distinct from the hull fill).
+    const turret = scene.add.rectangle(0, 0, TURRET_SIZE, TURRET_SIZE, TURRET_COLOR)
+    // The barrel (the gun) — a vertical bar reaching UP from center in the canonical frame; it rides the
+    // container rotation so it always points the driven way (the facing cue is structural — D2).
+    this.barrel = scene.add.rectangle(0, -(TANK_SIZE / 2 - BARREL_LEN / 2), BARREL_THICK, BARREL_LEN, BARREL_COLOR)
+    this.rect = scene.add.container(x, y, [treadL, treadR, this.hull, turret, this.barrel])
+    this._orient() // initial container rotation matches `facing`.
   }
 
   // ── Tick one frame (Decision 5/6/12, AC3/AC4) — dt in SECONDS. Order mirrors §5.3:
@@ -185,7 +215,8 @@ export class Tank {
     // the cue can never disagree. Restore full alpha the frame it expires.
     if (this.spawnIframe > 0) {
       this.spawnIframe = Math.max(0, this.spawnIframe - dt)
-      // A fast alpha pulse (~10 Hz) off the scene clock — purely cosmetic (the body is unaffected).
+      // A fast alpha pulse (~10 Hz) off the scene clock — purely cosmetic (the body is unaffected). F8 (D3):
+      // setAlpha on the CONTAINER fades EVERY child, so the whole silhouette blinks (the same i-frame read).
       const blink = Math.floor(this.scene.time.now / 100) % 2 === 0 ? 0.35 : 1
       this.rect.setAlpha(this.spawnIframe > 0 ? blink : 1)
       if (this.spawnIframe === 0) this.rect.setAlpha(1)
@@ -252,19 +283,21 @@ export class Tank {
     // lastDriveAxis at its prior value so resuming the SAME axis after a pause is not falsely a "turn".
     if (driveAxis !== null) this.lastDriveAxis = driveAxis
 
-    // 5) Visuals — position the visible rect + barrel TO the body center; orient the barrel along facing.
+    // 5) Visuals — position the visible container TO the body center + orient it along facing (F8 §5.1). The
+    // children (hull/treads/turret/barrel) ride the container transform, so this ONE position+rotate places
+    // the whole silhouette (cheap — no per-frame allocation, AC3).
     const cx = this.body.center.x
     const cy = this.body.center.y
     this.rect.setPosition(cx, cy)
-    this.barrel.setPosition(cx, cy)
-    this._orientBarrel()
+    this._orient()
 
     // F4 (§5.2, AC7) — a red-flash CARRIER pulses spec.colorFlash ↔ spec.color (~5 Hz off the scene clock,
     // a cosmetic fill swap only) so the player can tell which enemy drops a power-up. A non-carrier holds its
     // resting fill. Skipped while spawn-blinking (the i-frame branch above owns the alpha cue then — no clash).
+    // F8 (D3): the fill cue targets the HULL child (a Container has no setFillStyle; the hull holds spec.color).
     if (this.carrier && this.spawnIframe <= 0) {
       const flash = Math.floor(this.scene.time.now / 200) % 2 === 0
-      this.rect.setFillStyle(flash ? this.spec.colorFlash : this.spec.color)
+      this.hull.setFillStyle(flash ? this.spec.colorFlash : this.spec.color)
     }
 
     // F6 (§5.3 issue #4, D2/AC2) — the TELEGRAPH render cue: a DISTINCT branch (NOT the carrier-flash hook — the
@@ -275,7 +308,7 @@ export class Tank {
     // the scene clock (faster than the carrier pulse — a "charging" cue), resting at the spec fill between blinks.
     else if (this.telegraphing && this.spawnIframe <= 0) {
       const warn = Math.floor(this.scene.time.now / 100) % 2 === 0 // ~5 Hz blink.
-      this.rect.setFillStyle(warn ? TELEGRAPH_FILL : this.spec.color) // body warns; resting fill between blinks.
+      this.hull.setFillStyle(warn ? TELEGRAPH_FILL : this.spec.color) // body warns; resting fill between blinks (F8: the hull child).
       this.barrel.setFillStyle(warn ? TELEGRAPH_FILL : BARREL_COLOR) // the barrel co-warns (the "charging" cue).
     }
   }
@@ -305,30 +338,23 @@ export class Tank {
     else this.body.position.y = target
   }
 
-  // Orient the barrel marker along the current facing: a vertical bar for up/down, a horizontal bar for
-  // left/right, offset from center so it visibly "points" the held way (Decision 5 — the facing cue, AC3).
-  private _orientBarrel(): void {
-    const half = TANK_SIZE / 2
+  // Orient the whole silhouette along the current facing by ROTATING the container (F8 §5.1, D2 — the facing
+  // cue, AC3). The children are drawn in the canonical "facing UP" local frame (the barrel points up at -Y),
+  // so the rotation alone points the turret + barrel the held way: up = 0, right = +90°, down = 180°, left =
+  // +270° (clockwise from up). One transform write per frame — no per-child resize/reposition (cheap, AC3).
+  private _orient(): void {
     switch (this.facing) {
       case 'up':
-        this.barrel.setSize(BARREL_THICK, BARREL_LEN)
-        this.barrel.y = this.body.center.y - half + BARREL_LEN / 2
-        this.barrel.x = this.body.center.x
-        break
-      case 'down':
-        this.barrel.setSize(BARREL_THICK, BARREL_LEN)
-        this.barrel.y = this.body.center.y + half - BARREL_LEN / 2
-        this.barrel.x = this.body.center.x
-        break
-      case 'left':
-        this.barrel.setSize(BARREL_LEN, BARREL_THICK)
-        this.barrel.x = this.body.center.x - half + BARREL_LEN / 2
-        this.barrel.y = this.body.center.y
+        this.rect.setRotation(0)
         break
       case 'right':
-        this.barrel.setSize(BARREL_LEN, BARREL_THICK)
-        this.barrel.x = this.body.center.x + half - BARREL_LEN / 2
-        this.barrel.y = this.body.center.y
+        this.rect.setRotation(Math.PI / 2)
+        break
+      case 'down':
+        this.rect.setRotation(Math.PI)
+        break
+      case 'left':
+        this.rect.setRotation(-Math.PI / 2)
         break
     }
   }
@@ -474,8 +500,10 @@ export class Tank {
     if (this.hp <= 0) {
       this.hp = 0
       this.alive = false
-      // Hide the body + barrel (the corpse) — the scene's onDeath wiring pops the kill explosion + decides
-      // respawn-vs-stay-down. A respawnAt re-shows them. Park the physics body so a stray overlap can't match.
+      // Hide the visible silhouette (the corpse) — the scene's onDeath wiring pops the kill explosion + decides
+      // respawn-vs-stay-down. A respawnAt re-shows it. Park the physics body so a stray overlap can't match.
+      // F8 (D1): setVisible on the CONTAINER hides every child (hull/treads/turret/barrel) in one call; the
+      // separate barrel.setVisible(false) below is a now-redundant child op kept harmless for clarity.
       this.rect.setVisible(false)
       this.barrel.setVisible(false)
       this.body.setVelocity(0, 0)
@@ -503,8 +531,11 @@ export class Tank {
     this.cooldownTimer = 0
     this.telegraphing = false // F6 — a fresh spawn starts with no shot winding up (defensive; the boss never respawns).
     this.telegraphTimer = 0
+    // F8 (§5.1): re-show + reposition the container; restore full alpha + reset the fill cues so a respawn clears
+    // any mid-telegraph/carrier-flash tint (defensive — the hull/barrel rest at spec.color/BARREL_COLOR).
     this.rect.setPosition(x, y).setVisible(true).setAlpha(1)
-    this.barrel.setVisible(true)
-    this._orientBarrel()
+    this.hull.setFillStyle(this.spec.color)
+    this.barrel.setFillStyle(BARREL_COLOR).setVisible(true)
+    this._orient()
   }
 }
