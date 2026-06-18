@@ -37,7 +37,7 @@ import type { TankSpec } from '../config/tanks.js'
 //     the CROSS-axis velocity component is held at EXACTLY 0. We NEVER set both components non-zero in one
 //     frame, so Arcade can NEVER integrate a diagonal — AC3 is structural, not emergent.
 //   • On a TURN (facing switches between a horizontal and a vertical cardinal) we re-center the body's
-//     CROSS corner to its nearest SUB_CELL_SIZE (24 px) lane in ONE discrete write to body.position[cross]
+//     CROSS corner to its nearest SUB_CELL_SIZE (20 px) lane in ONE discrete write to body.position[cross]
 //     (the cross VELOCITY stays 0 — still no diagonal), gated by a LANE_SNAP_EPSILON dead-band (no
 //     oscillation) and a !blocked/!touching collision check (never fight a collider Arcade is resolving).
 
@@ -49,8 +49,8 @@ export type Facing = 'up' | 'down' | 'left' | 'right'
 // blue heavy) and a red-flash carrier swaps to `spec.colorFlash`. The two old per-side constants are gone
 // (the spec is the single colour owner now — D1; exactly like tiles.ts colours).
 const BARREL_COLOR = 0xdfe6e9 // light gun barrel marker so the facing reads.
-const BARREL_LEN = TANK_SIZE * 0.55 // px — barrel length along facing.
-const BARREL_THICK = 8 // px — barrel thickness across facing.
+const BARREL_LEN = TANK_SIZE * 0.55 // px — barrel length along facing (auto-scales from the ~1-tile TANK_SIZE).
+const BARREL_THICK = 6 // px — barrel thickness across facing (matches the smaller ~1-tile tank).
 
 export class Tank {
   scene: Phaser.Scene
@@ -235,15 +235,15 @@ export class Tank {
     // 4) Turn-time re-center — a DISCRETE, collision-aware, velocity-ONLY snap (Decision 5/6, AC3), run
     // ONLY on a turn frame. On a non-turn frame do NOTHING here (steady single-axis driving already holds
     // the cross velocity at 0, so the tank stays in its lane). On a turn we re-center the body's CROSS
-    // corner to its nearest SUB_CELL_SIZE (24 px) lane in ONE write to body.position[cross] (the cross
-    // VELOCITY stays 0 — no diagonal). TANK_SIZE=92 is NOT a multiple of 24, so we snap the CORNER (not the
-    // center) to keep laneIndex/target exact + integer-clean.
+    // corner to its nearest SUB_CELL_SIZE (20 px) lane in ONE write to body.position[cross] (the cross
+    // VELOCITY stays 0 — no diagonal). We snap the body's CORNER (not the center) to the lane lattice so
+    // laneIndex/target stay exact + integer-clean regardless of the body size.
     if (turned) {
       if (driveAxis === 'x') {
-        // Driving horizontally → the CROSS axis is Y; snap the body's TOP corner to the 24 px Y-lane.
+        // Driving horizontally → the CROSS axis is Y; snap the body's TOP corner to the 20 px Y-lane.
         this._recenterCross('y', this.body.y, PLAYFIELD_Y)
       } else if (driveAxis === 'y') {
-        // Driving vertically → the CROSS axis is X; snap the body's LEFT corner to the 24 px X-lane.
+        // Driving vertically → the CROSS axis is X; snap the body's LEFT corner to the 20 px X-lane.
         this._recenterCross('x', this.body.x, PLAYFIELD_X)
       }
     }

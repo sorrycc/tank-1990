@@ -28,23 +28,23 @@ export const DESIGN_HEIGHT = 720
 // line and prevents a later sweep of bare-'monospace' sites.
 export const UI_FONT = 'monospace, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif'
 
-// ── Grid (Decision 7, §5.2) — the classic Battle City 13×13 tile playfield ──
-// 13×13 tiles at 48 px = a 624 px square playfield (fits the 720 height with margin). Each BRICK
-// tile is split into SUB_CELLS×SUB_CELLS (2×2 = 4) independently-destructible sub-cells — the
-// classic brick behaviour. Later features (F2 generator, GameScene, HUD) import these NAMES; F0
-// owns them once so they never drift.
-export const GRID_COLS = 13
-export const GRID_ROWS = 13
-export const TILE_SIZE = 48 // px — one grid tile (13 × 48 = 624 px square playfield).
+// ── Grid (Decision 7, §5.2) — the classic Battle City 17×17 tile playfield ──
+// 17×17 tiles at 40 px = a 680 px square playfield (the larger battlefield comes from MORE tiles, not
+// bigger tiles — fits the 720 height with margin). Each BRICK tile is split into SUB_CELLS×SUB_CELLS
+// (2×2 = 4) independently-destructible sub-cells — the classic brick behaviour. Later features (F2
+// generator, GameScene, HUD) import these NAMES; F0 owns them once so they never drift.
+export const GRID_COLS = 17
+export const GRID_ROWS = 17
+export const TILE_SIZE = 40 // px — one grid tile (17 × 40 = 680 px square playfield).
 export const SUB_CELLS = 2 // each BRICK tile = SUB_CELLS² (2×2 = 4) destructible sub-cells (classic).
-export const SUB_CELL_SIZE = TILE_SIZE / SUB_CELLS // px — one destructible brick sub-cell (24 px).
+export const SUB_CELL_SIZE = TILE_SIZE / SUB_CELLS // px — one destructible brick sub-cell (20 px).
 
 // ── Layout (Decision 7, §5.2) — centered square playfield + a right-side HUD panel (like the original) ──
 // Derived from DESIGN_*, GRID_*, TILE_SIZE so the single owner stays internally consistent. The
 // HUD panel sits to the RIGHT of the playfield (lives / score / next-enemy icons in later features).
 export const HUD_PANEL_WIDTH = 256 // px — right-side info panel (lives, score, enemy queue) like the classic.
-export const PLAYFIELD_W = GRID_COLS * TILE_SIZE // px — playfield width (624).
-export const PLAYFIELD_H = GRID_ROWS * TILE_SIZE // px — playfield height (624).
+export const PLAYFIELD_W = GRID_COLS * TILE_SIZE // px — playfield width (680).
+export const PLAYFIELD_H = GRID_ROWS * TILE_SIZE // px — playfield height (680).
 // Center the (playfield + a gap + HUD panel) block horizontally; center the playfield vertically.
 export const PLAYFIELD_GAP = 32 // px — gap between the playfield and the HUD panel.
 export const PLAYFIELD_X = Math.round((DESIGN_WIDTH - (PLAYFIELD_W + PLAYFIELD_GAP + HUD_PANEL_WIDTH)) / 2)
@@ -70,11 +70,10 @@ export const START_LIVES = 3 // lives a player begins a run with.
 // here ONCE keeps the pure/coupled split intact (the verifier still node-imports this module) and the
 // numbers from drifting (DRY). Each is intent-revealing per the cited design AC/Decision.
 
-// TANK_SIZE (F1 §5.2, D5/D6) — the square tank BODY ≈ 2 tiles, a hair inset (−4) so two tanks driving
-// in adjacent lanes don't perpetually graze their colliders. Derived from TILE_SIZE (DRY). NOTE it is
-// deliberately NOT a multiple of SUB_CELL_SIZE (24) — the turn-time re-center snaps the body CORNER to
-// the 24 px lane lattice (not the center), keeping that lane math integer-clean (D6, §5.3 step 4).
-export const TANK_SIZE = TILE_SIZE * 2 - 4 // px — the ~2-tile square tank body (92).
+// TANK_SIZE (F1 §5.2, D5/D6) — the square tank BODY ≈ 1 tile, a hair inset (−4) so two tanks driving
+// in adjacent lanes don't perpetually graze their colliders. Derived from TILE_SIZE (DRY), so the tank
+// is ~one tile and the generator's FOOTPRINT = ceil(TANK_SIZE/TILE_SIZE) = 1 (the classic proportion).
+export const TANK_SIZE = TILE_SIZE - 4 // px — the ~1-tile square tank body (36).
 
 // STEEL_WALL_THICKNESS (F1 §5.2, D10) — the test-arena border-wall rectangle thickness (px). The four
 // STEEL border walls (static Arcade bodies) hug the playfield inner edges so a tank stops at them (AC6).
@@ -128,7 +127,7 @@ export const FRIENDLY_FIRE = false // co-op friendly-fire disabled by default.
 
 // ── Stage / spawn (Decision 7, §5.2) — the classic stage shape ──
 export const ENEMIES_PER_STAGE = 20 // enemy tanks to clear in a normal stage.
-export const MAX_CONCURRENT_ENEMIES = 4 // on-screen enemy cap (classic 4); the rest queue and stagger in.
+export const MAX_CONCURRENT_ENEMIES = 6 // on-screen enemy cap (the larger 17×17 board affords more pressure); the rest queue and stagger in.
 export const BOSS_STAGE_EVERY = 5 // every 5th stage spawns a heavy "boss tank" (a behavior tag on the same entity).
 
 // ── F4 Enemy tanks (F4 §5.2, Decisions D4/D8, AC1/AC2/AC3/AC7) — PURE spawn-loop + AI tunables (no Phaser) ──

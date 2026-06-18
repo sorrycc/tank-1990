@@ -112,7 +112,7 @@ const RNG_EXPECTED = [
 // 2) constants — the one trivial invariant (also re-proves node-importability / purity).
 // ════════════════════════════════════════════════════════════════════════════════════════════
 if (DESIGN_WIDTH !== 1280) fail(`constants: DESIGN_WIDTH = ${DESIGN_WIDTH}, expected 1280`)
-if (GRID_COLS !== 13 || GRID_ROWS !== 13) fail(`constants: grid is ${GRID_COLS}x${GRID_ROWS}, expected 13x13`)
+if (GRID_COLS !== 17 || GRID_ROWS !== 17) fail(`constants: grid is ${GRID_COLS}x${GRID_ROWS}, expected 17x17`)
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
 // 3) save — round-trip + the clone-no-alias contract (unchanged from F0).
@@ -231,7 +231,7 @@ function countTile(tiles, kind) {
 // The four orthogonal steps — the BFS neighbourhood + the enclosure scan.
 const ORTHO = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 
-// ── Footprint-aware reachability BFS (AC7, D5/D15) ── nodes are tankFits 2×2 windows (RE-derived from the
+// ── Footprint-aware reachability BFS (AC7, D5/D15) ── nodes are tankFits FOOTPRINT windows (RE-derived from the
 // EMITTED tiles via the SHARED `tankFits` — same graph the generator carved, DRY); edges connect
 // orthogonally-adjacent windows. PASS iff a GOAL window — one satisfying the SHARED `isFortApproachWindow`
 // (a tankFits window orthogonally adjacent to a fort-ring BRICK cell) — is reached from the start window.
@@ -311,7 +311,7 @@ function checkDescription(desc, cfg, label) {
 
   // ── AC8 spawn validity + coordinate pin (D13) ── every spawn is a tankFits anchor over the EMITTED
   // tiles, the spawns are distinct + in-bounds, AND each spawn's (x,y) (and base.x/y) EXACTLY equals the
-  // 2×2-window center (PLAYFIELD_X+(col+1)·TILE_SIZE, PLAYFIELD_Y+(row+1)·TILE_SIZE).
+  // FOOTPRINT-aware window center (PLAYFIELD_X+(col+FOOTPRINT/2)·TILE_SIZE, PLAYFIELD_Y+(row+FOOTPRINT/2)·TILE_SIZE).
   const allSpawns = [...enemySpawns, ...playerSpawns]
   if (enemySpawns.length !== 3) fail(`${label}: expected 3 enemy spawns, got ${enemySpawns.length}`)
   if (playerSpawns.length !== 2) fail(`${label}: expected 2 player spawns, got ${playerSpawns.length}`)
@@ -322,15 +322,15 @@ function checkDescription(desc, cfg, label) {
     if (spawnKeys.has(k)) fail(`${label}: duplicate spawn anchor at ${k}`)
     spawnKeys.add(k)
     const wc = windowCenter(s.col, s.row)
-    const expX = PLAYFIELD_X + (s.col + 1) * TILE_SIZE
-    const expY = PLAYFIELD_Y + (s.row + 1) * TILE_SIZE
+    const expX = PLAYFIELD_X + (s.col + FOOTPRINT / 2) * TILE_SIZE
+    const expY = PLAYFIELD_Y + (s.row + FOOTPRINT / 2) * TILE_SIZE
     if (wc.x !== expX || wc.y !== expY) fail(`${label}: windowCenter formula drift at ${s.which}`)
     if (s.x !== expX || s.y !== expY) fail(`${label}: spawn ${s.which} (x,y)=(${s.x},${s.y}) != window-center (${expX},${expY}) — D13`)
   }
   // base.x/y obeys the SAME window-center formula (D13).
   {
-    const expX = PLAYFIELD_X + (base.col + 1) * TILE_SIZE
-    const expY = PLAYFIELD_Y + (base.row + 1) * TILE_SIZE
+    const expX = PLAYFIELD_X + (base.col + FOOTPRINT / 2) * TILE_SIZE
+    const expY = PLAYFIELD_Y + (base.row + FOOTPRINT / 2) * TILE_SIZE
     if (base.x !== expX || base.y !== expY) fail(`${label}: base (x,y)=(${base.x},${base.y}) != window-center (${expX},${expY}) — D13`)
   }
 
@@ -398,17 +398,18 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
 {
   const PIN_SEED = 0x1234abcd
   const PIN_STAGE = 2
-  // The COMPUTED reference (from a one-off run of the REAL generateStage — D10/F7-D8). RE-PINNED for F7: the
-  // motif reshapes the step-5 scatter THRESHOLDS, so the PIN_TILES grid + PIN_MOTIF move; the base/spawn coords
-  // + scatterCells + isBoss are BYTE-UNCHANGED (the motif touches ONLY the non-reserved scatter, not the
-  // spawn/base geometry, and still draws one rng()+places ≤1 tile per eligible cell — so scatterCells holds).
+  // The COMPUTED reference (from a one-off run of the REAL generateStage — D10). RE-PINNED for the 17×17 / 1-tile
+  // geometry re-scale: the bigger board (17×17) + the FOOTPRINT-aware window center move EVERY pinned field — the
+  // PIN_TILES grid (now 17×17) + PIN_SCATTER (more eligible cells) + the base/spawn anchors + their window-center
+  // coords all legitimately change. Recomputed from the real output (never hand-invented). PIN_MOTIF + PIN_ISBOSS
+  // are unaffected by the geometry (the seed-chosen motif + the stage flag don't depend on the grid size here).
   const PIN_TILES =
-    '0014100001400|0022300000200|0010400142100|0001100000100|0000000000300|0000500101000|0000000310000|0000100050100|0002100101100|0000000000000|0000000000000|0300111200050|1000116100021'
-  const PIN_SCATTER = 77
+    '01410014022300020|01041421001100010|00000003000510100|00003100000105010|00211011003112050|00101021010015030|00401010020001200|00301111010011300|00000110011010210|00210001004000020|01002021002301200|01303005031030200|00210403001000000|05033200004400010|00000000000000000|14021510124120000|15010021610104121'
+  const PIN_SCATTER = 224
   const PIN_MOTIF = 'fortress' // F7 (D8) — the seed-chosen motif at the pinned (seed, stage), computed from the real output.
-  const PIN_BASE = [6, 12, 520, 672]
-  const PIN_ENEMY = [['enemyL', 0, 0, 232, 96], ['enemyC', 5, 0, 472, 96], ['enemyR', 11, 0, 760, 96]]
-  const PIN_PLAYER = [['p1', 2, 11, 328, 624], ['p2', 8, 11, 616, 624]]
+  const PIN_BASE = [8, 16, 496, 680]
+  const PIN_ENEMY = [['enemyL', 0, 0, 176, 40], ['enemyC', 8, 0, 496, 40], ['enemyR', 16, 0, 816, 40]]
+  const PIN_PLAYER = [['p1', 5, 16, 376, 680], ['p2', 10, 16, 576, 680]]
   const PIN_ISBOSS = false
 
   const d = generateStage(PIN_SEED, stageConfig(PIN_STAGE))

@@ -7,10 +7,10 @@
 // seeded mulberry32 threads the whole generation (D1, AC4).
 //
 // THE CONTRACT — mirrors the reference's `generateLevel(seed, biomeConfig) → LevelDescription` 1:1,
-// adapted from a wide side-scrolling platformer to a fixed 13×13 TOP-DOWN grid. The reference proves
+// adapted from a wide side-scrolling platformer to a fixed 17×17 TOP-DOWN grid. The reference proves
 // "entrance → exit traversable BY CONSTRUCTION" via a reach-bounded staircase walk; Tank 1990 proves
 // "the eagle fort is ENCLOSED + REACHABLE from every top enemy spawn BY CONSTRUCTION" via a fort ring +
-// guaranteed 2-tile-wide carved corridors (D4) — and the verifier's footprint-aware BFS re-derives it
+// guaranteed FOOTPRINT-wide carved corridors (D4) — and the verifier's footprint-aware BFS re-derives it
 // from the EMITTED tiles (a PROOF, not a filter-and-retry; D9).
 //
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -18,14 +18,14 @@
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // `desc.tiles` is PURE GRID-SPACE data (row-major `tiles[row][col]`, TILE ints, NO pixel offset) — the
 // serializable pin payload + the verifier's re-derivation source. But every `base`/spawn `x/y` is the
-// ABSOLUTE 2×2-TANK-WINDOW CENTER in SCREEN coords: a tank is a `TANK_SIZE` (≈2-tile) body anchored at a
-// 2×2 window, so its real body CENTER is the center of that window =
-//   x = PLAYFIELD_X + (col+1)·TILE_SIZE,  y = PLAYFIELD_Y + (row+1)·TILE_SIZE
-// — NOT the single-tile center `(col+0.5)·TILE_SIZE` the reference uses (Tank 1990 has a centered
-// playfield offset by PLAYFIELD_X/Y + a 2-tile footprint). GameScene spawns each Tank body at (x,y), so
-// the body straddles EXACTLY the 2×2 footprint `tankFits` cleared; the verifier pins the SAME formula
-// (AC8). The generator imports PLAYFIELD_X/Y + TILE_SIZE from the PURE constants.ts (Phaser-free numbers),
-// so emitting ABSOLUTE coords keeps the module node-importable (the verifier still re-proves purity).
+// ABSOLUTE FOOTPRINT×FOOTPRINT-TANK-WINDOW CENTER in SCREEN coords: a tank is a `TANK_SIZE` body anchored
+// at a FOOTPRINT×FOOTPRINT window, so its real body CENTER is the center of that window =
+//   x = PLAYFIELD_X + (col + FOOTPRINT/2)·TILE_SIZE,  y = PLAYFIELD_Y + (row + FOOTPRINT/2)·TILE_SIZE
+// — the FOOTPRINT-aware window center (at FOOTPRINT=1 the single-tile center `(col+0.5)·TILE_SIZE`; the
+// PLAYFIELD_X/Y offset accounts for the centered playfield). GameScene spawns each Tank body at (x,y), so
+// the body straddles EXACTLY the footprint `tankFits` cleared; the verifier pins the SAME formula (AC8).
+// The generator imports PLAYFIELD_X/Y + TILE_SIZE from the PURE constants.ts (Phaser-free numbers), so
+// emitting ABSOLUTE coords keeps the module node-importable (the verifier still re-proves purity).
 
 import { mulberry32 } from '../util/rng.js'
 import type { RNG } from '../util/rng.js'
@@ -34,21 +34,21 @@ import { TILE } from '../config/tiles.js'
 import { isTankPassable } from '../config/tiles.js'
 import type { StageConfig } from '../config/stages.js'
 
-// ── The tank FOOTPRINT in tiles (D5) ── `ceil(TANK_SIZE / TILE_SIZE)` = ceil(92/48) = 2. A NAMED
-// derivation, NOT a magic 2: a tank spans this many tiles per side, so a "tank-standable" window is a
-// FOOTPRINT×FOOTPRINT block (the reference's body-aware-clearance lesson — its 36×52 body vs. a 1-tile
+// ── The tank FOOTPRINT in tiles (D5) ── `ceil(TANK_SIZE / TILE_SIZE)` = ceil(36/40) = 1. A NAMED
+// derivation, NOT a magic number: a tank spans this many tiles per side, so a "tank-standable" window is
+// a FOOTPRINT×FOOTPRINT block (the reference's body-aware-clearance lesson — its 36×52 body vs. a 1-tile
 // channel — applied to the grid). The generator carves corridors this wide + the verifier's BFS walks
 // windows of this size, so a verifier PASS means a REAL tank reaches the base (sound, never a false pass).
-export const FOOTPRINT = Math.ceil(TANK_SIZE / TILE_SIZE) // = 2 tiles.
+export const FOOTPRINT = Math.ceil(TANK_SIZE / TILE_SIZE) // = 1 tile.
 
 // ── Shared data shapes (FOUNDATION exports) — TileMap + GameScene + the verifier read these. ──
 
-// A grid anchor (the 2×2-window top-left tile) + its ABSOLUTE 2×2-window-center screen coords (D13).
+// A grid anchor (the FOOTPRINT×FOOTPRINT-window top-left tile) + its ABSOLUTE window-center screen coords (D13).
 export interface GridPoint {
   col: number
   row: number
-  x: number // = PLAYFIELD_X + (col+1)·TILE_SIZE — the tank-body center, NOT (col+0.5)·TILE_SIZE.
-  y: number // = PLAYFIELD_Y + (row+1)·TILE_SIZE.
+  x: number // = PLAYFIELD_X + (col + FOOTPRINT/2)·TILE_SIZE — the FOOTPRINT-aware tank-body center.
+  y: number // = PLAYFIELD_Y + (row + FOOTPRINT/2)·TILE_SIZE.
 }
 
 // A spawn point = a GridPoint tagged with which actor spawns there. The strings are the spawn roles the
@@ -78,7 +78,7 @@ export interface StageDescription {
 // ── F7 STAGE MOTIFS (F7 Rich playability §5.2, Decisions D1/D2, AC1/AC2/AC3) ──────────────────────────────
 // The seed-chosen LAYOUT VARIETY, mirroring the read-only reference's `LAYOUT_TEMPLATES`/`selectTemplate`/
 // `tplRng` idiom EXACTLY (its `['staircase','shaft','islands']` off an off-the-main-thread sub-RNG). Tank
-// 1990's 13×13 grid has a STRUCTURALLY-REQUIRED reachable enclosed fort, so a per-motif *builder* would risk
+// 1990's 17×17 grid has a STRUCTURALLY-REQUIRED reachable enclosed fort, so a per-motif *builder* would risk
 // the reachability/enclosure proofs the verifier depends on (D1). Instead the MOTIF parameterizes ONLY the
 // step-5 terrain SCATTER over the NON-RESERVED cells: it reshapes the EMPTY/BRICK/STEEL *bias* of those cells
 // WITHOUT touching any reserved base/fort/spawn/corridor cell — so enclosure + reachability + the
@@ -148,16 +148,21 @@ export function selectMotif(seed: number, cfg: StageConfig): string {
   return weights[weights.length - 1].id // float-rounding fallthrough → the last id (KISS, the reference's fallback).
 }
 
-// ── windowCenter(col,row) (D13 — the shared grid→absolute-coord map) ── the ABSOLUTE 2×2-window CENTER
-// screen coords. The generator fills every base/spawn x/y with it; the verifier RE-derives the SAME
-// formula for its AC8 coordinate pin (DRY) so render == verified geometry. Imports PLAYFIELD_X/Y +
-// TILE_SIZE from the PURE constants.ts (Phaser-free), so this stays node-importable.
+// ── windowCenter(col,row) (D13 — the shared grid→absolute-coord map) ── the ABSOLUTE FOOTPRINT×FOOTPRINT
+// -window CENTER screen coords: PLAYFIELD_X/Y + (col/row + FOOTPRINT/2)·TILE_SIZE. At FOOTPRINT=1 that is
+// the single-tile center; it generalizes to any footprint. The generator fills every base/spawn x/y with
+// it; the verifier RE-derives the SAME formula for its AC8 coordinate pin (DRY) so render == verified
+// geometry. Imports PLAYFIELD_X/Y + TILE_SIZE from the PURE constants.ts (Phaser-free), so this stays
+// node-importable.
 export function windowCenter(col: number, row: number): { x: number; y: number } {
-  return { x: PLAYFIELD_X + (col + 1) * TILE_SIZE, y: PLAYFIELD_Y + (row + 1) * TILE_SIZE }
+  return {
+    x: PLAYFIELD_X + (col + FOOTPRINT / 2) * TILE_SIZE,
+    y: PLAYFIELD_Y + (row + FOOTPRINT / 2) * TILE_SIZE,
+  }
 }
 
 // ── tankFits(tiles, cols, rows, col, row) → boolean (D5/D9 — the shared FOOTPRINT predicate) ── True iff
-// the FOOTPRINT×FOOTPRINT (2×2) window anchored at (col,row) — spanning cols [col, col+FOOTPRINT-1] ×
+// the FOOTPRINT×FOOTPRINT window anchored at (col,row) — spanning cols [col, col+FOOTPRINT-1] ×
 // rows [row, row+FOOTPRINT-1] — is fully IN-BOUNDS and every cell is `isTankPassable`. The generator uses
 // it to place spawns + carve corridors; the verifier uses the SAME function for its BFS window nodes (DRY,
 // the reference's `canReachStep` pattern) — so the two check the IDENTICAL graph. PURE so both agree exactly.
@@ -178,16 +183,16 @@ export function tankFits(
 }
 
 // ── isFortApproachWindow(tiles, cols, rows, col, row, base) → boolean (D15, AC7 — the BFS GOAL predicate) ──
-// True iff the window anchored at (col,row) is `tankFits` AND some cell of its 2×2 footprint is
-// orthogonally adjacent (Manhattan distance 1) to a fort-ring BRICK cell — the closest a 2×2 tank body can
+// True iff the window anchored at (col,row) is `tankFits` AND some cell of its FOOTPRINT footprint is
+// orthogonally adjacent (Manhattan distance 1) to a fort-ring BRICK cell — the closest a tank body can
 // park to shoot the eagle. This is the AC7 GOAL node, shared by the generator's corridor-carve TARGET +
 // the verifier's BFS goal test (DRY) so they cannot disagree.
 //
 // WHY a WINDOW adjacent to the ring, NOT a cell next to the BASE (D15): the base + every in-grid cell
 // touching it are BASE/BRICK (never tank-passable), so NO tankFits window can CONTAIN a base-adjacent cell.
 // The goal is therefore a window-graph NODE adjacent to the ring. Such a window provably EXISTS for the
-// odd 13-wide grid + even 2-tile footprint + col-6 fort (e.g. the window anchored at (5,9): its cell (6,10)
-// is one orthogonal step above the fort-top brick (6,11) — D15 enumerates the set), so the goal is
+// odd 17-wide grid + 1-tile footprint + col-8 fort (e.g. the window anchored at (8,14): its cell (8,14)
+// is one orthogonal step above the fort-top brick (8,15) — D15 enumerates the set), so the goal is
 // reachable, never a phantom target.
 export function isFortApproachWindow(
   tiles: number[][],
@@ -280,10 +285,10 @@ export function generateStage(seed: number, cfg: StageConfig): StageDescription 
 
   // ── 2) Place the eagle BASE + fort ring (§5.3 step 2, D4) ── the bottom-center cell is BASE; its
   // EXPOSED in-grid orthogonal neighbours are stamped BRICK (the classic fort that AC7 checks is enclosed).
-  // For the 13×13 grid the base is (col 6, row 12); the ring is (6,11) above + (5,12) left + (7,12) right
+  // For the 17×17 grid the base is (col 8, row 16); the ring is (8,15) above + (7,16) left + (9,16) right
   // (the bottom edge needs no ring — it is the grid boundary, which the enclosure check treats as a wall).
-  const baseCol = Math.floor(cols / 2) // = 6 (the odd-width center column).
-  const baseRow = rows - 1 // = 12 (the bottom row).
+  const baseCol = Math.floor(cols / 2) // = 8 (the odd-width center column).
+  const baseRow = rows - 1 // = 16 (the bottom row).
   tiles[baseRow][baseCol] = TILE.BASE
   reserved[baseRow][baseCol] = true
   for (const [dc, dr] of ORTHO) {
@@ -297,14 +302,14 @@ export function generateStage(seed: number, cfg: StageConfig): StageDescription 
 
   // ── 3) Place spawn points (§5.3 step 3, D4/D13) ── the three top enemy spawns (left/center/right
   // columns in the top row band) + the two player spawns (bottom row, flanking the base). Each anchor is a
-  // tankFits 2×2 window: at this point the only non-EMPTY cells are the base + fort ring (rows 11–12), so
-  // every chosen top-band/bottom-flank window is tank-passable by construction. We mark each footprint
-  // reserved + fill its x/y via windowCenter (the ABSOLUTE 2×2-window center, D13 — the tank-body center).
-  const topRow = 0 // enemy spawns anchor at row 0 (the window spans rows 0–1, the classic top spawn band).
+  // tankFits FOOTPRINT window: at this point the only non-EMPTY cells are the base + fort ring (rows 15–16),
+  // so every chosen top-band/bottom-flank window is tank-passable by construction. We mark each footprint
+  // reserved + fill its x/y via windowCenter (the ABSOLUTE window center, D13 — the tank-body center).
+  const topRow = 0 // enemy spawns anchor at row 0 (the top spawn band; window spans FOOTPRINT rows from 0).
   const enemyAnchors: Array<[SpawnPoint['which'], number]> = [
     ['enemyL', 0], // left column.
-    ['enemyC', baseCol - FOOTPRINT + 1], // centered over the fort column (anchor 5 → window cols 5–6).
-    ['enemyR', cols - FOOTPRINT], // right column (anchor 11 → window cols 11–12).
+    ['enemyC', baseCol - FOOTPRINT + 1], // centered over the fort column (anchor 8 → window col 8).
+    ['enemyR', cols - FOOTPRINT], // right column (anchor 16 → window col 16).
   ]
   const enemySpawns: SpawnPoint[] = enemyAnchors.map(([which, col]) => {
     const c = clampInt(col, 0, cols - FOOTPRINT)
@@ -312,12 +317,12 @@ export function generateStage(seed: number, cfg: StageConfig): StageDescription 
     return { which, col: c, row: topRow, ...windowCenter(c, topRow) }
   })
 
-  // Player spawns: the bottom-row band (anchor row rows-FOOTPRINT = 11, window rows 11–12), flanking the
+  // Player spawns: the bottom-row band (anchor row rows-FOOTPRINT = 16, the bottom band), flanking the
   // base column. P1 to the LEFT of the fort, P2 to the RIGHT — the classic player start cells. The anchors
-  // are chosen clear of the fort ring (which occupies cols 5–7 on rows 11–12) so each window is tankFits.
-  const playerRow = rows - FOOTPRINT // = 11 (window spans rows 11–12, the bottom band).
-  const p1Col = clampInt(baseCol - FOOTPRINT - 2, 0, cols - FOOTPRINT) // left of the fort (anchor 2).
-  const p2Col = clampInt(baseCol + 2, 0, cols - FOOTPRINT) // right of the fort (anchor 8).
+  // are chosen clear of the fort ring (which occupies cols 7–9 on rows 15–16) so each window is tankFits.
+  const playerRow = rows - FOOTPRINT // = 16 (the bottom band).
+  const p1Col = clampInt(baseCol - FOOTPRINT - 2, 0, cols - FOOTPRINT) // left of the fort (anchor 5).
+  const p2Col = clampInt(baseCol + 2, 0, cols - FOOTPRINT) // right of the fort (anchor 10).
   const playerSpawns: SpawnPoint[] = [
     { which: 'p1', col: p1Col, row: playerRow, ...windowCenter(p1Col, playerRow) },
     { which: 'p2', col: p2Col, row: playerRow, ...windowCenter(p2Col, playerRow) },
@@ -328,13 +333,15 @@ export function generateStage(seed: number, cfg: StageConfig): StageDescription 
   // ── 4) Carve guaranteed corridors to a fort-approach goal window (§5.3 step 4, D4/D5/D15) ── for each
   // top enemy spawn carve a FOOTPRINT-wide tank-passable lane (force EMPTY + reserve) from the spawn DOWN
   // to a GOAL window that satisfies isFortApproachWindow (a tankFits window orthogonally adjacent to a
-  // fort-ring brick — e.g. anchored at (5,9), whose cell (6,10) is one step above the fort-top brick
-  // (6,11)). Such a goal window provably EXISTS (D15) for the 13-wide grid + 2-tile footprint + col-6 fort;
+  // fort-ring brick — e.g. anchored at (8,14), whose cell (8,14) is one step above the fort-top brick
+  // (8,15)). Such a goal window provably EXISTS (D15) for the 17-wide grid + 1-tile footprint + col-8 fort;
   // carving to it makes the eagle REACHABLE from every top spawn BY CONSTRUCTION — the verifier's BFS
   // re-proves it (a PROOF, never a phantom target). The goal anchor sits one footprint-row above the fort
-  // ring (row baseRow - FOOTPRINT - 1 = 9) and shares the base column band so the goal adjacency holds.
-  const goalRow = baseRow - FOOTPRINT - 1 // = 9 (window rows 9–10; cell at row 10 is adjacent to ring row 11).
-  const goalCol = clampInt(baseCol - 1, 0, cols - FOOTPRINT) // = 5 (window cols 5–6; cell (6,10) touches (6,11)).
+  // ring (row baseRow - FOOTPRINT - 1 = 14) and shares the base column so the goal adjacency holds: at
+  // FOOTPRINT=1 the goal must CONTAIN the cell directly above the top ring brick (baseCol, baseRow-1), so
+  // goalCol = baseCol (correct for FOOTPRINT 1 AND the old 2 — the window then contained a ring-adjacent cell).
+  const goalRow = baseRow - FOOTPRINT - 1 // = 14 (window from row 14; cell at row 14 is adjacent to ring row 15).
+  const goalCol = clampInt(baseCol, 0, cols - FOOTPRINT) // = 8 (window col 8; cell (8,14) touches ring (8,15)).
   for (const spawn of enemySpawns) {
     carveCorridor(tiles, reserved, cols, rows, spawn.col, spawn.row, goalCol, goalRow)
   }
@@ -434,7 +441,7 @@ function reserveWindow(
 
 // ── carveCorridor(...) (§5.3 step 4, D4/D5) ── force a FOOTPRINT-wide tank-passable lane from the spawn
 // anchor (sc,sr) DOWN-then-ACROSS to the goal anchor (gc,gr), forcing every window along the path EMPTY +
-// reserved. A simple L-path (vertical then horizontal) keeps the carve deterministic + 2-tile-wide BY
+// reserved. A simple L-path (vertical then horizontal) keeps the carve deterministic + FOOTPRINT-wide BY
 // CONSTRUCTION (each step carves the full FOOTPRINT window at the current anchor). This is the reference's
 // "traversable BY CONSTRUCTION" stance — the verifier's footprint-aware BFS re-derives reachability from
 // the EMITTED tiles (D9), never a filter-and-retry. KISS: a monotone L, no pathfinding.
@@ -454,7 +461,7 @@ function carveCorridor(
   const tr = clampInt(gr, 0, rows - FOOTPRINT)
   // Carve the start window, then walk vertically toward the goal row, then horizontally to the goal col,
   // carving the full FOOTPRINT window at every anchor. Adjacent windows overlap (a 1-tile step), so the
-  // carved channel is continuously FOOTPRINT-wide — a real 2×2 tank can drive its whole length.
+  // carved channel is continuously FOOTPRINT-wide — a real tank can drive its whole length.
   carveWindow(tiles, reserved, cols, rows, c, r)
   while (r !== tr) {
     r += r < tr ? 1 : -1
