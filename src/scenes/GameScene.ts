@@ -196,6 +196,15 @@ export class GameScene extends Phaser.Scene {
     g.lineStyle(2, 0x30363d, 1)
     g.strokeRect(PLAYFIELD_X, PLAYFIELD_Y, PLAYFIELD_W, PLAYFIELD_H)
 
+    // Fence the Arcade world to the playfield rectangle so a tank (whose body opts into collideWorldBounds —
+    // Tank ctor) stops at the playfield edges and can NOT drive out of the scene. The procedural LevelGenerator
+    // builds no border walls (the grid edge is only a conceptual wall for the headless reachability BFS), so the
+    // world bounds are the outer fence. Set ONCE here: the Arcade world persists across the in-place stage
+    // rebuild (_buildStage rebuilds bodies, not the world). Bullets are UNAFFECTED — they never opt into
+    // collideWorldBounds and keep their own PLAYFIELD_* despawn check (BulletPool.tick), so they still fly off
+    // the edge and despawn. Only tank bodies set collideWorldBounds, so nothing else is constrained.
+    this.physics.world.setBounds(PLAYFIELD_X, PLAYFIELD_Y, PLAYFIELD_W, PLAYFIELD_H)
+
     // The "STAGE N" readout — created ONCE, updated in place on a stage advance (DRY — one text object, AC5).
     this.stageLabel = this.add
       .text(DESIGN_WIDTH / 2, PLAYFIELD_Y - 28, '', {

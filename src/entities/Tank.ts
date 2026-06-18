@@ -157,7 +157,10 @@ export class Tank {
     scene.physics.add.existing(this.collider)
     this.body = this.collider.body as Phaser.Physics.Arcade.Body
     // Tanks are SOLID movers that push against walls/each other (no overlap) — Arcade separates them.
-    this.body.setCollideWorldBounds(false) // the test arena's STEEL walls (static bodies) bound it, not world bounds.
+    // The Arcade world bounds are set to the playfield rectangle (GameScene.create), so opting the body in here
+    // makes a tank stop at the playfield edges — it can no longer drive out of the scene. (Was `false` with a
+    // stale F1 comment about a "test arena" of steel border walls that the procedural generator never builds.)
+    this.body.setCollideWorldBounds(true)
 
     // The VISIBLE tank rect + the barrel marker, positioned TO the body center each frame (decoupled from
     // the body — moving them never touches the body). Drawn with primitives only (AC11).
