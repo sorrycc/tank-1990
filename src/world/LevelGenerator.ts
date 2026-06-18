@@ -71,6 +71,81 @@ export interface StageDescription {
   stageIndex: number
   isBoss: boolean
   seed: number
+  motif: string // F7 (D1/D2) — the seed-chosen layout MOTIF id (one of STAGE_MOTIFS) that shaped the scatter.
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════
+// ── F7 STAGE MOTIFS (F7 Rich playability §5.2, Decisions D1/D2, AC1/AC2/AC3) ──────────────────────────────
+// The seed-chosen LAYOUT VARIETY, mirroring the read-only reference's `LAYOUT_TEMPLATES`/`selectTemplate`/
+// `tplRng` idiom EXACTLY (its `['staircase','shaft','islands']` off an off-the-main-thread sub-RNG). Tank
+// 1990's 13×13 grid has a STRUCTURALLY-REQUIRED reachable enclosed fort, so a per-motif *builder* would risk
+// the reachability/enclosure proofs the verifier depends on (D1). Instead the MOTIF parameterizes ONLY the
+// step-5 terrain SCATTER over the NON-RESERVED cells: it reshapes the EMPTY/BRICK/STEEL *bias* of those cells
+// WITHOUT touching any reserved base/fort/spawn/corridor cell — so enclosure + reachability + the
+// `scatterCells` ceiling hold BY CONSTRUCTION (the verifier re-proves them generically for every motif).
+// ════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+// ── MOTIF_SALT (D2) ── the OFF-THE-MAIN-THREAD motif sub-RNG salt (the reference's `seed ^ 0x7e3415a7`). The
+// motif pick draws from `mulberry32((seed ^ MOTIF_SALT) >>> 0)` — a SEPARATE stream from the main scatter
+// `rng`, so the main draw SEQUENCE is structurally unchanged (the scatter still draws ONE rng() per eligible
+// cell). A fixed seed stays byte-deterministic (the sub-RNG is seeded from the same seed). A NAMED constant.
+export const MOTIF_SALT = 0x5a17b00c
+
+// ── STAGE_MOTIFS (D1, AC1) ── the known motif ids (the reference's LAYOUT_TEMPLATES shape). The verifier
+// asserts every emitted `desc.motif` is one of these AND that the sweep exercises ≥ 2 of them (no dead shape).
+export const STAGE_MOTIFS: string[] = ['open', 'fortress', 'maze', 'corridors']
+
+// ── MotifParams (D1) ── the per-motif scatter shaping. `brickMul`/`steelMul` SCALE the stage's base
+// brick/steel densities (so `open` thins the walls, `fortress` thickens them). `lattice` (maze) biases BRICK
+// on even interior cells; `bands` (corridors) biases BRICK on alternating interior columns. The shaping always
+// keeps the scatter to ONE rng() draw + AT MOST one placed tile per non-reserved cell (so `scatterCells`
+// counting + the ≤ ceiling hold unchanged, D2). PLAIN data (no functions) so it serializes + the verifier reads it.
+export interface MotifParams {
+  brickMul: number // multiplier on cfg.brickDensity for this motif's NON-reserved cells.
+  steelMul: number // multiplier on cfg.steelDensity for this motif's NON-reserved cells.
+  lattice?: boolean // maze: BRICK-bias every even interior cell (a brick lattice reads "latticed").
+  bands?: boolean // corridors: BRICK-bias alternating interior columns (reads "banded").
+}
+
+// ── MOTIF_PARAMS (D1) ── the motif → params table. The multipliers are chosen so NO motif drives the
+// effective brick+steel band past 1 (the bands still partition [0,1)); the lattice/band BRICK bias only LIFTS
+// the brick propensity of selected cells toward (but not over) a capped maximum — the scatter still places AT
+// MOST one tile per cell. The reserved-cell skip is unchanged, so a motif can NEVER touch a base/fort/spawn/
+// corridor cell — enclosure + reachability hold BY CONSTRUCTION for every motif (D1/AC2).
+export const MOTIF_PARAMS: Record<string, MotifParams> = {
+  open: { brickMul: 0.45, steelMul: 0.5 }, // sparser walls — an OPEN battlefield reads roomy.
+  fortress: { brickMul: 1.7, steelMul: 1.8 }, // denser brick/steel walls — a WALLED fortress reads heavy.
+  maze: { brickMul: 1.0, steelMul: 1.0, lattice: true }, // a brick LATTICE over even interior cells reads maze-y.
+  corridors: { brickMul: 1.0, steelMul: 1.0, bands: true }, // BRICK BANDS on alternating cols read as corridors.
+}
+
+// ── DEFAULT_MOTIF_WEIGHTS (D1/D7) ── the shared motif mix `selectMotif` weights its seeded pick over when a
+// stage carries no `motifWeights` override (the reference's DEFAULT_LAYOUT_WEIGHTS). `open` keeps the highest
+// weight (the readable baseline); the other three add spatial surprise. The sweep proves ≥ 2 appear (AC1).
+const DEFAULT_MOTIF_WEIGHTS: { id: string; w: number }[] = [
+  { id: 'open', w: 3 },
+  { id: 'fortress', w: 2 },
+  { id: 'maze', w: 2 },
+  { id: 'corridors', w: 2 },
+]
+
+// ── selectMotif(seed, cfg) → a motif id (D1/D2, AC1/AC3) ── a PURE weighted pick over the stage's
+// `motifWeights` (or the shared DEFAULT_MOTIF_WEIGHTS) OFF the OFF-THE-MAIN-THREAD motif sub-RNG
+// `mulberry32((seed ^ MOTIF_SALT) >>> 0)` — so the MAIN scatter draw sequence is untouched (D2). The
+// reference's `selectTemplate` body verbatim in shape. TOTAL: an all-zero-weights roster falls through to the
+// last id (never undefined — the reference's float-rounding fallback), and an unknown override id is tolerated
+// (it just may not match MOTIF_PARAMS — generateStage falls back to a neutral params lookup, defensive).
+export function selectMotif(seed: number, cfg: StageConfig): string {
+  const rng: RNG = mulberry32((seed ^ MOTIF_SALT) >>> 0) // the off-the-main-thread sub-RNG (D2).
+  const weights = cfg.motifWeights && cfg.motifWeights.length ? cfg.motifWeights : DEFAULT_MOTIF_WEIGHTS
+  const total = weights.reduce((s, e) => s + (e.w || 0), 0)
+  if (total <= 0) return weights[weights.length - 1].id // all-zero weights → the last id (the total fallback).
+  let r = rng() * total
+  for (const entry of weights) {
+    r -= entry.w || 0
+    if (r <= 0) return entry.id
+  }
+  return weights[weights.length - 1].id // float-rounding fallthrough → the last id (KISS, the reference's fallback).
 }
 
 // ── windowCenter(col,row) (D13 — the shared grid→absolute-coord map) ── the ABSOLUTE 2×2-window CENTER
@@ -267,36 +342,64 @@ export function generateStage(seed: number, cfg: StageConfig): StageDescription 
   // the node the verifier's BFS terminates at (isFortApproachWindow over the EMITTED tiles — D15).
   carveWindow(tiles, reserved, cols, rows, goalCol, goalRow)
 
-  // ── 5) Seeded terrain scatter (§5.3 step 5, D14) ── iterate every NON-reserved cell, COUNTING the
-  // eligible cells into `scatterCells` (the EXACT eligible-cell total — the AC6 max-count ceiling, D14);
-  // for each draw ONE rng() and place AT MOST ONE of BRICK/STEEL/WATER/TREES/ICE by the per-kind densities
-  // (a single seeded pass; densities sum well under 1 so most cells stay EMPTY — a drivable battlefield).
-  // Reserved cells (base/fort/spawns/corridors) are skipped, so reachability + spawn validity hold (D4),
-  // and since AT MOST ONE tile lands per eligible cell, each kind's realized count is provably ≤ scatterCells
-  // (the structural ceiling the verifier asserts — a Bernoulli scatter can never break it, D14).
+  // ── 4b) Pick the seeded layout MOTIF (F7 §5.2, D1/D2, AC1) ── OFF the OFF-THE-MAIN-THREAD motif sub-RNG, so
+  // the main `rng` scatter draw sequence below is structurally unchanged (D2). The chosen motif's params shape
+  // step 5's per-cell thresholds; emit the id on the description (the verifier asserts it's a known motif). A
+  // neutral fallback params (the identity multipliers, no lattice/bands) if a future override id isn't in the
+  // table — defensive, so an unknown motifWeights id never crashes the scatter (still one draw per cell).
+  const motif = selectMotif(seed, cfg)
+  const mp: MotifParams = MOTIF_PARAMS[motif] ?? { brickMul: 1, steelMul: 1 }
+
+  // ── 5) Seeded terrain scatter (§5.3 step 5, D14 + F7 §5.2/D1/D2 motif shaping) ── iterate every NON-reserved
+  // cell, COUNTING the eligible cells into `scatterCells` (the EXACT eligible-cell total — the AC6 max-count
+  // ceiling, D14); for each draw ONE rng() and place AT MOST ONE of BRICK/STEEL/WATER/TREES/ICE by the per-kind
+  // densities (a single seeded pass; densities sum well under 1 so most cells stay EMPTY — a drivable
+  // battlefield). Reserved cells (base/fort/spawns/corridors) are skipped, so reachability + spawn validity hold
+  // (D4), and since AT MOST ONE tile lands per eligible cell, each kind's realized count is provably ≤
+  // scatterCells (the structural ceiling — a Bernoulli scatter can never break it, D14).
+  //
+  // THE MOTIF (F7 D1/D2): the chosen motif's params SCALE the brick/steel thresholds (open thins, fortress
+  // thickens) and optionally LIFT the brick propensity on a positional rule (maze = even interior cells;
+  // corridors = alternating interior columns), so different seeds read as distinct SHAPES — open/sparse,
+  // fortress/walled, maze/latticed, corridors/banded. CRITICALLY it still draws ONE rng() per non-reserved cell
+  // + places AT MOST one tile (the bands still partition [0,1)), so `scatterCells` counting + the ≤ ceiling are
+  // byte-unchanged in DISCIPLINE; and it touches ONLY non-reserved cells (the reserved skip is above), so the
+  // base/fort/spawn/corridor cells are byte-identical for EVERY motif — enclosure + reachability hold BY
+  // CONSTRUCTION (the verifier re-proves both generically per (seed,stage), covering every motif — AC2).
   let scatterCells = 0
-  // Cumulative thresholds so a single rng() draw selects at most one kind (the bands partition [0, sum)).
-  const tB = cfg.brickDensity
-  const tS = tB + cfg.steelDensity
-  const tW = tS + cfg.waterDensity
-  const tT = tW + cfg.treesDensity
-  const tI = tT + cfg.iceDensity
+  // The motif-scaled brick/steel densities (clamped to a safe ceiling so brick+steel never reaches 1 and the
+  // cumulative bands always partition [0,1) — water/trees/ice keep their base densities, so EMPTY always wins
+  // the tail). The lattice/band BRICK lift (below) is applied per-cell on top, also clamped under 1.
+  const baseBrick = Math.min(cfg.brickDensity * mp.brickMul, 0.55)
+  const baseSteel = Math.min(cfg.steelDensity * mp.steelMul, 0.3)
+  const BRICK_LIFT = 0.42 // the extra BRICK propensity a maze-lattice / corridor-band eligible cell gets (clamped under 1).
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (reserved[r][c]) continue // base/fort/spawn/corridor — never scattered (D4).
+      if (reserved[r][c]) continue // base/fort/spawn/corridor — never scattered (D4) — the motif can't touch these.
       scatterCells++
+      // The per-cell BRICK threshold: the motif-scaled base, LIFTED on the motif's positional rule (a maze
+      // lattice on even interior cells; a corridor band on alternating interior columns). Clamped under 1 so the
+      // cumulative bands still partition [0,1). This is a per-cell THRESHOLD shift only — still ONE rng() draw.
+      let tB = baseBrick
+      if (mp.lattice && c % 2 === 0 && r % 2 === 0) tB = Math.min(baseBrick + BRICK_LIFT, 0.85)
+      else if (mp.bands && c % 3 === 0) tB = Math.min(baseBrick + BRICK_LIFT, 0.85)
+      const tS = Math.min(tB + baseSteel, 0.95)
+      const tW = tS + cfg.waterDensity
+      const tT = tW + cfg.treesDensity
+      const tI = tT + cfg.iceDensity
       const x = rng()
       if (x < tB) tiles[r][c] = TILE.BRICK
       else if (x < tS) tiles[r][c] = TILE.STEEL
       else if (x < tW) tiles[r][c] = TILE.WATER
       else if (x < tT) tiles[r][c] = TILE.TREES
       else if (x < tI) tiles[r][c] = TILE.ICE
-      // else: stays EMPTY (most cells — densities sum < 1).
+      // else: stays EMPTY (most cells — the bands sum < 1).
     }
   }
 
-  // ── 6) Emit the plain-data StageDescription (§5.3 step 6, AC5) ── no functions on it, so it serializes
-  // for the regression pin + is deep-equal-comparable for determinism (AC4/AC5).
+  // ── 6) Emit the plain-data StageDescription (§5.3 step 6, AC5 + F7 motif) ── no functions on it, so it
+  // serializes for the regression pin + is deep-equal-comparable for determinism (AC4/AC5). `motif` is the
+  // seed-chosen layout id (the verifier asserts it's one of STAGE_MOTIFS + the shape space is used — AC1).
   return {
     cols,
     rows,
@@ -309,6 +412,7 @@ export function generateStage(seed: number, cfg: StageConfig): StageDescription 
     stageIndex: cfg.stageIndex,
     isBoss: cfg.isBoss,
     seed,
+    motif,
   }
 }
 

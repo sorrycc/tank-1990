@@ -22,8 +22,9 @@ import { t, tName, tDesc } from '../i18n/index.js'
 
 // Layout (positioned from the FIXED design resolution — Decision 1 — so it stays centered under Scale.FIT).
 const HEADER_Y = 70 // px — y of the HUB title.
-const CURRENCY_Y = 126 // px — y of the shared-currency readout (the ONE bank — D9).
-const COL_TITLE_Y = 178 // px — y of the per-column "PLAYER N" heading.
+const CURRENCY_Y = 122 // px — y of the shared-currency readout (the ONE bank — D9).
+const BEST_Y = 152 // px — F7 (D6/AC6) — y of the BEST line under the currency header.
+const COL_TITLE_Y = 184 // px — y of the per-column "PLAYER N" heading.
 const LIST_TOP = 218 // px — y of the FIRST upgrade row in each column.
 const ROW_H = 56 // px — vertical spacing between upgrade rows (two text lines per row).
 const FOOTER_Y = DESIGN_HEIGHT - 44 // px — y of the controls footer.
@@ -71,6 +72,17 @@ export class HubScene extends Phaser.Scene {
       .setOrigin(0.5)
     this.currencyHeader = this.add
       .text(DESIGN_WIDTH / 2, CURRENCY_Y, '', { fontFamily: UI_FONT, fontSize: '26px', color: '#4dd0e1' })
+      .setOrigin(0.5)
+
+    // ── F7 (D6/AC6) — the BEST line near the currency header ── the Hub already loaded MetaState (this.meta), so
+    // this is one extra getBestScore/getBestStage read (DRY). A fresh save reads 0/0 (the defensive save degrades
+    // to defaults — never blank/crash). Localised; positioned off the FIXED design resolution (centered).
+    this.add
+      .text(DESIGN_WIDTH / 2, BEST_Y, t('hub.best', { score: this.meta.getBestScore(), stage: this.meta.getBestStage() }), {
+        fontFamily: UI_FONT,
+        fontSize: '17px',
+        color: '#feca57', // gold — matches the best chrome on the Title / GameOver.
+      })
       .setOrigin(0.5)
 
     // ── Build the P1 column always; the P2 column only in co-op (the lone column is hidden in 1P — D9/AC6). ──

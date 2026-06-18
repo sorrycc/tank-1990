@@ -39,6 +39,12 @@ export interface StageConfig {
   // spawn feature normalizes them. D16: the monotone quantity is the NORMALIZED `hardShare`, NOT a raw weight.
   enemyWeights: { basic: number; fast: number; power: number; armor: number }
   isBoss: boolean // true on every BOSS_STAGE_EVERY-th stage (the heavy boss-tank milestone).
+  // ── F7 stage-MOTIF seam (F7 Rich playability §5.2, Decision D7) ── an OPTIONAL per-stage override of the
+  // motif mix `selectMotif` weights its seeded pick over (the reference's biome `layoutWeights` analogue). ABSENT
+  // by default → `selectMotif` uses the generator's shared `DEFAULT_MOTIF_WEIGHTS` (every stage the same mix). F7
+  // sets NONE (it is the FUTURE seam — a later tune could bias deep stages toward `fortress`/`maze` WITHOUT a
+  // generator edit). Plain data; the existing monotonicity sweep does not read it, so it cannot break the gate.
+  motifWeights?: { id: string; w: number }[]
 }
 
 // ── Named caps (AC2) — the upper bounds each scaling axis CLAMPS to, owned here so the verifier asserts

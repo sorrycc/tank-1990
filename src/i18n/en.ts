@@ -13,6 +13,8 @@ export const EN: Dict = {
     'title.heading': 'TANK 1990',
     'title.subtitle': '坦克大战 — Battle City',
     'title.start': 'Press SPACE / ENTER or click to start',
+    // F7 (D6/AC6) — the BEST line surfaced on the Title (read from MetaState; 0/0 on a fresh save).
+    'title.best': 'BEST SCORE {score} · BEST STAGE {stage}',
 
     // ── Controls reference (F6 §5.2, D9, AC7) — the shared CONTROLS_ROWS the Title renders so a first-time
     // player discovers both schemes. The action labels localise; the key TOKENS (WASD/J/Numpad0/SPACE/ENTER/M)
@@ -40,6 +42,7 @@ export const EN: Dict = {
     'hub.max': 'MAX',
     'hub.cost': '{cost}',
     'hub.start': 'START RUN',
+    'hub.best': 'BEST SCORE {score} · BEST STAGE {stage}', // F7 (D6/AC6) — the BEST line near the currency header.
     'hub.footerCoop': 'P1: WASD move · J buy  |  P2: arrows move · Numpad0 buy  |  SPACE/ENTER: START RUN',
     'hub.footerSolo': 'WASD / arrows: select · J / SPACE: buy  |  SPACE / ENTER: START RUN',
 
@@ -63,6 +66,18 @@ export const EN: Dict = {
     'over.bestScore': 'BEST SCORE {n}',
     'over.bestStage': 'BEST STAGE {n}',
     'over.continue': 'Press SPACE / ENTER or click to continue',
+
+    // ── Pause overlay (F7 §5.3, D3/D9, AC4) — the read-only freeze panel: a title, a RUN-summary section
+    // (stage / score / enemies-left / P1·P2 lives), and a resume hint. The CONTROLS rows reuse the shared
+    // CONTROLS_ROWS (DRY with the Title). All localised; the RUN values are interpolated by the overlay. ──
+    'pause.title': 'PAUSED',
+    'pause.run': 'RUN',
+    'pause.stage': 'STAGE',
+    'pause.score': 'SCORE',
+    'pause.enemies': 'ENEMIES LEFT',
+    'pause.p1Lives': 'P1 LIVES',
+    'pause.p2Lives': 'P2 LIVES',
+    'pause.help': 'Press P / ESC to resume',
 
     // ── Power-up names (the HUD active-power-up + any in-world label key off the kind id — AC2/AC8) ──
     'power.helmet': 'SHIELD',

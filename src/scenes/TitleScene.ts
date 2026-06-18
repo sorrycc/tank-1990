@@ -2,6 +2,7 @@ import Phaser from 'phaser'
 import { DESIGN_WIDTH, DESIGN_HEIGHT, UI_FONT } from '../config/constants.js'
 import { t, CONTROLS_ROWS } from '../i18n/index.js'
 import { Sound } from '../audio/Sound.js'
+import { createMetaState } from '../core/MetaState.js'
 
 // ── TitleScene (F0 scaffold §5.3 → F5 §5.4 → F6 §5.4, Decision 2/4/D12/D9, AC7/AC9) ──
 // Shows the game title + a Start prompt and routes to the HUB on a key OR a pointer (the flow is
@@ -40,6 +41,19 @@ export class TitleScene extends Phaser.Scene {
         fontFamily: UI_FONT,
         fontSize: '24px',
         color: '#8b949e',
+      })
+      .setOrigin(0.5)
+
+    // ── F7 (D6/AC6) — the BEST line under the subtitle ── read MetaState ONCE in create() (the impure save
+    // boundary — createMetaState() load()s a fresh view). A fresh save reads 0/0 (the defensive save degrades to
+    // defaults — never blank/crash). Localised via t('title.best', {score, stage}); positioned off the FIXED
+    // design resolution (cx + a fixed Y) so it centers under Scale.FIT — the Title's existing layout discipline.
+    const meta = createMetaState()
+    this.add
+      .text(cx, 234, t('title.best', { score: meta.getBestScore(), stage: meta.getBestStage() }), {
+        fontFamily: UI_FONT,
+        fontSize: '18px',
+        color: '#feca57', // gold — matches the score/best chrome.
       })
       .setOrigin(0.5)
 

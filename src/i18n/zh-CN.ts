@@ -16,6 +16,7 @@ export const ZH_CN: Dict = {
     'title.heading': 'TANK 1990',
     'title.subtitle': '坦克大战 — Battle City',
     'title.start': '按 SPACE / ENTER 或点击开始',
+    'title.best': '最高分数 {score} · 最高关卡 {stage}', // F7 (D6/AC6) — 标题界面的最佳成绩行。
 
     // ── 操作说明（F6 §5.2, D9, AC7 — 标题界面的双人按键参考）── 动作名翻译，按键 TOKEN（WASD/J/Numpad0/SPACE/
     // ENTER/M）保持原文（它们指代物理按键，按键绑定由 core/Input.ts 拥有，这里只是可读的镜像）。
@@ -42,6 +43,7 @@ export const ZH_CN: Dict = {
     'hub.max': '已满',
     'hub.cost': '{cost}',
     'hub.start': '开始游戏',
+    'hub.best': '最高分数 {score} · 最高关卡 {stage}', // F7 (D6/AC6) — 货币标题旁的最佳成绩行。
     'hub.footerCoop': 'P1：WASD 移动 · J 购买  |  P2：方向键移动 · 小键盘0 购买  |  SPACE/ENTER：开始游戏',
     'hub.footerSolo': 'WASD / 方向键：选择 · J / SPACE：购买  |  SPACE / ENTER：开始游戏',
 
@@ -65,6 +67,16 @@ export const ZH_CN: Dict = {
     'over.bestScore': '最高分数 {n}',
     'over.bestStage': '最高关卡 {n}',
     'over.continue': '按 SPACE / ENTER 或点击继续',
+
+    // ── 暂停覆盖层（F7 §5.3, D3/D9, AC4 — 只读的冻结面板：标题、本局摘要、恢复提示）──
+    'pause.title': '已暂停',
+    'pause.run': '本局',
+    'pause.stage': '关卡',
+    'pause.score': '分数',
+    'pause.enemies': '剩余敌人',
+    'pause.p1Lives': 'P1 生命',
+    'pause.p2Lives': 'P2 生命',
+    'pause.help': '按 P / ESC 恢复游戏',
 
     // ── 道具名称（HUD 当前道具 — AC2/AC8）──
     'power.helmet': '护盾',

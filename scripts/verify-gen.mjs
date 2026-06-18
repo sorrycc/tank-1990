@@ -35,7 +35,7 @@ import { DEFAULT_META, loadMeta, saveMeta } from '../src/util/save.js'
 // throws) — the convention every pure module satisfies.
 import { TILE, TILE_PROPS, isTankPassable, isBulletPassable, isDestructible } from '../src/config/tiles.js'
 import { stageConfig, hardShare, bulletSpeedScale, spawnIntervalScale, BRICK_DENSITY_MAX, STEEL_DENSITY_MAX, WATER_DENSITY_MAX, TREES_DENSITY_MAX, ICE_DENSITY_MAX, TOTAL_ENEMIES_MAX, BULLET_SPEED_SCALE_MAX } from '../src/config/stages.js'
-import { generateStage, tankFits, isFortApproachWindow, windowCenter, FOOTPRINT } from '../src/world/LevelGenerator.js'
+import { generateStage, tankFits, isFortApproachWindow, windowCenter, FOOTPRINT, STAGE_MOTIFS, selectMotif, MOTIF_PARAMS } from '../src/world/LevelGenerator.js'
 // F4 PURE modules (D1/D5/D11): the tank roster + the active-run owner. Importing them here under node
 // RE-PROVES their purity (a stray `import 'phaser'` throws) — the convention every pure module satisfies.
 import { ENEMY_ARCHETYPES, ENEMY_SPECS, BASIC, FAST, POWER, ARMOR, BOSS, bossSpecForStage, PLAYER_BASE, PLAYER_STAR_TIERS, applyStarTier, rosterPick } from '../src/config/tanks.js'
@@ -262,6 +262,13 @@ function bfsReachesFort(desc, startCol, startRow) {
 function checkDescription(desc, cfg, label) {
   const { tiles, cols, rows, base, enemySpawns, playerSpawns } = desc
 
+  // ── F7 AC1/AC2: the emitted layout MOTIF is one of the known STAGE_MOTIFS. Since the motif is chosen INSIDE
+  // generateStage (off the off-the-main-thread sub-RNG) and only reshapes the NON-reserved scatter, every
+  // invariant re-derived below (enclosure + footprint-BFS reachability + the scatterCells ceiling) covers the
+  // EMITTED tiles FOR THIS MOTIF — so this one assertion + the existing checks prove AC2 for every motif the
+  // sweep produces with ZERO new proof code (a motif that sealed a corridor or exposed the eagle FAILS loudly). ──
+  if (typeof desc.motif !== 'string' || !STAGE_MOTIFS.includes(desc.motif)) fail(`${label}: desc.motif '${desc.motif}' is not one of STAGE_MOTIFS [${STAGE_MOTIFS.join(',')}] (F7 AC1)`)
+
   // ── AC6 bounds — grid dims + valid TILE ints. ──
   if (cols !== GRID_COLS || rows !== GRID_ROWS) fail(`${label}: grid is ${cols}x${rows}, expected ${GRID_COLS}x${GRID_ROWS}`)
   if (tiles.length !== rows) fail(`${label}: tiles has ${tiles.length} rows, expected ${rows}`)
@@ -334,21 +341,51 @@ function checkDescription(desc, cfg, label) {
   }
 }
 
-// ── The sweep (AC4/AC5/AC6/AC7/AC8). N seeds × K stages, incl. a boss stage (BOSS_STAGE_EVERY-1). ──
+// ── The sweep (AC4/AC5/AC6/AC7/AC8 + F7 AC1/AC2/AC3). N seeds × K stages, incl. a boss stage (BOSS_STAGE_EVERY-1). ──
 const SWEEP_SEEDS = 200
 const SWEEP_STAGES = [0, 1, 2, 3, BOSS_STAGE_EVERY - 1, 7, 12] // includes the first boss stage (index 4).
+const SWEEP_MOTIFS = new Set() // F7 (AC1) — the distinct motifs the sweep exercises (≥ 2 → the shape space is used).
 for (let i = 0; i < SWEEP_SEEDS; i++) {
   // Spread the seeds across the 32-bit space (the same shape the reference's sweep uses).
   const seed = (i * 0x9e3779b1) >>> 0
   for (const stageIndex of SWEEP_STAGES) {
     const cfg = stageConfig(stageIndex)
     const label = `seed=${seed} stage=${stageIndex}`
-    // (a) Determinism (AC4) — two generations DEEP-EQUAL.
+    // (a) Determinism (AC4 + F7 AC3 — the deep-equal now includes `motif`) — two generations DEEP-EQUAL.
     const d1 = generateStage(seed, cfg)
     const d2 = generateStage(seed, cfg)
-    if (!deepEqual(d1, d2)) fail(`${label}: generateStage is non-deterministic (two calls differ, AC4)`)
-    // (b–e) Bounds / enclosure / reachability / spawn validity (AC6/AC7/AC8) — RE-derived.
+    if (!deepEqual(d1, d2)) fail(`${label}: generateStage is non-deterministic (two calls differ, AC4/F7-AC3)`)
+    // (b–e) Bounds / enclosure / reachability / spawn validity (AC6/AC7/AC8) + F7 known-motif (AC1/AC2) — RE-derived.
     checkDescription(d1, cfg, label)
+    // F7 (AC1/AC3): selectMotif is DETERMINISTIC (two calls → the same id) AND agrees with the id generateStage
+    // emitted (the generator selects via the SAME selectMotif off the SAME seed — DRY, one source of truth).
+    const m1 = selectMotif(seed, cfg)
+    const m2 = selectMotif(seed, cfg)
+    if (m1 !== m2) fail(`${label}: selectMotif non-deterministic (${m1} !== ${m2}) — F7 AC3`)
+    if (m1 !== d1.motif) fail(`${label}: selectMotif ${m1} != desc.motif ${d1.motif} (the generator must use selectMotif) — F7 AC1`)
+    SWEEP_MOTIFS.add(d1.motif)
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// 6a) F7 STAGE MOTIFS — the shape space is exercised + selectMotif is total (F7 §7, D1/D2, AC1/AC3).
+// STAGE_MOTIFS has ≥ 3 known ids, each backed by a MOTIF_PARAMS row; the sweep above exercised ≥ 2 distinct
+// motifs (no dead / collapsed shape space — the reference's "shape space is used" check); and selectMotif is
+// TOTAL — even a degenerate all-zero-weights roster returns a known id (never undefined), the float-rounding fallback.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+{
+  if (!(STAGE_MOTIFS.length >= 3)) fail(`motifs: STAGE_MOTIFS has ${STAGE_MOTIFS.length} ids, expected ≥ 3 (F7 AC1)`)
+  for (const m of STAGE_MOTIFS) {
+    if (!MOTIF_PARAMS[m]) fail(`motifs: STAGE_MOTIFS id '${m}' has no MOTIF_PARAMS row (F7 D1)`)
+  }
+  if (!(SWEEP_MOTIFS.size >= 2)) fail(`motifs: the sweep exercised only ${SWEEP_MOTIFS.size} distinct motif(s), expected ≥ 2 (dead/collapsed shape space — F7 AC1)`)
+  // selectMotif totality (F7 AC3): a degenerate all-zero-weights roster falls through to a KNOWN id (never
+  // undefined — the reference's float-rounding fallback). Also an empty override falls back to the default mix.
+  {
+    const zero = selectMotif(0xdecaf, { ...stageConfig(0), motifWeights: [{ id: 'open', w: 0 }, { id: 'fortress', w: 0 }] })
+    if (!STAGE_MOTIFS.includes(zero)) fail(`motifs: selectMotif({all-zero weights}) returned unknown id '${zero}' (F7 AC3)`)
+    const empty = selectMotif(0xdecaf, { ...stageConfig(0), motifWeights: [] })
+    if (!STAGE_MOTIFS.includes(empty)) fail(`motifs: selectMotif({empty weights}) returned unknown id '${empty}' (F7 AC3)`)
   }
 }
 
@@ -361,10 +398,14 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
 {
   const PIN_SEED = 0x1234abcd
   const PIN_STAGE = 2
-  // The COMPUTED reference (from a one-off run of the REAL generateStage — D10):
+  // The COMPUTED reference (from a one-off run of the REAL generateStage — D10/F7-D8). RE-PINNED for F7: the
+  // motif reshapes the step-5 scatter THRESHOLDS, so the PIN_TILES grid + PIN_MOTIF move; the base/spawn coords
+  // + scatterCells + isBoss are BYTE-UNCHANGED (the motif touches ONLY the non-reserved scatter, not the
+  // spawn/base geometry, and still draws one rng()+places ≤1 tile per eligible cell — so scatterCells holds).
   const PIN_TILES =
-    '0010100001000|0050000000000|0010000304100|0003100000200|0000000000000|0000000201000|0000000010000|0000300000400|0004400202200|0000000000000|0000000000000|0000411000000|3000416100051'
+    '0014100001400|0022300000200|0010400142100|0001100000100|0000000000300|0000500101000|0000000310000|0000100050100|0002100101100|0000000000000|0000000000000|0300111200050|1000116100021'
   const PIN_SCATTER = 77
+  const PIN_MOTIF = 'fortress' // F7 (D8) — the seed-chosen motif at the pinned (seed, stage), computed from the real output.
   const PIN_BASE = [6, 12, 520, 672]
   const PIN_ENEMY = [['enemyL', 0, 0, 232, 96], ['enemyC', 5, 0, 472, 96], ['enemyR', 11, 0, 760, 96]]
   const PIN_PLAYER = [['p1', 2, 11, 328, 624], ['p2', 8, 11, 616, 624]]
@@ -374,6 +415,7 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
   const tileStr = d.tiles.map((row) => row.join('')).join('|')
   if (tileStr !== PIN_TILES) fail(`pin: tile grid drifted\n  got: ${tileStr}\n  exp: ${PIN_TILES}`)
   if (d.scatterCells !== PIN_SCATTER) fail(`pin: scatterCells = ${d.scatterCells}, expected ${PIN_SCATTER}`)
+  if (d.motif !== PIN_MOTIF) fail(`pin: motif = ${d.motif}, expected ${PIN_MOTIF} (F7 D8)`)
   if (!deepEqual([d.base.col, d.base.row, d.base.x, d.base.y], PIN_BASE)) fail(`pin: base drifted`)
   if (!deepEqual(d.enemySpawns.map((s) => [s.which, s.col, s.row, s.x, s.y]), PIN_ENEMY)) fail(`pin: enemy spawns drifted`)
   if (!deepEqual(d.playerSpawns.map((s) => [s.which, s.col, s.row, s.x, s.y]), PIN_PLAYER)) fail(`pin: player spawns drifted`)
@@ -753,7 +795,9 @@ console.log(
     `save clone-no-alias; tiles TILE_PROPS total + helpers read the table; ` +
     `stages monotonic over stageConfig(0..${STAGE_K}) (densities+counts+hardShare+boss cadence + F4 bulletSpeed/spawnInterval ramps, D16/F4-AC6); ` +
     `stage sweep ${SWEEP_SEEDS} seeds × ${SWEEP_STAGES.length} stages — determinism + bounds (≤scatterCells, D14) + ` +
-    `eagle enclosed&reachable (footprint BFS, D15) + spawn validity & window-center pin (D13); regression pin (D10); ` +
+    `eagle enclosed&reachable (footprint BFS, D15) + spawn validity & window-center pin (D13); ` +
+    `F7 motifs known/deterministic + selectMotif total + shape-space-used (${SWEEP_MOTIFS.size} distinct) (F7 AC1/AC2/AC3); ` +
+    `regression pin (D10, F7-repinned +motif); ` +
     `F4 roster well-formed + 4 types distinct + rosterPick known/deterministic + applyStarTier monotone + ` +
     `F6 BOSS well-formed (heavier-than-armor HP + telegraph>0 + heavier-fire bulletSpeed≥POWER/fireCooldown≤BASIC) + ` +
     `bossSpecForStage monotone/never-weaker/fire-unscaled + boss absent from roster (D3) + balance guards ` +

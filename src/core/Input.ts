@@ -34,9 +34,16 @@ export interface PlayerIntent {
 
 // The per-frame snapshot Input.sample() returns: BOTH players, ALWAYS (Decision 2/AC8). The scene gates
 // whether P2 is spawned/driven; Input itself never branches on the player count.
+//
+// F7 (Rich playability §5.3, D4, AC4) — the snapshot also carries a `pausePressed` EDGE: a JustDown over the
+// P key OR the ESC key. P/ESC are NEITHER player's move/fire keys (D4), so adding the edge is conflict-free —
+// Input still returns both players' intents. GameScene reads it to OPEN pause; the overlay binds its OWN
+// keydown-P/ESC to CLOSE, and GameScene._closePause() calls consumePause() to swallow the pending edge so the
+// close-press cannot re-open pause (or leak a fire) on the resume frame (the reference's consumePause race fix).
 export interface InputSnapshot {
   p1: PlayerIntent
   p2: PlayerIntent
+  pausePressed: boolean // F7 (D4/AC4) — a JustDown EDGE over P/ESC (sole-owned here, like the fire edges).
 }
 
 export class Input {
@@ -63,13 +70,35 @@ export class Input {
       p2Left: KC.LEFT,
       p2Right: KC.RIGHT,
       p2Fire: KC.NUMPAD_ZERO,
+      // F7 (D4/AC4) — the PAUSE toggle keys (P + ESC). NEITHER is a player move/fire key, so the edge is
+      // conflict-free; GameScene reads the JustDown edge to open pause. The overlay binds its OWN keydown-P/ESC
+      // to CLOSE (the Phaser event bus, separate from these JustDown flags), and consumePause() swallows the
+      // pending edge on the resume frame (the close→reopen race fix — D4).
+      pauseP: KC.P,
+      pauseEsc: KC.ESC,
     }) as Record<string, Phaser.Input.Keyboard.Key>
   }
 
   // Build ONE intent snapshot for this frame. Called EXACTLY once per GameScene.update (AC2). A pure
   // read of key state → no gameplay side effects. Each fire JustDown is read here and ONLY here.
+  //
+  // F7 (D4/AC4) — also samples the PAUSE edge: a JustDown over P OR ESC (the sole-owner discipline, like the
+  // fire edges). BOTH JustDowns are read EVERY frame (not short-circuited) so neither key's internal _justDown
+  // flag stays latched — then OR'd. The scene reads `pausePressed` to OPEN pause; consumePause() can clear a
+  // pending edge so the overlay's own close-press cannot re-open pause on the resume frame (the race fix, D4).
   sample(): InputSnapshot {
-    return { p1: this.readPlayer('p1'), p2: this.readPlayer('p2') }
+    const pP = Phaser.Input.Keyboard.JustDown(this.keys.pauseP)
+    const pE = Phaser.Input.Keyboard.JustDown(this.keys.pauseEsc)
+    return { p1: this.readPlayer('p1'), p2: this.readPlayer('p2'), pausePressed: pP || pE }
+  }
+
+  // ── consumePause() (F7 §5.3, D4, AC4 — the close→reopen race fix) ── swallow any PENDING P/ESC JustDown edge
+  // so the overlay's own keydown-P/ESC close-press (which Phaser dispatches BEFORE scene.update) cannot be
+  // re-sampled by sample() and re-open pause on the SAME resume frame. Reads both JustDowns to clear both
+  // latched flags (the reference's consumePause). Called by GameScene._closePause(). Idempotent + side-effect-only.
+  consumePause(): void {
+    Phaser.Input.Keyboard.JustDown(this.keys.pauseP)
+    Phaser.Input.Keyboard.JustDown(this.keys.pauseEsc)
   }
 
   // Read one player's held cardinals + derived dirX/dirY + the sole-owned fire edge (Decision 3, AC1/AC2).

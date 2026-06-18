@@ -1,19 +1,29 @@
 import Phaser from 'phaser'
+import { UI_FONT } from '../config/constants.js'
 
-// ── Pooled spark FX (F3 Combat & terrain §5.2, Decision D9, AC7) ──
+// ── Pooled spark + floating-number FX (F3 Combat & terrain §5.2 + F7 Rich playability §5.4, Decisions D9/D5, AC7/AC5) ──
 // Phaser-COUPLED — owns GameObjects — so (like the read-only `dead-cell` reference's
 // effects/ParticlePool.ts) it is NEVER imported by scripts/verify-gen.mjs (the pure/coupled split, AC11).
 // A TRIMMED port of the reference's pool: it keeps the proven SHAPE — a FIXED pool of small spark
 // rectangles pre-created ONCE in the constructor, flat parallel Float32Array state (no per-spark object in
 // the hot path), a rotating free-slot cursor, a REAL-dt tick (gravity arc + exponential drag, scale/alpha =
-// life ratio) — but DROPS the reference's floating damage-number Text pool (F3 shows no damage numbers —
-// YAGNI, D9). ZERO per-burst allocation after warm-up, so sustained firing shows no GC stutter (AC7).
+// life ratio). F3 DROPPED the reference's floating-number Text pool (no damage numbers — YAGNI); F7 ADDS IT
+// BACK, trimmed, repurposed as a SCORE popup (the "+N" a kill banks — D5/AC5): a small FIXED pool of Text that
+// rises + fades over a short lifetime, ported from the reference's spawnNumber but with a fixed gold colour
+// (no crit colours — Tank 1990 has none). ZERO per-pop allocation after warm-up (AC7) — setText is the one
+// canvas redraw, only on (re)spawn.
 //
-// dt (Decision D9/D10): this ticks on REAL dt — the impact "pops" even if the world were FROZEN by the
-// later clock power-up (the freeze stops the WORLD, never the FX). GameScene passes the real dt (D10).
+// dt (Decision D9/D10): this ticks on REAL dt — the impact "pops" (and the score "+N" rises) even if the world
+// were FROZEN by the clock power-up / a pause (the freeze stops the WORLD, never the FX). GameScene passes the real dt.
 
 const SPARK_GRAVITY = 900 // px/s² — sparks arc down so the burst reads as debris (copied from the reference).
 const SPARK_DRAG = 2.4 // 1/s — exponential velocity decay so sparks slow as they fade.
+const NUMBER_RISE = 70 // px/s — floating SCORE numbers drift UP (F7 D5 — the reference's value).
+const NUMBER_LIFE = 0.7 // s — how long a score number lives before returning to the pool (F7 D5).
+
+// A pooled floating-number's lifetime state + the Text it drives (F7 D5 — the reference's NumberText shape).
+type NumberFx = { active: boolean; life: number; maxLife: number }
+type NumberText = Phaser.GameObjects.Text & { fx: NumberFx }
 
 export class ParticlePool {
   private scene: Phaser.Scene
@@ -28,10 +38,14 @@ export class ParticlePool {
   private _sactive: boolean[]
   private _sscale: Float32Array
   private _sNext: number
+  // F7 (D5) — the floating SCORE-number pool (a small fixed pool of reused Text; canvas redraw only on spawn).
+  private numberCap: number
+  private _numbers: NumberText[]
+  private _nNext: number
 
-  // scene: the GameScene. sparkCap: pool high-water (sized for the worst-case concurrent on-screen bursts;
-  // if exhausted the rotating cursor recycles the oldest so we NEVER allocate mid-combat — AC7).
-  constructor(scene: Phaser.Scene, { sparkCap = 96 }: { sparkCap?: number } = {}) {
+  // scene: the GameScene. sparkCap/numberCap: pool high-water (sized for the worst-case concurrent on-screen
+  // bursts/pops; if exhausted the rotating cursor recycles the oldest so we NEVER allocate mid-combat — AC7).
+  constructor(scene: Phaser.Scene, { sparkCap = 96, numberCap = 16 }: { sparkCap?: number; numberCap?: number } = {}) {
     this.scene = scene
 
     // ── Spark pool ── flat parallel state (no per-spark object in the hot path), members built ONCE here.
@@ -52,6 +66,22 @@ export class ParticlePool {
       const r = scene.add.rectangle(0, 0, 6, 6, 0xffffff).setVisible(false).setDepth(50)
       this._sparks.push(r)
     }
+
+    // ── F7 (D5/AC5) — the floating SCORE-number pool ── reused Text objects (the canvas redraw — setText — is
+    // the ONLY expensive call and it happens once per pop, never per frame). Programmer-art TEXT only (no asset,
+    // AC5). Depth ABOVE the sparks so a "+N" reads over the kill burst. Parked invisible until acquired.
+    this.numberCap = numberCap
+    this._numbers = []
+    for (let i = 0; i < numberCap; i++) {
+      const t = scene.add
+        .text(0, 0, '', { fontFamily: UI_FONT, fontSize: '22px', color: '#feca57', fontStyle: 'bold' })
+        .setOrigin(0.5)
+        .setVisible(false)
+        .setDepth(60) as NumberText
+      t.fx = { active: false, life: 0, maxLife: NUMBER_LIFE }
+      this._numbers.push(t)
+    }
+    this._nNext = 0
   }
 
   // ── Emit a spark burst at (x,y) — a NO-ALLOC reuse of pooled slots (AC7). count + color + speed scale
@@ -87,8 +117,34 @@ export class ParticlePool {
     }
   }
 
-  // ── Advance every live spark on REAL dt (D9/D10, AC7); return finished ones to the pool. Integrate
-  // velocity (gravity + exponential drag), shrink + fade by the life ratio. NO steady-state allocation. ──
+  // ── spawnNumber(x, y, value, opts?) (F7 §5.4, D5, AC5 — ported, trimmed) ── pop a floating SCORE "+N" at
+  // (x,y) from the number pool: set its text + colour (a fixed gold by default — no crit colours, Tank 1990 has
+  // none), give it a short rise+fade lifetime the existing tick() advances. The Effects.scorePopup façade calls
+  // this at a kill site. A tiny horizontal jitter so stacked pops don't perfectly overlap (the reference's touch).
+  spawnNumber(
+    x: number,
+    y: number,
+    value: number | string,
+    { color = '#feca57', scale = 1 }: { color?: string; scale?: number } = {},
+  ): void {
+    const slot = this._acquireNumber()
+    const t = this._numbers[slot]
+    t.setText(String(value)) // the ONE canvas redraw — only on spawn (no per-frame setText, AC7).
+    t.setColor(color)
+    t.setFontSize(Math.round(22 * scale))
+    t.setPosition(x + (Math.random() - 0.5) * 12, y)
+    t.setAlpha(1)
+    t.setScale(1)
+    t.setVisible(true)
+    t.setActive(true)
+    t.fx.active = true
+    t.fx.life = NUMBER_LIFE
+    t.fx.maxLife = NUMBER_LIFE
+  }
+
+  // ── Advance every live spark + floating number on REAL dt (D9/D10/F7-D5, AC7/AC5); return finished ones to the
+  // pool. Sparks: integrate velocity (gravity + exponential drag), shrink + fade by the life ratio. Numbers: rise
+  // + fade by the life ratio. NO steady-state allocation. ──
   tick(dt: number): void {
     const drag = Math.exp(-SPARK_DRAG * dt)
     for (let i = 0; i < this.sparkCap; i++) {
@@ -110,6 +166,23 @@ export class ParticlePool {
       r.setAlpha(k)
       r.setScale(this._sscale[i] * k) // shrink via scale (no geometry regen).
     }
+
+    // F7 (D5/AC5) — the floating SCORE numbers: rise + fade by the life ratio, a tiny pop-then-settle scale for
+    // punch (the reference's number tick, trimmed). REAL dt — a pause/clock freeze never pauses the pop.
+    for (const t of this._numbers) {
+      const fx = t.fx
+      if (!fx.active) continue
+      fx.life -= dt
+      if (fx.life <= 0) {
+        fx.active = false
+        t.setVisible(false).setActive(false)
+        continue
+      }
+      const k = fx.life / fx.maxLife // 1 → 0
+      t.y -= NUMBER_RISE * dt
+      t.setAlpha(k)
+      t.setScale(0.9 + 0.25 * k) // starts a touch big, eases down as it fades.
+    }
   }
 
   // Acquire a free spark slot (or recycle the oldest via the rotating cursor — NEVER allocates, AC7).
@@ -126,6 +199,22 @@ export class ParticlePool {
     const i = this._sNext
     this._sNext = (i + 1) % this.sparkCap
     this._sactive[i] = true
+    return i
+  }
+
+  // Acquire a free score-number slot (or recycle the rotating cursor — NEVER allocates, AC7). The reference's
+  // _acquireNumber: scan from the cursor for a free slot; if the pool is full recycle the cursor slot (the
+  // oldest-ish pop is cut short — cosmetic loss only, never a leak).
+  private _acquireNumber(): number {
+    for (let n = 0; n < this.numberCap; n++) {
+      const i = (this._nNext + n) % this.numberCap
+      if (!this._numbers[i].fx.active) {
+        this._nNext = (i + 1) % this.numberCap
+        return i
+      }
+    }
+    const i = this._nNext
+    this._nNext = (i + 1) % this.numberCap
     return i
   }
 }

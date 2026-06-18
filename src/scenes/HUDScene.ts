@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import { UI_FONT, HUD_PANEL_X, PLAYFIELD_X, PLAYFIELD_Y, PLAYFIELD_W, PLAYFIELD_H, TWO_PLAYER } from '../config/constants.js'
+import { UI_FONT, HUD_PANEL_X, HUD_PANEL_WIDTH, PLAYFIELD_X, PLAYFIELD_Y, PLAYFIELD_W, PLAYFIELD_H, TWO_PLAYER } from '../config/constants.js'
 import { t } from '../i18n/index.js'
 
 // ── HUDScene (F0 scaffold §5.3 → F5 §5.4, Decision 4/D-decoupled/D12, AC8/AC9) ──
@@ -12,6 +12,11 @@ import { t } from '../i18n/index.js'
 // scene's lifecycle (launch on create, stop on run end). Programmer-art primitives only (AC11).
 
 const LINE_H = 34 // px — vertical spacing between HUD readout lines.
+// F7 (D6/AC7) — the power-up TIMER BAR geometry (a track rect + a draining fill rect under the power-up line).
+const BAR_W = HUD_PANEL_WIDTH - 16 // px — the bar track width (fits the side panel band with a small inset).
+const BAR_H = 8 // px — the bar height.
+const BAR_TRACK_COLOR = 0x30363d // the dark track behind the fill (the panel-outline grey — programmer-art).
+const BAR_FILL_COLOR = 0xfeca57 // gold — matches the power-up text line.
 
 export class HUDScene extends Phaser.Scene {
   // One fixed Text per readout line (created once in create(), updated in place each frame — DRY, no per-frame
@@ -23,6 +28,11 @@ export class HUDScene extends Phaser.Scene {
   private p1LivesLabel!: Phaser.GameObjects.Text
   private p2LivesLabel!: Phaser.GameObjects.Text
   private powerLabel!: Phaser.GameObjects.Text // the active power-up + its seconds (empty when nothing active).
+  // F7 (D6/AC7): the power-up TIMER BAR — a track rect + a draining fill rect under the power-up text line (both
+  // hidden when no power-up is active). The fill width = BAR_W · clamp(powerSecs / powerMaxSecs, 0, 1). Plus the
+  // panel HEADER + a DIVIDER rule for a cleaner read. ALL registry-decoupled (read the existing hud.* values).
+  private powerBarTrack!: Phaser.GameObjects.Rectangle
+  private powerBarFill!: Phaser.GameObjects.Rectangle
   // F6 (D5/D8, AC3/AC6): the STAGE-N-CLEARED banner (a centered, large, timed text overlay over the playfield —
   // read from the registry; blank when no banner active) + the MUTED cue (shown in the panel while audio is muted).
   private bannerLabel!: Phaser.GameObjects.Text
@@ -44,16 +54,33 @@ export class HUDScene extends Phaser.Scene {
       return txt
     }
 
+    // F7 (D6/AC7) — a panel HEADER + a divider rule under it for a cleaner read (the reference's panel chrome).
+    // The header is a static label (the game name, programmer-art bold); the divider is a thin rectangle. Both
+    // are presentation only (no registry read). They sit ABOVE the readout column.
+    this.add.text(x, y, t('title.heading'), { fontFamily: UI_FONT, fontSize: '22px', color: '#e6edf3', fontStyle: 'bold' })
+    y += LINE_H
+    this.add.rectangle(x, y - 6, BAR_W, 2, BAR_TRACK_COLOR).setOrigin(0, 0.5) // the header divider rule.
+    y += LINE_H / 2
+
     this.stageLabel = make('#8b949e')
     this.scoreLabel = make('#e6edf3')
     this.currencyLabel = make('#4dd0e1') // cyan — the shared meta bank (matches the GameOver banked line).
     this.enemiesLabel = make('#f0932b') // orange — enemies left to clear (the pressure readout).
+    // F7 (D6/AC7) — a divider rule before the lives block (a cleaner panel split).
+    this.add.rectangle(x, y, BAR_W, 2, BAR_TRACK_COLOR).setOrigin(0, 0.5)
     y += LINE_H / 2 // a small gap before the lives block.
     this.p1LivesLabel = make('#58d68d') // green — P1 lives.
     this.p2LivesLabel = make('#58d68d') // green — P2 lives (hidden in 1P).
     this.p2LivesLabel.setVisible(TWO_PLAYER) // AC8 — the P2 line is hidden in a 1-player session.
     y += LINE_H / 2 // a small gap before the active-power-up line.
     this.powerLabel = make('#feca57', '18px') // gold — the active power-up + its remaining seconds (or empty).
+
+    // F7 (D6/AC7) — the power-up TIMER BAR: a dark track + a gold draining fill, created once UNDER the power
+    // line (both hidden until a timed power-up is active). Origin top-LEFT so the fill drains from the left edge
+    // (its width is resized each frame in _render). Programmer-art rectangles (AC11).
+    this.powerBarTrack = this.add.rectangle(x, y, BAR_W, BAR_H, BAR_TRACK_COLOR).setOrigin(0, 0).setVisible(false)
+    this.powerBarFill = this.add.rectangle(x, y, BAR_W, BAR_H, BAR_FILL_COLOR).setOrigin(0, 0).setVisible(false)
+    y += LINE_H / 2 + BAR_H // advance past the bar so the MUTED cue sits below it.
 
     // F6 (D8, AC6) — the MUTED cue, in the panel band below the power line (shown only while audio is muted).
     this.mutedLabel = make('#ff7675', '18px') // soft red — the "MUTED" indicator (or empty).
@@ -111,6 +138,21 @@ export class HUDScene extends Phaser.Scene {
       this.powerLabel.setText(secs > 0 ? t('hud.power', { name, secs }) : t('hud.powerInstant', { name }))
     } else {
       this.powerLabel.setText('')
+    }
+
+    // F7 (D6/AC7) — the power-up TIMER BAR. While a TIMED power-up is active (a kind set + a positive full
+    // duration), show the track + the draining fill (width ∝ powerSecs / powerMaxSecs, clamped 0..1); hide both
+    // otherwise. ALL registry reads (decoupled — no reach into the world). The denominator is the FULL duration
+    // GameScene published (hud.powerMaxSecs). Resize via setSize (no per-frame geometry churn beyond the width).
+    const maxSecs = (r.get('hud.powerMaxSecs') as number | undefined) ?? 0
+    const secs = (r.get('hud.powerSecs') as number | undefined) ?? 0
+    if (kind && maxSecs > 0) {
+      const frac = Phaser.Math.Clamp(secs / maxSecs, 0, 1)
+      this.powerBarTrack.setVisible(true)
+      this.powerBarFill.setVisible(true).setSize(Math.max(0, BAR_W * frac), BAR_H)
+    } else {
+      this.powerBarTrack.setVisible(false)
+      this.powerBarFill.setVisible(false)
     }
 
     // F6 (D5, AC3) — the STAGE-N-CLEARED banner: GameScene publishes the localised "STAGE N CLEARED" string to

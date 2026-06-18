@@ -52,6 +52,10 @@ import type { PowerUpKind } from '../config/powerups.js'
 // via t('hud.stageCleared') and published to the registry for the parallel HUD to render (the decoupling — D5).
 import { Sound } from '../audio/Sound.js'
 import { t } from '../i18n/index.js'
+// ── F7 Rich playability (F7 §5.3) ── the read-only pause overlay (a GameScene-owned modal, NOT a new scene — D3).
+// Phaser-coupled; NEVER imported by the verifier. GameScene news it up on the P/ESC edge + tears it on resume.
+import { PauseOverlay } from '../entities/PauseOverlay.js'
+import type { RunInfo } from '../entities/PauseOverlay.js'
 
 // ── GameScene (F0 §5.3 + F1 §5.4 + F2 §5.4 + F3 Combat & terrain §5.4, Decisions D1/D3/D6/D7/D8/D9/D10/D11,
 // AC1–AC11) ──
@@ -156,6 +160,14 @@ export class GameScene extends Phaser.Scene {
   private bannerTimer = 0
   private bannerStage = 0
 
+  // ── F7 pause state (F7 §5.3, Decisions D3/D4, AC4) ── `paused` gates update()'s gameplay block (the SAME
+  // freeze idiom the gameOver branch uses — while paused the world is FULLY frozen but the FX pool still settles
+  // on REAL dt, NOT a hard return). pauseOverlay is the live read-only modal (null when not paused). Pause is
+  // unavailable once the run ended (gameOver) or mid stage-transition (D3). The close-press P/ESC edge is
+  // consumed via input2.consumePause() so it can't re-open pause / leak a fire on the resume frame (D4).
+  private paused = false
+  private pauseOverlay: PauseOverlay | null = null
+
   constructor() {
     super('Game')
   }
@@ -164,6 +176,12 @@ export class GameScene extends Phaser.Scene {
     // Reset the one-shot guards on (re)entry — a scene restart must start a fresh run (D6/AC10).
     this.gameOver = false
     this.transitioning = false
+    // F7 (D3) — a fresh scene is never paused (a leftover overlay from a prior instance is force-torn defensively).
+    this.paused = false
+    if (this.pauseOverlay) {
+      this.pauseOverlay.close()
+      this.pauseOverlay = null
+    }
 
     // Launch the HUD as a PARALLEL overlay (launch, NOT start, so GameScene keeps running underneath). (F0 AC6.)
     this.scene.launch('HUD')
@@ -525,22 +543,30 @@ export class GameScene extends Phaser.Scene {
     // the kind id through t('power.<kind>'); GameScene only reports the kind + the seconds.
     let activeKind: PowerUpKind | null = null
     let activeSecs = 0
+    // F7 (D6/AC7) — also publish the active power-up's FULL duration so the HUD can draw the timer-bar fraction
+    // (powerSecs / powerMaxSecs). Each kind's full window is its config/powerups.ts constant (DRY — the SAME
+    // constant the _applyPowerUp arm set the timer to). One extra registry write; the bar fraction is decoupled.
+    let activeMaxSecs = 0
     if (this.runState.freezeTimer > 0) {
       activeKind = 'clock'
       activeSecs = this.runState.freezeTimer
+      activeMaxSecs = CLOCK_FREEZE_SEC
     } else if (this.runState.shovelTimer > 0) {
       activeKind = 'shovel'
       activeSecs = this.runState.shovelTimer
+      activeMaxSecs = SHOVEL_FORTIFY_SEC
     } else {
       let maxShield = 0
       for (const slot of this.playerTanks.keys()) maxShield = Math.max(maxShield, this.runState.shieldTimer[slot] ?? 0)
       if (maxShield > 0) {
         activeKind = 'helmet'
         activeSecs = maxShield
+        activeMaxSecs = HELMET_SHIELD_SEC
       }
     }
     r.set('hud.powerKind', activeKind) // the active power-up kind id (or null — the HUD keys t('power.<kind>') off it).
     r.set('hud.powerSecs', Math.ceil(activeSecs)) // whole seconds remaining (the HUD readout — POWERUP_BY_ID is timed).
+    r.set('hud.powerMaxSecs', activeMaxSecs) // F7 (D6/AC7) — the active power-up's FULL duration (the bar denominator).
 
     // F6 (D5/D8, AC3/AC6) — the STAGE-N-CLEARED banner string (localised while the timer is live, else '') + the
     // MUTED cue. The banner is presentation state → the registry is its home (the HUD renders it timed — D5). The
@@ -667,6 +693,15 @@ export class GameScene extends Phaser.Scene {
     if (this.gameOver) return // one-shot guard — the SECOND edge of a same-frame double-trigger early-returns.
     this.gameOver = true
 
+    // F7 (D3) — defensively force-close the pause overlay if the run somehow ends while paused (it cannot via the
+    // gated input edge, but a deferred death callback could race a pause). Tear WITHOUT firing onClose's consume
+    // (the scene is going to GameOver — no resume frame to protect). Idempotent.
+    if (this.pauseOverlay) {
+      this.pauseOverlay.close()
+      this.pauseOverlay = null
+    }
+    this.paused = false
+
     this.sfx.gameOver() // F6 (D6/AC6) — the run-end knell (the single owner, under the one-shot guard).
 
     // Bank the run ONCE (F5 §5.3, D8/AC5) — the single writer under the gameOver guard. `stage` is the human
@@ -689,6 +724,48 @@ export class GameScene extends Phaser.Scene {
         bestStage: this.meta.getBestStage(),
       }),
     )
+  }
+
+  // ── _openPause() (F7 §5.3, D3/D4, AC4) ── open the read-only pause modal + FREEZE the world. Set `paused`
+  // (update()'s gameplay block early-returns while it's set — the SAME freeze idiom as the gameOver branch),
+  // then news the overlay with a getInfo() that returns a run snapshot read ONCE (the world is frozen, so it
+  // can't change while paused — KISS) + an onClose = _closePause. Guarded so a second open while paused is a
+  // no-op (update() already gates the open on !this.paused, but the guard is belt-and-braces). NO new scene (D3).
+  private _openPause(): void {
+    if (this.paused || this.gameOver || this.transitioning) return
+    this.paused = true
+    this.sfx.uiSelect() // a small pause blip (the one audio owner — DRY; a no-op under NoAudio).
+    this.pauseOverlay = new PauseOverlay(this, {
+      getInfo: () => this._getRunInfo(),
+      onClose: () => this._closePause(),
+    })
+  }
+
+  // ── _closePause() (F7 §5.3, D4, AC4 — the resume + the close→reopen race fix) ── tear the overlay, clear
+  // `paused` (update() resumes its gameplay block next frame), and CONSUME the pending P/ESC edge so the
+  // overlay's own close-press cannot be re-sampled by update()'s input2.sample() and re-open pause (or leak a
+  // fire) on the SAME resume frame (the reference's consumePause discipline — D4). Idempotent (the overlay's
+  // own close() + the cleared ref guard re-entry). Called by the overlay's onClose AND the run-end/teardown paths.
+  private _closePause(): void {
+    if (this.pauseOverlay) {
+      this.pauseOverlay.close() // force-tear (idempotent — the overlay's _destroyed guard absorbs a double).
+      this.pauseOverlay = null
+    }
+    this.paused = false
+    this.input2.consumePause() // swallow the pending P/ESC JustDown edge (the close→reopen race fix — D4).
+  }
+
+  // ── _getRunInfo() (F7 §5.3, D3) ── assemble the read-only run snapshot the pause overlay renders (the
+  // reference's getBuild idiom — GameScene owns the run data, the overlay only formats). Read ONCE on open (the
+  // world is frozen). enemiesLeft is the live ledger; p2Lives is -1 in solo (the overlay hides that line).
+  private _getRunInfo(): RunInfo {
+    return {
+      stage: this.runState.stageIndex + 1,
+      score: this.runState.score,
+      enemiesLeft: this.runState.enemiesRemaining,
+      p1Lives: this.runState.lives[1] ?? 0,
+      p2Lives: TWO_PLAYER ? this.runState.lives[2] ?? 0 : -1,
+    }
   }
 
   // ── _spawnStep(gdt) (F4 §5.3/§5.4, Decisions D8, AC1/AC2/AC7) — the staggered/capped spawn loop ──
@@ -770,6 +847,10 @@ export class GameScene extends Phaser.Scene {
   // hid + disabled the corpse; we remove it from the live list (its body is torn down on the stage teardown).
   private _onEnemyKilled(enemy: Tank): void {
     this.effects.explosion(enemy.collider.x, enemy.collider.y, { big: true }) // the kill burst at the tank center.
+    // F7 (D5/AC5) — the floating "+N" SCORE popup at the kill center (N = the killed tank's scoreValue), in
+    // ADDITION to the kill burst. The boss routes through THIS funnel, so its big scoreValue pops for FREE (DRY).
+    // Only KILLS call this — brick chips / bullet cancels never spawn a popup (the AC5 "kills only" discipline).
+    this.effects.scorePopup(enemy.collider.x, enemy.collider.y, enemy.spec.scoreValue)
     this.sfx.explosion({ big: true }) // F6 (D6/AC6) — a big burst on an enemy/boss kill (the boss routes here too).
     this.runState.score += enemy.spec.scoreValue // bank the score (D10 — the HUD/Hub features render/spend it).
     this.runState.enemiesAlive = Math.max(0, this.runState.enemiesAlive - 1)
@@ -927,12 +1008,29 @@ export class GameScene extends Phaser.Scene {
     // the readouts (lives/enemies/stage/score/currency/active power-up + its seconds) stay live.
     this._publishHud()
 
-    // Sample the SINGLE Input owner ONCE this frame (AC2 — the sole JustDown owner for the fire edges).
+    // Sample the SINGLE Input owner ONCE this frame (AC2 — the sole JustDown owner for the fire edges + the F7
+    // pause edge). Reading once keeps the JustDown flags consistent (the sole-owner invariant).
     const s = this.input2.sample()
+
+    // ── F7 pause (F7 §5.3, D3/D4, AC4) ── on the P/ESC edge, when NOT gameOver/transitioning/already-paused,
+    // OPEN the pause modal + freeze the world. Done BEFORE the gameOver early-return so pause is inert once the
+    // run has ended (D3). _openPause re-guards the same conditions.
+    if (!this.gameOver && !this.transitioning && !this.paused && s.pausePressed) {
+      this._openPause()
+    }
 
     // Once the run ended, FREEZE the world (no driving / firing / travel / collision resolution) but keep
     // ticking the FX on REAL dt so the final kill burst + the flash settle before the scene swaps (D6/AC7).
     if (this.gameOver) {
+      this.effects.tick(dt)
+      return
+    }
+
+    // ── F7 (D3/AC4) — while PAUSED, the world is FULLY frozen: no tank drives/fires, no enemy spawns/ticks, no
+    // bullet travels, no collision resolves — but the FX pool still settles on REAL dt (the same frozen-FX
+    // discipline as the gameOver branch, NOT a hard return), so the kill burst that was on-screen at the pause
+    // finishes cleanly. The overlay renders on top (camera-fixed). update() early-returns its gameplay block.
+    if (this.paused) {
       this.effects.tick(dt)
       return
     }

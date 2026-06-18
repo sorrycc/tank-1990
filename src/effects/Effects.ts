@@ -46,6 +46,15 @@ export class Effects {
     this.scene.cameras.main.shake(SHAKE_MS, SHAKE_INTENSITY * (big ? KILL_SHAKE_MULT : 1))
   }
 
+  // ── scorePopup(x, y, value) (F7 §5.4, D5, AC5 — the kill JUICE) ── a floating "+N" SCORE popup at a tank/boss
+  // KILL, reusing the pooled floating-number primitive. Trimmed from the reference's hit(): NO damage/crit/
+  // hit-stop (Tank 1990 banks SCORE, not damage — YAGNI), NO shake here (the kill's explosion({big}) already
+  // shook). Just the number — gold (the HUD's '#feca57'), floated a touch ABOVE the kill center so it reads over
+  // the burst. ONE call site per kill (GameScene._onEnemyKilled); brick chips / bullet cancels do NOT call it (AC5).
+  scorePopup(x: number, y: number, value: number): void {
+    this.pool.spawnNumber(x, y - 18, `+${value}`, { color: '#feca57' })
+  }
+
   // Forward the per-frame tick to the pool. REAL dt (the freeze must not pause the pop — D9/D10).
   tick(dt: number): void {
     this.pool.tick(dt)
