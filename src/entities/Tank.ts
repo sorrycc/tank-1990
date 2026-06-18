@@ -65,6 +65,11 @@ const TREAD_W = 5 // px — width of each side tread strip (across facing).
 const TREAD_COLOR = 0x2d3436 // dark slate tread (the dark "track" band down each side — reads against any hull).
 const TURRET_SIZE = TANK_SIZE * 0.42 // px — the small centered turret block.
 const TURRET_COLOR = 0xf5f6fa // a light turret cap so the body center reads (distinct from the hull fill).
+// A brief per-hit hull flash so a multi-hit tank (ARMOR, boss) reads each surviving hit (combat progress).
+// A LOCAL render constant (owned by this ONE file — render-only feel, not shared, so it stays out of the
+// constants.ts owner / the verifier-imported path, exactly like the HULL_INSET/TREAD_W locals above — D6/D4).
+const HIT_FLASH_SEC = 0.08 // s — the white-tint pop on a NON-lethal hit (decays in update; restores spec.color).
+const HIT_FLASH_COLOR = 0xffffff // the white flash tint (programmer-art primitive — like the telegraph fill).
 
 export class Tank {
   scene: Phaser.Scene
@@ -132,6 +137,11 @@ export class Tank {
   telegraphing: boolean // true while a shot is winding up (the render cue blinks the warning fill — issue #4).
   private telegraphTimer: number // s — decays by dt while telegraphing; at ≤ 0 the held shot fires (updateAI).
 
+  // ── Per-hit hull flash (D2/D3) ── armed by onHit on a NON-lethal hit (hp > 0 after subtraction); decays
+  // by dt in update while the hull tints white (the carrier/telegraph fill-cue pattern, a third gated branch).
+  // > 0 = flashing. Every multi-hit tank (ARMOR, boss) gets it for free through the one onHit funnel (DRY).
+  private hitFlashTimer: number // s — decays by dt; while > 0 the hull tints HIT_FLASH_COLOR (then restores).
+
   constructor(scene: Phaser.Scene, x: number, y: number, side: TankSide, spec: TankSpec) {
     this.scene = scene
     this.side = side
@@ -167,6 +177,9 @@ export class Tank {
     this.telegraphSec = spec.telegraphSec ?? 0
     this.telegraphing = false
     this.telegraphTimer = 0
+
+    // Per-hit hull flash (D2) — a fresh tank carries no flash (armed only by a surviving onHit).
+    this.hitFlashTimer = 0
 
     const fill = spec.color // F4 (D1): the body fill is the spec's colour (per-type distinct).
 
@@ -312,6 +325,17 @@ export class Tank {
       const warn = Math.floor(this.scene.time.now / 100) % 2 === 0 // ~5 Hz blink.
       this.hull.setFillStyle(warn ? TELEGRAPH_FILL : this.spec.color) // body warns; resting fill between blinks (F8: the hull child).
       this.barrel.setFillStyle(warn ? TELEGRAPH_FILL : BARREL_COLOR) // the barrel co-warns (the "charging" cue).
+    }
+
+    // Per-hit hull FLASH (D2/D3) — a THIRD gated fill-cue branch in the SAME if/else chain, so at most one cue
+    // writes the hull per frame. Armed by onHit on a NON-lethal hit; decays on dt, tinting the hull white while
+    // > 0, restoring spec.color the frame it elapses. Gated on spawnIframe <= 0 (does NOT run during the spawn-
+    // blink, which owns the alpha cue) + touches ONLY setFillStyle (never setAlpha), so it can never fight the
+    // blink — the SAME discipline the carrier/telegraph branches above document. Gives every multi-hit tank
+    // (ARMOR, boss) per-hit feedback for free through the one onHit funnel (DRY).
+    else if (this.hitFlashTimer > 0 && this.spawnIframe <= 0) {
+      this.hitFlashTimer = Math.max(0, this.hitFlashTimer - dt)
+      this.hull.setFillStyle(this.hitFlashTimer > 0 ? HIT_FLASH_COLOR : this.spec.color) // white pop; restores on elapse.
     }
   }
 
@@ -505,6 +529,7 @@ export class Tank {
     if (this.hp <= 0) {
       this.hp = 0
       this.alive = false
+      // (a lethal hit takes the death path below — no flash; the kill explosion is its feedback — D2.)
       // Hide the visible silhouette (the corpse) — the scene's onDeath wiring pops the kill explosion + decides
       // respawn-vs-stay-down. A respawnAt re-shows it. Park the physics body so a stray overlap can't match.
       // F8 (D1): setVisible on the CONTAINER hides every child (hull/treads/turret/barrel) in one call; the
@@ -514,6 +539,10 @@ export class Tank {
       this.body.setVelocity(0, 0)
       this.body.enable = false
       this.onDeath?.()
+    } else {
+      // Survived the hit (hp > 0 — an ARMOR/boss multi-hit, D2) — arm the brief white hull flash so the player
+      // reads the landed hit (update() decays it + tints the hull). Free for EVERY multi-hit tank via this funnel.
+      this.hitFlashTimer = HIT_FLASH_SEC
     }
   }
 
@@ -536,6 +565,7 @@ export class Tank {
     this.cooldownTimer = 0
     this.telegraphing = false // F6 — a fresh spawn starts with no shot winding up (defensive; the boss never respawns).
     this.telegraphTimer = 0
+    this.hitFlashTimer = 0 // a fresh spawn clears any pending hit flash (defensive; the hull fill is reset below).
     // F8 (§5.1): re-show + reposition the container; restore full alpha + reset the fill cues so a respawn clears
     // any mid-telegraph/carrier-flash tint (defensive — the hull/barrel rest at spec.color/BARREL_COLOR).
     this.rect.setPosition(x, y).setVisible(true).setAlpha(1)

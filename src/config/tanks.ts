@@ -198,8 +198,8 @@ export const PLAYER_BASE: TankSpec = {
   bulletSpeed: BULLET_SPEED,
   fireCooldown: FIRE_COOLDOWN,
   maxBullets: MAX_PLAYER_BULLETS,
-  color: 0x6ab04c, // the green player tank (programmer-art — AC11).
-  colorFlash: 0x6ab04c, // a player never red-flashes (it is never a carrier); the same fill keeps it green.
+  color: 0xf6d860, // the tan/yellow player tank (programmer-art — AC11; distinct from the POWER green gunner).
+  colorFlash: 0xf6d860, // a player never red-flashes (it is never a carrier); the same fill keeps it tan.
   scoreValue: 0, // a player is never "killed for points".
 }
 
