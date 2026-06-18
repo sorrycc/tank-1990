@@ -1,0 +1,179 @@
+import Phaser from 'phaser'
+import {
+  BULLET_SPEED,
+  PLAYFIELD_X,
+  PLAYFIELD_Y,
+  PLAYFIELD_W,
+  PLAYFIELD_H,
+} from '../config/constants.js'
+import type { Tank, TankSide, Facing } from '../entities/Tank.js'
+
+// ── Bullet pool (F1 Tank core §5.2/§5.3, Decisions 8/9/12, AC4/AC5/AC9) ──
+// Phaser-COUPLED — owns real Arcade bodies, so (like the read-only `dead-cell` reference's
+// combat/ProjectilePool.ts) it is NEVER imported by scripts/verify-gen.mjs (the pure/coupled split, AC10).
+// It mirrors the reference's pooling DISCIPLINE 1:1 (Decision 8): a FIXED set of pre-created
+// rectangle+body members, acquire/release/releaseAll, ZERO per-shot allocation after warm-up. The
+// reference's per-shot dedup hitSet / 2-D aim / pierce / status / onRelease hook are DROPPED here (YAGNI):
+// F1 has NO collision targets yet — bullets only despawn at the arena bounds. A later combat feature
+// re-adds the dedup/collision plumbing EXACTLY as the reference does, plugging into this same seam.
+//
+// HAND-INTEGRATED TRAVEL (Decision 8, §5.3): tick(dt) advances each live bullet's position OURSELVES
+// (rect.x += vx·dt) on a dt in SECONDS — mirroring the reference so a FUTURE hit-stop can pass dt=0 to
+// freeze every live shot in place. The Arcade body velocity stays 0 (no double-integration); we nudge
+// the body alongside the rect so the out-of-bounds read below is fresh THIS frame.
+//
+// PER-TANK LIVE CAP (Decision 8/12, AC4/AC5): each live bullet stores its `ownerSide` + a back-ref to the
+// firing Tank, so on release the tank's live-bullet count decrements (`owner.onBulletReleased()`) — the
+// classic "you may only have N shots out at once" rule. releaseAll() does NOT fire that callback (a pool
+// rebuild/teardown is not a despawn).
+
+const BULLET_W = 8 // px — programmer-art bullet (a small square, primitives only — AC11).
+const BULLET_H = 8 // px.
+const BULLET_COLOR = 0xf0e68c // light khaki bolt; reads against the dark playfield.
+const MUZZLE_STANDOFF = 6 // px — spawn the bullet a hair ahead of the tank along its facing (no self-overlap).
+
+// The per-bullet context, mutated on acquire (never re-allocated → no per-shot GC, AC9). Carried on the
+// rect's `bx` property (parallels the reference's `pj`).
+interface BulletContext {
+  active: boolean
+  ownerSide: TankSide
+  owner: Tank | null // back-ref so release decrements the firer's live count (AC4/AC5).
+  vx: number // px/s — hand-integrated travel velocity along the firing facing.
+  vy: number
+}
+
+// A pooled rectangle member carries its context on a `bx` property.
+type BulletRect = Phaser.GameObjects.Rectangle & { bx: BulletContext }
+
+export class BulletPool {
+  private scene: Phaser.Scene
+  group: Phaser.Physics.Arcade.Group
+  private _items: BulletRect[]
+
+  // size: the pool high-water mark. Sized well above MAX_PLAYER_BULLETS × 2 players so a dropped shot
+  // (acquire returns null when momentarily exhausted) never happens in normal play — and even then a
+  // dropped shot is cosmetic, never a correctness bug (Decision 8 / the reference's note).
+  constructor(scene: Phaser.Scene, size = 16) {
+    this.scene = scene
+    // A physics group so a later combat feature can register overlaps against terrain/tanks/the eagle.
+    // No gravity (top-down — F0 Decision 3). Members are parked + disabled until acquired.
+    this.group = scene.physics.add.group({ allowGravity: false })
+
+    this._items = []
+    for (let i = 0; i < size; i++) {
+      const rect = scene.add
+        .rectangle(0, 0, BULLET_W, BULLET_H, BULLET_COLOR)
+        .setVisible(false) as BulletRect
+      this.group.add(rect)
+      const body = rect.body as Phaser.Physics.Arcade.Body
+      body.setAllowGravity(false)
+      // The per-bullet context, mutated on acquire (never re-allocated → no per-shot GC, AC9).
+      rect.bx = { active: false, ownerSide: 'player', owner: null, vx: 0, vy: 0 }
+      this._disable(rect)
+      this._items.push(rect)
+    }
+  }
+
+  // ── Fire a bullet from `owner` at (cx, cy) along `facing` (Decision 8/12, AC4/AC5). Sets vx/vy from
+  // facing · BULLET_SPEED, places it at a small muzzle standoff ahead of the tank, marks it active, and
+  // stores ownerSide + the back-ref. Returns the rect, or null if the pool is momentarily exhausted (a
+  // dropped shot is cosmetic — the pool is sized above the live cap). NO `new` — the member is reused (AC9). ──
+  acquire(owner: Tank, cx: number, cy: number, facing: Facing): BulletRect | null {
+    const rect = this._items.find((r) => !r.bx.active)
+    if (!rect) return null
+
+    // Velocity along the single faced cardinal — exactly one component non-zero (a bullet, like a tank,
+    // never travels diagonally). The muzzle standoff is placed along that same direction.
+    let vx = 0
+    let vy = 0
+    let mx = cx
+    let my = cy
+    switch (facing) {
+      case 'up':
+        vy = -BULLET_SPEED
+        my = cy - MUZZLE_STANDOFF
+        break
+      case 'down':
+        vy = BULLET_SPEED
+        my = cy + MUZZLE_STANDOFF
+        break
+      case 'left':
+        vx = -BULLET_SPEED
+        mx = cx - MUZZLE_STANDOFF
+        break
+      case 'right':
+        vx = BULLET_SPEED
+        mx = cx + MUZZLE_STANDOFF
+        break
+    }
+
+    const body = rect.body as Phaser.Physics.Arcade.Body
+    body.reset(mx, my) // snap body to the muzzle, clearing residual velocity.
+    body.enable = true
+    body.setVelocity(0, 0) // Arcade velocity 0 — we hand-integrate (no double-step; freezes on a future hit-stop).
+    rect.setVisible(true)
+    rect.setPosition(mx, my)
+
+    const bx = rect.bx
+    bx.active = true
+    bx.ownerSide = owner.side
+    bx.owner = owner
+    bx.vx = vx
+    bx.vy = vy
+    return rect
+  }
+
+  // ── Advance every live bullet by dt (SECONDS, Decision 8/9, AC5/AC9). Hand-integrate position from OUR
+  // stored velocity (a future hit-stop passes dt=0 → frozen in place); also nudge the body so the
+  // out-of-bounds read below is fresh THIS frame. Release a bullet fully past the playfield bounds so it
+  // never flies forever — release decrements the firer's live count (AC5). NO allocation in the steady state. ──
+  tick(dt: number): void {
+    for (const rect of this._items) {
+      const bx = rect.bx
+      if (!bx.active) continue
+      rect.x += bx.vx * dt
+      rect.y += bx.vy * dt
+      const body = rect.body as Phaser.Physics.Arcade.Body
+      body.x += bx.vx * dt
+      body.y += bx.vy * dt
+      // Released when FULLY past the playfield rectangle (it never flies forever — AC5).
+      const outOfBounds =
+        body.right < PLAYFIELD_X ||
+        body.left > PLAYFIELD_X + PLAYFIELD_W ||
+        body.bottom < PLAYFIELD_Y ||
+        body.top > PLAYFIELD_Y + PLAYFIELD_H
+      if (outOfBounds) this._disable(rect)
+    }
+  }
+
+  // Force-release a specific bullet (a later combat feature calls this on a hit; F1 only the bounds path
+  // does). Guards a stale handle. The NATURAL release path fires the owner callback so the firer's live
+  // count decrements (AC4/AC5).
+  release(rect: BulletRect | null | undefined): void {
+    if (rect && rect.bx.active) this._disable(rect)
+  }
+
+  // Force-release ALL live bullets (a later level/stage rebuild calls this so an in-flight shot doesn't
+  // dangle across a teardown). Pass fireRelease=false: a teardown is NOT a despawn, so it must NOT
+  // decrement a tank's live count (the tank may itself be torn down) — mirrors the reference's releaseAll.
+  releaseAll(): void {
+    for (const rect of this._items) if (rect.bx.active) this._disable(rect, false)
+  }
+
+  // Disable a bullet back into the pool: fire the owner callback (NATURAL releases only), kill the body,
+  // mark inactive, park it off-field. `fireRelease` (default true — the bounds/hit path) decrements the
+  // firer's live count BEFORE the owner ref is cleared; releaseAll passes false (a teardown is not a despawn).
+  private _disable(rect: BulletRect, fireRelease = true): void {
+    const bx = rect.bx
+    if (fireRelease) bx.owner?.onBulletReleased() // AC4/AC5 — the firer may fire again now.
+    bx.active = false
+    bx.owner = null
+    bx.vx = 0
+    bx.vy = 0
+    const body = rect.body as Phaser.Physics.Arcade.Body
+    body.setVelocity(0, 0)
+    body.enable = false
+    body.reset(-1000, -1000) // park well off-field so a stray broad-phase pass can't match it.
+    rect.setVisible(false)
+  }
+}

@@ -60,6 +60,37 @@ export const FIRE_COOLDOWN = 0.35 // s — minimum delay between a player's shot
 export const MAX_PLAYER_BULLETS = 1 // bullets a single player may have on-screen at once (classic starts at 1).
 export const START_LIVES = 3 // lives a player begins a run with.
 
+// ── F1 Tank core (F1 §5.2, Decisions 5/6/9/10, AC3/AC7/AC8/AC10) — DERIVED from / sit beside the values above ──
+// All PURE data (no Phaser): GameScene + entities + the bullet pool import these NAMES; owning them
+// here ONCE keeps the pure/coupled split intact (the verifier still node-imports this module) and the
+// numbers from drifting (DRY). Each is intent-revealing per the cited design AC/Decision.
+
+// TANK_SIZE (F1 §5.2, D5/D6) — the square tank BODY ≈ 2 tiles, a hair inset (−4) so two tanks driving
+// in adjacent lanes don't perpetually graze their colliders. Derived from TILE_SIZE (DRY). NOTE it is
+// deliberately NOT a multiple of SUB_CELL_SIZE (24) — the turn-time re-center snaps the body CORNER to
+// the 24 px lane lattice (not the center), keeping that lane math integer-clean (D6, §5.3 step 4).
+export const TANK_SIZE = TILE_SIZE * 2 - 4 // px — the ~2-tile square tank body (92).
+
+// STEEL_WALL_THICKNESS (F1 §5.2, D10) — the test-arena border-wall rectangle thickness (px). The four
+// STEEL border walls (static Arcade bodies) hug the playfield inner edges so a tank stops at them (AC6).
+export const STEEL_WALL_THICKNESS = 8 // px.
+
+// TWO_PLAYER (F1 §5.2, D2, AC8) — the 2-player local co-op flag (default true). The SCENE reads it to
+// decide whether to spawn/drive P2; Input IGNORES it (Input always returns BOTH p1+p2, SOLID — D2).
+// Flip to false for a single-player session: only P1 spawns + is driven, P2 simply absent (no errors).
+export const TWO_PLAYER = true
+
+// MAX_DT (F1 §5.2, D9, AC7) — the per-step dt CLAMP in SECONDS, owned ONCE here (DRY). GameScene.update
+// computes `dt = Math.min(delta/1000, MAX_DT)` and feeds SECONDS to every tank.update/pool.tick, so a
+// tab-refocus delta spike can't teleport a fast body through a wall (it bounds one integration step).
+export const MAX_DT = 1 / 30 // s — cap a single step at ~33 ms.
+
+// LANE_SNAP_EPSILON (F1 §5.2, D5/D6, AC3) — the dead-band (px) for the turn-time cross-axis re-center
+// (§5.3 step 4): if the body's cross-corner is already within this of its nearest SUB_CELL_SIZE lane the
+// snap is a NO-OP, so the re-center can never oscillate around a lane center or fight Arcade frame-to-frame.
+// Sub-pixel (0.5) so the corner stays visually lane-aligned. The single PURE owner so any later tuning is DRY.
+export const LANE_SNAP_EPSILON = 0.5 // px.
+
 // ── Stage / spawn (Decision 7, §5.2) — the classic stage shape ──
 export const ENEMIES_PER_STAGE = 20 // enemy tanks to clear in a normal stage.
 export const MAX_CONCURRENT_ENEMIES = 4 // on-screen enemy cap (classic 4); the rest queue and stagger in.
