@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
 import { UI_FONT, HUD_PANEL_X, HUD_PANEL_WIDTH, PLAYFIELD_X, PLAYFIELD_Y, PLAYFIELD_W, PLAYFIELD_H, TWO_PLAYER } from '../config/constants.js'
+import { TOTAL_ENEMIES_MAX } from '../config/stages.js'
 import { t } from '../i18n/index.js'
 
 // ── HUDScene (F0 scaffold §5.3 → F5 §5.4, Decision 4/D-decoupled/D12, AC8/AC9) ──
@@ -17,6 +18,17 @@ const BAR_W = HUD_PANEL_WIDTH - 16 // px — the bar track width (fits the side 
 const BAR_H = 8 // px — the bar height.
 const BAR_TRACK_COLOR = 0x30363d // the dark track behind the fill (the panel-outline grey — programmer-art).
 const BAR_FILL_COLOR = 0xfeca57 // gold — matches the power-up text line.
+
+// ── The enemy-QUEUE icon grid (D1/D2, AC1) — the classic Battle City side-panel column of little tank icons,
+// one per enemy STILL TO CLEAR this stage. A FIXED pool of small Rectangle pips built once + flipped visible
+// in place each frame from the registry `hud.enemies` value (the SAME number the text readout shows — DRY, no
+// world reach). One uniform icon shape/colour (D2 — per-type icons would couple the HUD to the unspawned
+// roster; YAGNI). QUEUE_MAX is the deepest stage's enemy ceiling so the grid never runs short of the live count.
+const QUEUE_MAX = TOTAL_ENEMIES_MAX // pool size — sized to the deepest stage's totalEnemies (never runs short).
+const QUEUE_COLS = 8 // icons per row (8 × 5 rows = 40 = QUEUE_MAX; fits the side-panel band).
+const QUEUE_ICON = 12 // px — one icon pip (a small programmer-art tank square).
+const QUEUE_GAP = 4 // px — spacing between icons (so a full grid stays inside HUD_PANEL_WIDTH).
+const QUEUE_COLOR = 0xf0932b // orange — matches the enemies-left readout (the pressure cue).
 
 export class HUDScene extends Phaser.Scene {
   // One fixed Text per readout line (created once in create(), updated in place each frame — DRY, no per-frame
@@ -37,6 +49,13 @@ export class HUDScene extends Phaser.Scene {
   // read from the registry; blank when no banner active) + the MUTED cue (shown in the panel while audio is muted).
   private bannerLabel!: Phaser.GameObjects.Text
   private mutedLabel!: Phaser.GameObjects.Text
+  // (D1/D2, AC1): the enemy-QUEUE icon grid — a fixed pool of small Rectangle pips (built once), the visible
+  // count set in place each frame from `hud.enemies` (the decoupled registry read — never the world).
+  private queueIcons: Phaser.GameObjects.Rectangle[] = []
+  // (D3/D5, AC2): the centered STAGE-N intro-curtain label — GameScene publishes the localised "STAGE N" to
+  // `hud.stageIntro` while the curtain is up ('' otherwise), so the HUD just mirrors it (the SAME registry-
+  // decoupled pattern as the STAGE-N-CLEARED banner above — GameScene owns WHEN, the HUD owns HOW).
+  private introLabel!: Phaser.GameObjects.Text
 
   constructor() {
     super('HUD')
@@ -85,6 +104,19 @@ export class HUDScene extends Phaser.Scene {
     // F6 (D8, AC6) — the MUTED cue, in the panel band below the power line (shown only while audio is muted).
     this.mutedLabel = make('#ff7675', '18px') // soft red — the "MUTED" indicator (or empty).
 
+    // (D1/D2, AC1) — the enemy-QUEUE icon grid: a FIXED pool of QUEUE_MAX small Rectangle pips laid out left→
+    // right, top→bottom in a grid anchored at HUD_PANEL_X, advancing `y` so it sits inside the panel band below
+    // the readout column. All start HIDDEN — _render() flips the first `hud.enemies` of them visible each frame
+    // (DRY — the same value the text readout shows). Programmer-art rectangles (AC11); origin top-LEFT for the grid.
+    y += LINE_H / 2 // a small gap before the queue grid.
+    for (let i = 0; i < QUEUE_MAX; i++) {
+      const col = i % QUEUE_COLS
+      const row = Math.floor(i / QUEUE_COLS)
+      const ix = x + col * (QUEUE_ICON + QUEUE_GAP)
+      const iy = y + row * (QUEUE_ICON + QUEUE_GAP)
+      this.queueIcons.push(this.add.rectangle(ix, iy, QUEUE_ICON, QUEUE_ICON, QUEUE_COLOR).setOrigin(0, 0).setVisible(false))
+    }
+
     // F6 (D5, AC3) — the STAGE-N-CLEARED banner: a large CENTERED timed text overlay over the playfield (NOT in
     // the side panel — it is the stage-clear celebration). Positioned at the playfield CENTER off the FIXED design
     // resolution (PLAYFIELD_X/Y/W/H — the single layout owners), depth above the readouts. Blank until a clear.
@@ -93,6 +125,20 @@ export class HUDScene extends Phaser.Scene {
         fontFamily: UI_FONT,
         fontSize: '40px',
         color: '#feca57',
+        fontStyle: 'bold',
+        align: 'center',
+      })
+      .setOrigin(0.5)
+      .setDepth(10)
+
+    // (D3/D5, AC2) — the STAGE-N intro-curtain label: a large CENTERED text overlay over the playfield, shown
+    // before each stage begins. SAME geometry/depth as the banner; a neutral panel-grey (distinct from the gold
+    // clear banner) so the intro reads as an opening beat, not a celebration. Blank until GameScene arms a curtain.
+    this.introLabel = this.add
+      .text(PLAYFIELD_X + PLAYFIELD_W / 2, PLAYFIELD_Y + PLAYFIELD_H / 2, '', {
+        fontFamily: UI_FONT,
+        fontSize: '40px',
+        color: '#e6edf3',
         fontStyle: 'bold',
         align: 'center',
       })
@@ -160,6 +206,16 @@ export class HUDScene extends Phaser.Scene {
     // pattern — like the active-power-up line; the HUD owns HOW it renders, GameScene owns WHEN). No new scene.
     const banner = (r.get('hud.banner') as string | undefined) ?? ''
     this.bannerLabel.setText(banner)
+
+    // (D1/D2, AC1) — the enemy-QUEUE icon grid: flip the first `hud.enemies` pips visible (clamped to the pool),
+    // the rest hidden. The SAME registry value the enemiesLabel reads above (DRY) — no world reach, one loop.
+    const queued = Phaser.Math.Clamp((r.get('hud.enemies') as number | undefined) ?? 0, 0, QUEUE_MAX)
+    for (let i = 0; i < this.queueIcons.length; i++) this.queueIcons[i].setVisible(i < queued)
+
+    // (D3/D5, AC2) — the STAGE-N intro curtain: GameScene publishes the localised "STAGE N" string to
+    // `hud.stageIntro` while the curtain is up (and '' otherwise), so the HUD just mirrors it (the SAME
+    // registry-decoupled pattern as the clear banner above — GameScene owns WHEN, the HUD owns HOW).
+    this.introLabel.setText((r.get('hud.stageIntro') as string | undefined) ?? '')
 
     // F6 (D8, AC6) — the MUTED cue: shown only while audio is muted (the M toggle flips Phaser's global mute, and
     // GameScene publishes `hud.muted` = sound.mute). KISS — one boolean read, one label.

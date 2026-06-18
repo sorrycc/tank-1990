@@ -56,6 +56,7 @@ export const EN: Dict = {
     'hud.power': 'POWER {name} {secs}s',
     'hud.powerInstant': 'POWER {name}',
     'hud.stageCleared': 'STAGE {n} CLEARED', // F6 (D5, AC3) — the boss-stage clear banner (a timed overlay).
+    'hud.stageIntro': 'STAGE {n}', // (D3/D5, AC2) — the centered STAGE-N intro curtain shown before each stage.
     'hud.muted': 'MUTED', // F6 (D8, AC6) — the mute cue shown while audio is muted (M toggle).
 
     // ── GameOver (the run-summary snapshot — AC5) ──

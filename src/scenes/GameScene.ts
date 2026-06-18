@@ -89,6 +89,11 @@ type TankCollider = Phaser.GameObjects.Rectangle & { tankRef?: Tank }
 // The IDLE intent a spawn-BLINKING enemy is ticked with (F4 §5.3, AC2) — all zero, so update() holds the body
 // still (no move, no facing change, no fire). A frozen literal shared by every blinking enemy (no allocation).
 const IDLE_INTENT = { up: false, down: false, left: false, right: false, dirX: 0, dirY: 0, firePressed: false }
+
+// (D3, AC2) — the STAGE-N intro-curtain duration (SECONDS). A brief beat before each stage's enemies stream in
+// (the classic "STAGE N" curtain). A coupled-scene tunable (not a shared pure number), so it lives here, not in
+// constants.ts. ~1.4 s sits in the spec's ~1.2–1.6 s window — long enough to read the stage, short enough to feel snappy.
+const STAGE_INTRO_SEC = 1.4 // s — how long the STAGE-N intro curtain holds before enemy spawning/AI resumes.
 // A solidBodies child carries F2's grid tags (tileKind/tileCol/…) + the F3 back-ref to the Base (the eagle's
 // TILE.BASE body, found + tagged in create()). The terrain callback reads these off the struck body (D2/D3).
 type SolidRect = Phaser.GameObjects.Rectangle & {
@@ -164,6 +169,13 @@ export class GameScene extends Phaser.Scene {
   private bossSpawned = false
   private bannerTimer = 0
   private bannerStage = 0
+
+  // ── STAGE-N intro curtain (D3/D4/D5, AC2/AC3) ── `curtainTimer` is the SECONDS remaining on the brief "STAGE N"
+  // intro shown before each stage's enemies stream in. Armed in _buildStage (so EVERY stage — the first + each
+  // advance — opens on it), decayed on the REAL dt in update(); while > 0 the spawn loop + enemy tick are gated
+  // (the player + bullets stay live — only the enemy pair is paused) and _publishHud mirrors a centered label to
+  // the HUD via the registry (the SAME pattern as the STAGE-N-CLEARED banner — GameScene owns WHEN, the HUD HOW).
+  private curtainTimer = 0
 
   // ── F7 pause state (F7 §5.3, Decisions D3/D4, AC4) ── `paused` gates update()'s gameplay block (the SAME
   // freeze idiom the gameOver branch uses — while paused the world is FULLY frozen but the FX pool still settles
@@ -347,6 +359,11 @@ export class GameScene extends Phaser.Scene {
     )
     // (The bullet × player tank overlaps are registered per-player inside _buildPlayer; enemy tanks register
     // their OWN in _spawnStep — all into the SAME side-generic shape via _registerTankOverlap, D9/AC9.)
+
+    // (D3, AC2) — arm the STAGE-N intro curtain. EVERY stage opens on it (the first build + each advance call this
+    // SHARED builder, DRY): update() gates the spawn loop + enemy tick while curtainTimer > 0, and _publishHud
+    // mirrors the centered "STAGE N" label to the HUD. The world is built + visible underneath (the player can move).
+    this.curtainTimer = STAGE_INTRO_SEC
   }
 
   // ── _buildPlayer(slot,x,y) (F4 §5.4, D10/D11) ── build a present player FRESH for this stage. Construct it
@@ -590,6 +607,11 @@ export class GameScene extends Phaser.Scene {
     // banner timer is decayed on the REAL dt in update() (so it shows through the run-end freeze beat).
     r.set('hud.banner', this.bannerTimer > 0 ? t('hud.stageCleared', { n: this.bannerStage }) : '')
     r.set('hud.muted', this.sfx.mute) // the mute cue (the HUD shows "MUTED" while true — D8).
+
+    // (D3/D5, AC2) — the STAGE-N intro-curtain label (the localised "STAGE N" while the curtain is up, else '').
+    // SAME registry-mirror pattern as the clear banner: the HUD renders it centered (the intro beat). The human
+    // stage number is stageIndex + 1. Its own key (NOT hud.banner) so the intro + clear render paths stay separate.
+    r.set('hud.stageIntro', this.curtainTimer > 0 ? t('hud.stageIntro', { n: this.runState.stageIndex + 1 }) : '')
   }
 
   // ── bullet × terrain solids resolution (F3 §5.3, D1/D2/D3/D4, AC1/AC2/AC6/AC10) ── ONE callback over the
@@ -1008,6 +1030,11 @@ export class GameScene extends Phaser.Scene {
     // bannerTimer > 0 to publish the string. Done BEFORE the gameOver early-return so the banner finishes showing.
     this.bannerTimer = Math.max(0, this.bannerTimer - dt)
 
+    // (D3, AC2) — decay the STAGE-N intro curtain on the REAL dt (so it ends in real time regardless of the
+    // gameplay-dt freeze). Clamped at 0. While curtainTimer > 0 the spawn loop + enemy tick are gated below, and
+    // _publishHud mirrors the "STAGE N" label to the HUD. Decayed BEFORE the gameplay block so it counts down each frame.
+    this.curtainTimer = Math.max(0, this.curtainTimer - dt)
+
     // ── F5 power-up timers + the freeze boundary (F5 §5.3, D4/D5/AC3) ── decay freeze/shovel/shield on the
     // GAMEPLAY dt BEFORE the freeze is applied for the frame (so the freeze timer itself counts down in real
     // gameplay time and ends — the reference's clock-freeze does the same). THEN compute the gameplay dt:
@@ -1079,9 +1106,12 @@ export class GameScene extends Phaser.Scene {
     // while frozen). While the clock power-up is active (freezeTimer > 0) the enemies are FULLY frozen: skip BOTH
     // the spawn step AND the enemy tick entirely, so no enemy moves, runs AI, or fires (AC2 — "enemies don't move,
     // AI/fire skipped"; gdt=0 alone stops movement but not the AI/fire branches). While transitioning (the
-    // deferred stage rebuild is queued) we skip both too — the world is mid-teardown.
+    // deferred stage rebuild is queued) we skip both too — the world is mid-teardown. (D4, AC2): while the STAGE-N
+    // intro curtain is up (curtainTimer > 0) we skip both as well — no enemy spawns/acts during the intro beat (the
+    // player + bullets stay live; only the enemy pair is gated, per the spec's "pause enemy spawning/AI").
     const frozen = this.runState.freezeTimer > 0
-    if (!this.transitioning && !frozen) {
+    const curtain = this.curtainTimer > 0
+    if (!this.transitioning && !frozen && !curtain) {
       this._spawnStep(gdt)
       this._tickEnemies(gdt)
     }
