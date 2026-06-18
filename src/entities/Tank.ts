@@ -8,6 +8,8 @@ import {
   PLAYFIELD_X,
   PLAYFIELD_Y,
   LANE_SNAP_EPSILON,
+  TANK_MAX_HP,
+  SPAWN_IFRAME,
 } from '../config/constants.js'
 import type { PlayerIntent } from '../core/Input.js'
 import type { BulletPool } from '../combat/BulletPool.js'
@@ -63,7 +65,19 @@ export class Tank {
   liveBullets: number // current shots out (incremented on fire, decremented on release — AC4/AC5).
   maxBullets: number // the per-tank live cap (MAX_PLAYER_BULLETS — the classic "N shots out" rule).
 
-  constructor(scene: Phaser.Scene, x: number, y: number, side: TankSide, behavior = 'player') {
+  // ── F3 combat state (F3 §5.2, Decision D7/D11, AC5/AC8) — additive over the F1 spine ──
+  // hp/maxHp: the hit-funnel HP (TANK_MAX_HP = 1 default; an armor enemy is constructed with hp > 1 for
+  // multi-hit "for free" via the same subtraction — D7). alive: the death guard so onHit's death path runs
+  // ONCE. spawnIframe: SECONDS of post-respawn invulnerability (ticked down in update; isHittable() false
+  // while > 0 so a fresh respawn can't be instantly re-killed — D7/D11). onDeath: the scene wires the
+  // life/respawn-or-stay-down path (SOLID — the Tank reports its death, the scene owns the run economy, D11).
+  hp: number
+  maxHp: number
+  alive: boolean
+  spawnIframe: number
+  onDeath: (() => void) | null
+
+  constructor(scene: Phaser.Scene, x: number, y: number, side: TankSide, behavior = 'player', hp = TANK_MAX_HP) {
     this.scene = scene
     this.side = side
     this.behavior = behavior
@@ -72,6 +86,14 @@ export class Tank {
     this.cooldownTimer = 0
     this.liveBullets = 0
     this.maxBullets = MAX_PLAYER_BULLETS
+
+    // F3 combat state — a fresh tank is alive at full HP with NO spawn i-frames (the scene arms them on a
+    // respawn via respawnAt). onDeath is wired by the scene after construction (D11).
+    this.maxHp = hp
+    this.hp = hp
+    this.alive = true
+    this.spawnIframe = 0
+    this.onDeath = null
 
     const fill = side === 'player' ? BODY_COLOR_PLAYER : BODY_COLOR_ENEMY
 
@@ -95,6 +117,24 @@ export class Tank {
   //   1) cooldown decay → 2) pick the ONE driving axis (4-dir, no diagonal) + facing → 3) drive (exactly
   //      one velocity component non-zero) → 4) turn-time re-center (gated discrete snap) → 5) visuals. ──
   update(dt: number, intent: PlayerIntent): void {
+    // F3 (D7/D11, AC8) — a DEAD tank is parked: the scene stops driving it until a respawn, but a defensive
+    // guard here means a stray tick can't move/fire a corpse. Hold the body still + leave the visual hidden.
+    if (!this.alive) {
+      this.body.setVelocity(0, 0)
+      return
+    }
+
+    // F3 spawn i-frames (D7/D11, AC5/AC8) — decay the post-respawn invulnerability window + BLINK the visual
+    // while it ticks (the cue that the tank can't be hit). isHittable() reads this same timer, so the gate +
+    // the cue can never disagree. Restore full alpha the frame it expires.
+    if (this.spawnIframe > 0) {
+      this.spawnIframe = Math.max(0, this.spawnIframe - dt)
+      // A fast alpha pulse (~10 Hz) off the scene clock — purely cosmetic (the body is unaffected).
+      const blink = Math.floor(this.scene.time.now / 100) % 2 === 0 ? 0.35 : 1
+      this.rect.setAlpha(this.spawnIframe > 0 ? blink : 1)
+      if (this.spawnIframe === 0) this.rect.setAlpha(1)
+    }
+
     // 1) Cooldown decay (seconds) — a fire is allowed once this hits 0 (AC4).
     this.cooldownTimer = Math.max(0, this.cooldownTimer - dt)
 
@@ -235,5 +275,55 @@ export class Tank {
   // decrements — the classic "you may fire again once your shot despawns" rule. Floored at 0 defensively. ──
   onBulletReleased(): void {
     this.liveBullets = Math.max(0, this.liveBullets - 1)
+  }
+
+  // ── isHittable() (F3 §5.2, D7, AC5/AC8 — the victim filter) ── a bullet only damages a tank that is ALIVE
+  // and NOT in its post-respawn i-frame window. Mirrors the reference's isHittable() (the dead / i-frame
+  // gate the scene's bullet×tank callback reads before calling onHit). DRY — one entry both filters share.
+  isHittable(): boolean {
+    return this.alive && this.spawnIframe <= 0
+  }
+
+  // ── onHit(damage) (F3 §5.2, D7, AC5/AC8 — the hit FUNNEL) ── the SAME entry both sides use (the scene's
+  // bullet×tank callback computes "valid hittable opposing victim?" then calls this — DRY). Subtract HP; at
+  // ≤ 0 run the death path EXACTLY ONCE (the `alive` guard), hide the body, and fire `onDeath` (the scene
+  // spends a life + respawns or ends the run — D11). An armor tank (hp > 1) survives until its HP is spent —
+  // multi-hit "for free" via the same subtraction. Mirrors the reference's enemy.onHit(result) funnel.
+  onHit(damage: number): void {
+    if (!this.alive) return // already dead — the death path is one-shot (a same-frame double-hit can't re-fire).
+    this.hp -= damage
+    if (this.hp <= 0) {
+      this.hp = 0
+      this.alive = false
+      // Hide the body + barrel (the corpse) — the scene's onDeath wiring pops the kill explosion + decides
+      // respawn-vs-stay-down. A respawnAt re-shows them. Park the physics body so a stray overlap can't match.
+      this.rect.setVisible(false)
+      this.barrel.setVisible(false)
+      this.body.setVelocity(0, 0)
+      this.body.enable = false
+      this.onDeath?.()
+    }
+  }
+
+  // ── respawnAt(x,y) (F3 §5.2, D11, AC8 — the scene's life/respawn path calls this) ── re-place the body to a
+  // generated spawn window-center (DRY — the same coord F2's generator emits), refill HP, re-enable + re-show
+  // the body, and ARM the SPAWN_IFRAME invulnerability window (isHittable() is false while it ticks down in
+  // update, blinking the rect). The scene owns WHEN to respawn (it spends the life first — D11); the Tank only
+  // owns its own re-placement. Reset the facing/drive spine so the fresh spawn starts clean (the classic).
+  respawnAt(x: number, y: number): void {
+    this.body.enable = true
+    // body.reset(centerX, centerY): like the BulletPool muzzle reset, it snaps the collider GameObject to
+    // (x,y) and centers the body there, clearing residual velocity. (x,y) is the spawn window-center (D13).
+    this.body.reset(x, y)
+    this.body.setVelocity(0, 0)
+    this.hp = this.maxHp
+    this.alive = true
+    this.spawnIframe = SPAWN_IFRAME // arm the post-respawn invulnerability (D7/D11).
+    this.facing = 'up'
+    this.lastDriveAxis = null
+    this.cooldownTimer = 0
+    this.rect.setPosition(x, y).setVisible(true).setAlpha(1)
+    this.barrel.setVisible(true)
+    this._orientBarrel()
   }
 }

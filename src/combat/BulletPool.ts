@@ -33,8 +33,9 @@ const BULLET_COLOR = 0xf0e68c // light khaki bolt; reads against the dark playfi
 const MUZZLE_STANDOFF = 6 // px — spawn the bullet a hair ahead of the tank along its facing (no self-overlap).
 
 // The per-bullet context, mutated on acquire (never re-allocated → no per-shot GC, AC9). Carried on the
-// rect's `bx` property (parallels the reference's `pj`).
-interface BulletContext {
+// rect's `bx` property (parallels the reference's `pj`). EXPORTED so the F3 GameScene's bullet×bullet scan
+// + the overlap callbacks read the struck shot's `active`/`ownerSide` off it (DRY — one struct, F3 §5.3).
+export interface BulletContext {
   active: boolean
   ownerSide: TankSide
   owner: Tank | null // back-ref so release decrements the firer's live count (AC4/AC5).
@@ -42,8 +43,9 @@ interface BulletContext {
   vy: number
 }
 
-// A pooled rectangle member carries its context on a `bx` property.
-type BulletRect = Phaser.GameObjects.Rectangle & { bx: BulletContext }
+// A pooled rectangle member carries its context on a `bx` property. EXPORTED so the F3 scene's overlap
+// callbacks + the bullet×bullet scan type the struck/iterated rect (F3 §5.3).
+export type BulletRect = Phaser.GameObjects.Rectangle & { bx: BulletContext }
 
 export class BulletPool {
   private scene: Phaser.Scene
@@ -146,11 +148,21 @@ export class BulletPool {
     }
   }
 
-  // Force-release a specific bullet (a later combat feature calls this on a hit; F1 only the bounds path
-  // does). Guards a stale handle. The NATURAL release path fires the owner callback so the firer's live
-  // count decrements (AC4/AC5).
+  // Force-release a specific bullet (F3's hit-resolution callbacks + the bounds path call this). Guards a
+  // stale handle. The NATURAL release path fires the owner callback so the firer's live count decrements
+  // (AC4/AC5). release() only DISABLES the body (never destroys it), so it is SAFE to call inside an Arcade
+  // overlap callback (no body is destroyed mid-iteration — F3 §5.3 / the reference's footgun discipline).
   release(rect: BulletRect | null | undefined): void {
     if (rect && rect.bx.active) this._disable(rect)
+  }
+
+  // ── forEachActive(fn) (F3 Combat & terrain §5.2/§5.3, Decision D5) ── iterate every LIVE bullet so the
+  // scene's bullet×bullet scan reads the handful of in-flight shots (DRY — one iterator the scan + any later
+  // pass reuse). Skips parked members. KISS: the live count is single-digit, so a direct scan is trivially
+  // cheap (D5). The callback must NOT mutate the pool's membership; it only reads each rect (and may release
+  // it — release just disables the body, never touching this _items array).
+  forEachActive(fn: (rect: BulletRect) => void): void {
+    for (const rect of this._items) if (rect.bx.active) fn(rect)
   }
 
   // Force-release ALL live bullets (a later level/stage rebuild calls this so an in-flight shot doesn't

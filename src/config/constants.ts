@@ -91,6 +91,34 @@ export const MAX_DT = 1 / 30 // s — cap a single step at ~33 ms.
 // Sub-pixel (0.5) so the corner stays visually lane-aligned. The single PURE owner so any later tuning is DRY.
 export const LANE_SNAP_EPSILON = 0.5 // px.
 
+// ── F3 Combat & terrain (F3 §5.2, Decisions D4/D7/D8, AC5/AC6/AC8/AC9) — PURE combat DATA (no Phaser) ──
+// All Phaser-free numbers/flags the F3 combat resolution reads. Owned ONCE here (DRY) so the scene's
+// overlap callbacks, Tank's hit funnel, and Base's loss guard read the SAME truth — and the verifier still
+// node-imports this module unchanged (a stray Phaser import would throw under node, re-proving purity, AC11).
+
+// BULLET_DAMAGE (F3 §5.2, D7, AC5) — HP a single bullet removes from a tank/base. The classic shot does 1.
+export const BULLET_DAMAGE = 1 // HP per bullet hit.
+
+// TANK_MAX_HP (F3 §5.2, D7, AC5) — default tank HP. A basic/fast/power tank (and every PLAYER tank) dies in
+// ONE hit. The enemy armor type overrides this with ARMOR_TANK_HP for multi-hit (the enemy feature, reserved).
+export const TANK_MAX_HP = 1 // HP — a one-hit tank (the classic default).
+
+// ARMOR_TANK_HP (F3 §5.2, D7) — RESERVED for the enemy armor type (multi-hit). F3 spawns NO enemy, but pins
+// the number here so the enemy feature reads ONE owner (DRY) — armor "for free" via the same HP subtraction.
+export const ARMOR_TANK_HP = 3 // HP — the armor enemy survives three hits (reserved for the enemy feature).
+
+// BASE_HP (F3 §5.2, D6, AC6) — the eagle dies to a SINGLE bullet (the classic instant loss). One hit → run over.
+export const BASE_HP = 1 // HP — a single bullet ends the run.
+
+// SPAWN_IFRAME (F3 §5.2, D7/D11, AC5/AC8) — SECONDS of post-respawn invulnerability (the blink window). While
+// it ticks down a tank's isHittable() is false, so a fresh respawn can't be instantly re-killed.
+export const SPAWN_IFRAME = 1.5 // s — post-respawn invulnerability window.
+
+// FRIENDLY_FIRE (F3 §5.2, D8, AC9) — the co-op friendly-fire toggle (default OFF). The scene's bullet×tank +
+// bullet×bullet filters read it ONCE: a player bullet passes an allied player tank, same-side shots don't
+// cancel. Flip to true to re-enable FF with NO code change (the seam — the policy is data, KISS/SOLID).
+export const FRIENDLY_FIRE = false // co-op friendly-fire disabled by default.
+
 // ── Stage / spawn (Decision 7, §5.2) — the classic stage shape ──
 export const ENEMIES_PER_STAGE = 20 // enemy tanks to clear in a normal stage.
 export const MAX_CONCURRENT_ENEMIES = 4 // on-screen enemy cap (classic 4); the rest queue and stagger in.
