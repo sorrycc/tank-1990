@@ -1,18 +1,18 @@
 import Phaser from 'phaser'
 import {
   TANK_SIZE,
-  TANK_SPEED,
-  FIRE_COOLDOWN,
-  MAX_PLAYER_BULLETS,
   SUB_CELL_SIZE,
   PLAYFIELD_X,
   PLAYFIELD_Y,
   LANE_SNAP_EPSILON,
-  TANK_MAX_HP,
   SPAWN_IFRAME,
+  AI_REDECIDE_MIN,
+  AI_REDECIDE_MAX,
+  AI_SEEK_BIAS,
 } from '../config/constants.js'
 import type { PlayerIntent } from '../core/Input.js'
 import type { BulletPool } from '../combat/BulletPool.js'
+import type { TankSpec } from '../config/tanks.js'
 
 // ── Tank entity (F1 Tank core §5.2/§5.3, Decisions 1/5/6/7/12, AC3/AC4/AC6) ──
 // A plain class — the SAME shape as the read-only `dead-cell` reference's entities/Player.ts (Decision 1):
@@ -43,8 +43,10 @@ import type { BulletPool } from '../combat/BulletPool.js'
 export type TankSide = 'player' | 'enemy'
 export type Facing = 'up' | 'down' | 'left' | 'right'
 
-const BODY_COLOR_PLAYER = 0x6ab04c // green player tank (programmer-art primitive — AC11).
-const BODY_COLOR_ENEMY = 0xeb4d4b // red enemy tank (reserved — F1 only ever builds 'player' tanks, D7).
+// F4 (§5.2, D1): the body fill now comes from the per-type TankSpec (`spec.color`), NOT a hardcoded
+// per-side colour — so each enemy archetype reads distinctly (red grunt / orange scout / green gunner /
+// blue heavy) and a red-flash carrier swaps to `spec.colorFlash`. The two old per-side constants are gone
+// (the spec is the single colour owner now — D1; exactly like tiles.ts colours).
 const BARREL_COLOR = 0xdfe6e9 // light gun barrel marker so the facing reads.
 const BARREL_LEN = TANK_SIZE * 0.55 // px — barrel length along facing.
 const BARREL_THICK = 8 // px — barrel thickness across facing.
@@ -63,7 +65,18 @@ export class Tank {
 
   cooldownTimer: number // s — decays by dt; a fire is allowed at ≤ 0 (AC4).
   liveBullets: number // current shots out (incremented on fire, decremented on release — AC4/AC5).
-  maxBullets: number // the per-tank live cap (MAX_PLAYER_BULLETS — the classic "N shots out" rule).
+  maxBullets: number // the per-tank live cap (from spec.maxBullets — the classic "N shots out" rule).
+
+  // ── F4 per-tank feel (F4 §5.2, D2/D3, AC4 — issue #2) ── the spec's tunable MAGNITUDES, copied onto
+  // per-tank fields in the ctor so update()/tryFire() read the FIELD (not a global). This is what makes the
+  // four enemy types ACTUALLY differ at runtime: FAST drives at its higher moveSpeed, POWER fires its faster
+  // bulletSpeed, every type fires on its own fireCooldown beat. The player's fields equal the F1 constants
+  // (PLAYER_BASE), so threading the spec is behaviour-preserving for the player. The movement GEOMETRY is
+  // byte-identical — only the magnitude SOURCE moved from constants to the spec (the no-diagonal invariant holds).
+  spec: TankSpec // the per-tank tuning row (also the colour source for the visual — D1).
+  moveSpeed: number // px/s — the grid drive speed (was the hardcoded TANK_SPEED in update; now from spec).
+  bulletSpeed: number // px/s — passed into pool.acquire so POWER's bullet is faster (was implicit BULLET_SPEED).
+  fireCooldown: number // s — the attack-beat cadence (was the hardcoded FIRE_COOLDOWN in tryFire; now from spec).
 
   // ── F3 combat state (F3 §5.2, Decision D7/D11, AC5/AC8) — additive over the F1 spine ──
   // hp/maxHp: the hit-funnel HP (TANK_MAX_HP = 1 default; an armor enemy is constructed with hp > 1 for
@@ -77,25 +90,48 @@ export class Tank {
   spawnIframe: number
   onDeath: (() => void) | null
 
-  constructor(scene: Phaser.Scene, x: number, y: number, side: TankSide, behavior = 'player', hp = TANK_MAX_HP) {
+  // ── F4 enemy-AI + carrier state (F4 §5.2, D2/D3/D4, AC3/AC7) ── additive over the F1/F3 spine. A PLAYER
+  // tank leaves carrier/onDropFlag at their defaults + never runs updateAI (the scene drives it from Input).
+  // `carrier`: the red-flash power-up carrier flag (the spawn loop rolls it — AC7); the visual flashes
+  // spec.colorFlash while set. `onDropFlag`: fired ONCE at death with the death center (the F5 pickup seam —
+  // the same one-shot discipline as onDeath). The AI FSM is a re-decide timer + a stored intent (the wander/
+  // seek state); `updateAI` rebuilds the intent each tick + the scene feeds it through the SAME update() spine.
+  carrier: boolean
+  onDropFlag: ((x: number, y: number) => void) | null
+  private aiRedecideTimer: number // s — decays by dt; at ≤ 0 (or when blocked) the AI re-decides a cardinal (D4).
+  aiIntent: PlayerIntent // the PlayerIntent-shaped snapshot updateAI emits; the scene drives update(gdt, this.aiIntent).
+
+  constructor(scene: Phaser.Scene, x: number, y: number, side: TankSide, spec: TankSpec) {
     this.scene = scene
     this.side = side
-    this.behavior = behavior
+    // F4 (§5.2, issue #2): the spec is the canonical source of ALL per-tank tunables. Copy its behaviour +
+    // feel magnitudes onto per-tank fields so update()/tryFire() read the FIELD, not a module global.
+    this.spec = spec
+    this.behavior = spec.behavior // (was the `behavior` ctor arg in F1).
     this.facing = 'up' // tanks start facing up (the classic player spawn orientation).
     this.lastDriveAxis = null
     this.cooldownTimer = 0
     this.liveBullets = 0
-    this.maxBullets = MAX_PLAYER_BULLETS
+    this.maxBullets = spec.maxBullets // (was MAX_PLAYER_BULLETS; now from the spec).
+    this.moveSpeed = spec.moveSpeed // (was the hardcoded TANK_SPEED read in update).
+    this.bulletSpeed = spec.bulletSpeed // (was the implicit BULLET_SPEED in pool.acquire).
+    this.fireCooldown = spec.fireCooldown // (was the hardcoded FIRE_COOLDOWN read in tryFire).
 
     // F3 combat state — a fresh tank is alive at full HP with NO spawn i-frames (the scene arms them on a
-    // respawn via respawnAt). onDeath is wired by the scene after construction (D11).
-    this.maxHp = hp
-    this.hp = hp
+    // respawn via respawnAt, or on an enemy spawn-blink). onDeath is wired by the scene after construction (D11).
+    this.maxHp = spec.maxHp // (was the `hp` ctor arg; ARMOR passes ARMOR_TANK_HP=4 via its spec — multi-hit, AC4).
+    this.hp = spec.maxHp
     this.alive = true
     this.spawnIframe = 0
     this.onDeath = null
 
-    const fill = side === 'player' ? BODY_COLOR_PLAYER : BODY_COLOR_ENEMY
+    // F4 enemy-AI + carrier defaults — a player never carries / never AI-decides (the scene drives it).
+    this.carrier = false
+    this.onDropFlag = null
+    this.aiRedecideTimer = 0 // re-decide immediately on the first AI tick.
+    this.aiIntent = { up: false, down: false, left: false, right: false, dirX: 0, dirY: 0, firePressed: false }
+
+    const fill = spec.color // F4 (D1): the body fill is the spec's colour (per-type distinct).
 
     // ── Physics collider (owns the body) + separate visual rect (Decision 1/6 — the reference's split) ──
     // `collider` owns the Arcade body, is INVISIBLE (alpha 0). Arcade owns its position; we only hand-write
@@ -169,9 +205,9 @@ export class Tank {
     // 3) Drive — exactly ONE velocity component non-zero (Decision 5/AC3). The cross component is held at
     // EXACTLY 0, so Arcade never integrates a diagonal (the no-diagonal invariant is STRUCTURAL). Idle → 0,0.
     if (driveAxis === 'x') {
-      this.body.setVelocity(this.facing === 'right' ? TANK_SPEED : -TANK_SPEED, 0)
+      this.body.setVelocity(this.facing === 'right' ? this.moveSpeed : -this.moveSpeed, 0)
     } else if (driveAxis === 'y') {
-      this.body.setVelocity(0, this.facing === 'down' ? TANK_SPEED : -TANK_SPEED)
+      this.body.setVelocity(0, this.facing === 'down' ? this.moveSpeed : -this.moveSpeed)
     } else {
       this.body.setVelocity(0, 0)
     }
@@ -202,6 +238,14 @@ export class Tank {
     this.rect.setPosition(cx, cy)
     this.barrel.setPosition(cx, cy)
     this._orientBarrel()
+
+    // F4 (§5.2, AC7) — a red-flash CARRIER pulses spec.colorFlash ↔ spec.color (~5 Hz off the scene clock,
+    // a cosmetic fill swap only) so the player can tell which enemy drops a power-up. A non-carrier holds its
+    // resting fill. Skipped while spawn-blinking (the i-frame branch above owns the alpha cue then — no clash).
+    if (this.carrier && this.spawnIframe <= 0) {
+      const flash = Math.floor(this.scene.time.now / 200) % 2 === 0
+      this.rect.setFillStyle(flash ? this.spec.colorFlash : this.spec.color)
+    }
   }
 
   // ── Turn-time cross-axis re-center (Decision 6, §5.3 step 4) — snap the body's CROSS corner to its
@@ -263,10 +307,11 @@ export class Tank {
   // the tank has a free bullet slot. On a successful acquire: arm the cooldown + increment the live count. ──
   tryFire(pool: BulletPool): void {
     if (this.cooldownTimer > 0 || this.liveBullets >= this.maxBullets) return
-    // Spawn from the tank's body center along its facing (the pool applies the muzzle standoff).
-    const got = pool.acquire(this, this.body.center.x, this.body.center.y, this.facing)
+    // Spawn from the tank's body center along its facing at THIS tank's bulletSpeed (the pool applies the
+    // muzzle standoff). F4 (issue #1): passing this.bulletSpeed is what makes POWER's faster bullet real.
+    const got = pool.acquire(this, this.body.center.x, this.body.center.y, this.facing, this.bulletSpeed)
     if (got) {
-      this.cooldownTimer = FIRE_COOLDOWN
+      this.cooldownTimer = this.fireCooldown // F4 (issue #2): the per-tank attack beat (was FIRE_COOLDOWN).
       this.liveBullets++
     }
   }
@@ -275,6 +320,78 @@ export class Tank {
   // decrements — the classic "you may fire again once your shot despawns" rule. Floored at 0 defensively. ──
   onBulletReleased(): void {
     this.liveBullets = Math.max(0, this.liveBullets - 1)
+  }
+
+  // ── updateAI(dt, ctx) (F4 §5.2/§5.3, Decisions D2/D3/D4, AC3) — the enemy grid-AI tick ──
+  // Builds `this.aiIntent` (a PlayerIntent-shaped snapshot) from a tiny wander/seek FSM, then the SCENE drives
+  // `tank.update(gdt, this.aiIntent)` (the SAME 4-dir movement spine the player uses — DRY, D3) and calls
+  // `tank.tryFire(bullets)` on a fire frame. So the enemy reuses the F1 no-diagonal grid-snap movement VERBATIM
+  // (no second movement code path); the AI is a small INTENT PRODUCER, not a physics actor (SOLID — Input and
+  // updateAI are two producers of one intent contract; Tank.update is the one consumer).
+  //
+  // THE FSM (D4): every random interval in [AI_REDECIDE_MIN, AI_REDECIDE_MAX] (a runtime random OFF the seeded
+  // level pin — the verifier never imports Tank), OR immediately when BLOCKED on the current drive axis (turn at
+  // the obstacle/wall), pick a new cardinal: with probability AI_SEEK_BIAS step the Manhattan-greedy cardinal
+  // toward the target (the eagle base, or the nearest live player if closer), else a random cardinal (wander).
+  // Fire on the cooldown beat whenever a bullet slot is free. NO pathfinding (YAGNI — the generator guarantees a
+  // carved corridor to the fort, so a seek bias reaches it; A* would be speculative complexity — D4).
+  updateAI(dt: number, ctx: { eagle: { x: number; y: number }; players: { x: number; y: number }[] }): void {
+    this.aiRedecideTimer = Math.max(0, this.aiRedecideTimer - dt)
+
+    // Blocked on the current drive axis? (Arcade body.blocked — a wall/tank stopped us this frame.) If so we
+    // re-decide NOW so the enemy turns at the obstacle instead of grinding into it (D4).
+    const drivingX = this.facing === 'left' || this.facing === 'right'
+    const blocked = drivingX
+      ? this.body.blocked.left || this.body.blocked.right
+      : this.body.blocked.up || this.body.blocked.down
+
+    if (this.aiRedecideTimer <= 0 || blocked) {
+      // Choose the target: the eagle base, OR the nearest live player if it is Manhattan-closer (AC3). A live
+      // player is one present in ctx.players (the scene passes only present + alive players).
+      const cx = this.body.center.x
+      const cy = this.body.center.y
+      let target = ctx.eagle
+      let best = Math.abs(ctx.eagle.x - cx) + Math.abs(ctx.eagle.y - cy)
+      for (const p of ctx.players) {
+        const d = Math.abs(p.x - cx) + Math.abs(p.y - cy)
+        if (d < best) {
+          best = d
+          target = p
+        }
+      }
+
+      // Seek-bias (AI_SEEK_BIAS) the greedy cardinal toward the target, else wander a random cardinal. The
+      // greedy cardinal picks the axis with the LARGER Manhattan gap (KISS — no pathfinding, D4).
+      let dirX = 0
+      let dirY = 0
+      if (Math.random() < AI_SEEK_BIAS) {
+        const gx = target.x - cx
+        const gy = target.y - cy
+        if (Math.abs(gx) >= Math.abs(gy)) dirX = gx >= 0 ? 1 : -1
+        else dirY = gy >= 0 ? 1 : -1
+      } else {
+        // A random cardinal (wander): pick one of the four with equal weight.
+        const r = Math.floor(Math.random() * 4)
+        if (r === 0) dirX = 1
+        else if (r === 1) dirX = -1
+        else if (r === 2) dirY = 1
+        else dirY = -1
+      }
+
+      // Write the cardinal into the intent (dirX/dirY + the derived held booleans, exactly as Input shapes it —
+      // the one intent contract). Re-arm the re-decide timer with a fresh runtime random (D4).
+      this.aiIntent.dirX = dirX
+      this.aiIntent.dirY = dirY
+      this.aiIntent.left = dirX < 0
+      this.aiIntent.right = dirX > 0
+      this.aiIntent.up = dirY < 0
+      this.aiIntent.down = dirY > 0
+      this.aiRedecideTimer = AI_REDECIDE_MIN + Math.random() * (AI_REDECIDE_MAX - AI_REDECIDE_MIN)
+    }
+
+    // Fire on the attack beat (AC3): firePressed is true whenever the cooldown has elapsed (the scene gates the
+    // actual acquire on a free bullet slot via tryFire — the same edge-driven fire path the player uses, D3).
+    this.aiIntent.firePressed = this.cooldownTimer <= 0
   }
 
   // ── isHittable() (F3 §5.2, D7, AC5/AC8 — the victim filter) ── a bullet only damages a tank that is ALIVE

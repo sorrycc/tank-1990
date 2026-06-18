@@ -1,6 +1,5 @@
 import Phaser from 'phaser'
 import {
-  BULLET_SPEED,
   PLAYFIELD_X,
   PLAYFIELD_Y,
   PLAYFIELD_W,
@@ -76,35 +75,39 @@ export class BulletPool {
     }
   }
 
-  // ── Fire a bullet from `owner` at (cx, cy) along `facing` (Decision 8/12, AC4/AC5). Sets vx/vy from
-  // facing · BULLET_SPEED, places it at a small muzzle standoff ahead of the tank, marks it active, and
-  // stores ownerSide + the back-ref. Returns the rect, or null if the pool is momentarily exhausted (a
-  // dropped shot is cosmetic — the pool is sized above the live cap). NO `new` — the member is reused (AC9). ──
-  acquire(owner: Tank, cx: number, cy: number, facing: Facing): BulletRect | null {
+  // ── Fire a bullet from `owner` at (cx, cy) along `facing` at `speed` px/s (F1 Decision 8/12 + F4 §5.2 issue
+  // #1, AC4/AC5). The F4 GENERALIZATION: a trailing `speed` parameter REPLACES the hardcoded BULLET_SPEED in the
+  // four facing branches, so a per-tank bullet speed is honoured — POWER's faster bullet (its higher
+  // `bulletSpeed`) is REAL, not a no-op. A player passes PLAYER_BASE.bulletSpeed (= BULLET_SPEED), so the F1
+  // feel is byte-identical. Everything else (the muzzle standoff, vx/vy on the context, the hand-integrated
+  // tick, release) is UNCHANGED — only the velocity MAGNITUDE source moved from the module constant to an
+  // argument. Returns the rect, or null if the pool is momentarily exhausted (a dropped shot is cosmetic). ──
+  acquire(owner: Tank, cx: number, cy: number, facing: Facing, speed: number): BulletRect | null {
     const rect = this._items.find((r) => !r.bx.active)
     if (!rect) return null
 
     // Velocity along the single faced cardinal — exactly one component non-zero (a bullet, like a tank,
-    // never travels diagonally). The muzzle standoff is placed along that same direction.
+    // never travels diagonally). The muzzle standoff is placed along that same direction. `speed` (the
+    // per-tank bullet speed) replaces the old hardcoded BULLET_SPEED here (the F4 seam — issue #1).
     let vx = 0
     let vy = 0
     let mx = cx
     let my = cy
     switch (facing) {
       case 'up':
-        vy = -BULLET_SPEED
+        vy = -speed
         my = cy - MUZZLE_STANDOFF
         break
       case 'down':
-        vy = BULLET_SPEED
+        vy = speed
         my = cy + MUZZLE_STANDOFF
         break
       case 'left':
-        vx = -BULLET_SPEED
+        vx = -speed
         mx = cx - MUZZLE_STANDOFF
         break
       case 'right':
-        vx = BULLET_SPEED
+        vx = speed
         mx = cx + MUZZLE_STANDOFF
         break
     }

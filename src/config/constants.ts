@@ -103,9 +103,11 @@ export const BULLET_DAMAGE = 1 // HP per bullet hit.
 // ONE hit. The enemy armor type overrides this with ARMOR_TANK_HP for multi-hit (the enemy feature, reserved).
 export const TANK_MAX_HP = 1 // HP — a one-hit tank (the classic default).
 
-// ARMOR_TANK_HP (F3 §5.2, D7) — RESERVED for the enemy armor type (multi-hit). F3 spawns NO enemy, but pins
-// the number here so the enemy feature reads ONE owner (DRY) — armor "for free" via the same HP subtraction.
-export const ARMOR_TANK_HP = 3 // HP — the armor enemy survives three hits (reserved for the enemy feature).
+// ARMOR_TANK_HP (F3 §5.2 / F4 §5.2, D7, AC4) — the enemy armor type's HP (multi-hit). F3 RESERVED this at 3;
+// F4 CHANGES it to 4 (issue #3): the classic armor tank flashes FOUR times (white→grey→…) and dies on the
+// FOURTH hit, so AC4's "survives ARMOR_TANK_HP hits" is literally true at 4 — the ARMOR spec's `maxHp` reads
+// this constant (ONE owner — DRY), so armor's multi-hit comes "for free" via the same F3 HP subtraction.
+export const ARMOR_TANK_HP = 4 // HP — the armor enemy survives four hits (the four-flash multi-hit tank, AC4).
 
 // BASE_HP (F3 §5.2, D6, AC6) — the eagle dies to a SINGLE bullet (the classic instant loss). One hit → run over.
 export const BASE_HP = 1 // HP — a single bullet ends the run.
@@ -123,3 +125,37 @@ export const FRIENDLY_FIRE = false // co-op friendly-fire disabled by default.
 export const ENEMIES_PER_STAGE = 20 // enemy tanks to clear in a normal stage.
 export const MAX_CONCURRENT_ENEMIES = 4 // on-screen enemy cap (classic 4); the rest queue and stagger in.
 export const BOSS_STAGE_EVERY = 5 // every 5th stage spawns a heavy "boss tank" (a behavior tag on the same entity).
+
+// ── F4 Enemy tanks (F4 §5.2, Decisions D4/D8, AC1/AC2/AC3/AC7) — PURE spawn-loop + AI tunables (no Phaser) ──
+// All Phaser-free numbers the F4 spawn loop (GameScene) + the enemy AI tick (Tank.updateAI) read. Owned ONCE
+// here (DRY) so the scene + the entity share the SAME truth; the verifier still node-imports this module (a
+// stray Phaser import would throw under node — re-proving purity, AC11). Times are in SECONDS (the dt unit).
+
+// SPAWN_BLINK_TIME (F4 §5.2, AC2) — SECONDS a freshly-spawned enemy BLINKS before becoming a live combatant.
+// Reuses the F3 `spawnIframe` cue: during it isHittable() is false AND the scene skips updateAI/fire, so a
+// new enemy can't materialise on top of a player bullet/tank (the classic spawn telegraph).
+export const SPAWN_BLINK_TIME = 1.0 // s — the spawn-blink telegraph window.
+
+// SPAWN_STAGGER_BASE (F4 §5.2, D8, AC1) — base SECONDS between staggered spawns at stage 0; scaled DOWN by
+// stages.ts `spawnIntervalScale(stageIndex)` so deeper stages stream enemies faster (never instant — clamped).
+export const SPAWN_STAGGER_BASE = 2.0 // s — base delay between consecutive enemy spawns.
+
+// AI_REDECIDE_MIN / AI_REDECIDE_MAX (F4 §5.2, D4, AC3) — the wander re-decide window (SECONDS). Every random
+// interval in [MIN,MAX] the AI picks a new cardinal (a runtime random OFF the seeded level pin — D4). Bounds
+// the "how often the enemy changes its mind" feel: too fast = jittery, too slow = predictable.
+export const AI_REDECIDE_MIN = 0.6 // s — shortest wander commitment.
+export const AI_REDECIDE_MAX = 1.6 // s — longest wander commitment.
+
+// AI_SEEK_BIAS (F4 §5.2, D4, AC3) — probability [0,1] a re-decide steps TOWARD the target (the eagle base or
+// the nearest player, Manhattan-greedy) vs. a random wander cardinal. Higher = the enemies push the base
+// harder. 0.6 keeps them mostly purposeful but still wandering (the classic Battle City feel).
+export const AI_SEEK_BIAS = 0.6 // 0..1 — chance a re-decide seeks the target instead of wandering.
+
+// CARRIER_RATE (F4 §5.2, AC7) — fraction [0,1] of spawned enemies flagged red-flash power-up CARRIERS. On a
+// carrier's death its onDropFlag(x,y) fires once (the F5 pickup seam); F4 only flags + marks the drop point.
+export const CARRIER_RATE = 0.25 // 0..1 — share of enemies that flash red + drop a power-up on death (F5 spawns it).
+
+// SPAWN_INTERVAL_MIN_SCALE (F4 §5.2, D8, AC6) — the FLOOR the monotone `spawnIntervalScale` clamps to, so a
+// deep stage streams enemies FASTER but never instantly (a base of SPAWN_STAGGER_BASE × this is the fastest
+// cadence). Owned here so stages.ts + the verifier read the SAME floor (DRY). 0 < it ≤ 1.
+export const SPAWN_INTERVAL_MIN_SCALE = 0.35 // the smallest spawn-interval multiplier (the fastest stream).

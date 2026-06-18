@@ -34,8 +34,13 @@ import { DEFAULT_META, loadMeta, saveMeta } from '../src/util/save.js'
 // SHARED predicates. Importing them here under node RE-PROVES their purity (a stray `import 'phaser'`
 // throws) — the convention every pure module satisfies.
 import { TILE, TILE_PROPS, isTankPassable, isBulletPassable, isDestructible } from '../src/config/tiles.js'
-import { stageConfig, hardShare, BRICK_DENSITY_MAX, STEEL_DENSITY_MAX, WATER_DENSITY_MAX, TREES_DENSITY_MAX, ICE_DENSITY_MAX, TOTAL_ENEMIES_MAX } from '../src/config/stages.js'
+import { stageConfig, hardShare, bulletSpeedScale, spawnIntervalScale, BRICK_DENSITY_MAX, STEEL_DENSITY_MAX, WATER_DENSITY_MAX, TREES_DENSITY_MAX, ICE_DENSITY_MAX, TOTAL_ENEMIES_MAX, BULLET_SPEED_SCALE_MAX } from '../src/config/stages.js'
 import { generateStage, tankFits, isFortApproachWindow, windowCenter, FOOTPRINT } from '../src/world/LevelGenerator.js'
+// F4 PURE modules (D1/D5/D11): the tank roster + the active-run owner. Importing them here under node
+// RE-PROVES their purity (a stray `import 'phaser'` throws) — the convention every pure module satisfies.
+import { ENEMY_ARCHETYPES, ENEMY_SPECS, BASIC, FAST, POWER, ARMOR, PLAYER_BASE, PLAYER_STAR_TIERS, applyStarTier, rosterPick } from '../src/config/tanks.js'
+import { ARMOR_TANK_HP, SPAWN_INTERVAL_MIN_SCALE } from '../src/config/constants.js'
+import { createRunState } from '../src/core/RunState.js'
 
 function fail(msg) {
   console.error(`verify-gen FAILED: ${msg}`)
@@ -175,7 +180,13 @@ const STAGE_K = 30 // sweep stageConfig(0..STAGE_K) — covers multiple boss mil
     // Boss cadence (AC2): every BOSS_STAGE_EVERY-th stage (0-based: indices 4,9,14,…).
     const expectBoss = s % BOSS_STAGE_EVERY === BOSS_STAGE_EVERY - 1
     if (cfg.isBoss !== expectBoss) fail(`stages: isBoss(${s}) = ${cfg.isBoss}, expected ${expectBoss}`)
-    // Monotonicity (AC9/D16) — each axis non-decreasing vs. the previous stage.
+    // ── F4 enemy-pressure ramps (F4 §5.5, D6, AC6) — within bounds + monotone. bulletSpeedScale ∈ [1, MAX]
+    // NON-decreasing; spawnIntervalScale ∈ [MIN_SCALE, 1] NON-increasing (enemies arrive no slower). ──
+    const bss = bulletSpeedScale(s)
+    const sis = spawnIntervalScale(s)
+    if (bss < 1 || bss > BULLET_SPEED_SCALE_MAX) fail(`stages: bulletSpeedScale(${s}) = ${bss} out of [1,${BULLET_SPEED_SCALE_MAX}]`)
+    if (sis < SPAWN_INTERVAL_MIN_SCALE || sis > 1) fail(`stages: spawnIntervalScale(${s}) = ${sis} out of [${SPAWN_INTERVAL_MIN_SCALE},1]`)
+    // Monotonicity (AC9/D16 + F4 AC6) — each axis non-decreasing vs. the previous stage.
     if (prev) {
       if (cfg.brickDensity < prev.brickDensity) fail(`stages: brickDensity decreased at ${s}`)
       if (cfg.steelDensity < prev.steelDensity) fail(`stages: steelDensity decreased at ${s}`)
@@ -186,6 +197,10 @@ const STAGE_K = 30 // sweep stageConfig(0..STAGE_K) — covers multiple boss mil
       if (cfg.concurrentEnemies < prev.concurrentEnemies) fail(`stages: concurrentEnemies decreased at ${s}`)
       // The NORMALIZED hard-type share (D16) — non-decreasing (NOT each raw weight field).
       if (hardShare(cfg) < hardShare(prev) - 1e-12) fail(`stages: hardShare decreased at ${s} (${hardShare(prev)} → ${hardShare(cfg)})`)
+      // F4 (AC6): bullet-speed scale non-DECREASING (enemy fire pressure rises); spawn-interval scale
+      // non-INCREASING (enemies arrive no slower). The ±1e-12 absorbs float drift on a flat (clamped) span.
+      if (bss < bulletSpeedScale(prev.stageIndex) - 1e-12) fail(`stages: bulletSpeedScale decreased at ${s}`)
+      if (sis > spawnIntervalScale(prev.stageIndex) + 1e-12) fail(`stages: spawnIntervalScale increased at ${s}`)
     }
     prev = cfg
   }
@@ -356,12 +371,138 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
   if (d.isBoss !== PIN_ISBOSS) fail(`pin: isBoss = ${d.isBoss}, expected ${PIN_ISBOSS}`)
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// 7) F4 — tank roster well-formedness + rosterPick/applyStarTier + RunState.advance() determinism
+// (F4 §7, Decisions D1/D5/D6/D11, AC4/AC6/AC8). The roster + RunState are PURE (node-imported above →
+// re-proving purity, AC11). The verifier proves DATA properties (well-formedness + monotonicity +
+// determinism), NOT gameplay balance (the HONEST scope — D11).
+// ════════════════════════════════════════════════════════════════════════════════════════════
+{
+  const KNOWN_BEHAVIORS = new Set(['basic', 'fast', 'power', 'armor', 'player'])
+
+  // ── 7a) Every TankSpec is well-formed (AC4) ── positive numbers, a known behaviour, sane caps. Swept over
+  // the four enemy archetypes + the player base + every star tier's folded spec (applyStarTier(t)).
+  const allSpecs = [...ENEMY_ARCHETYPES, PLAYER_BASE, ...PLAYER_STAR_TIERS.map((_, t) => applyStarTier(t))]
+  for (const spec of allSpecs) {
+    if (typeof spec.id !== 'string' || spec.id.length === 0) fail(`tanks: spec.id missing on ${JSON.stringify(spec)}`)
+    if (!KNOWN_BEHAVIORS.has(spec.behavior)) fail(`tanks: spec ${spec.id} has unknown behavior ${spec.behavior}`)
+    for (const f of ['maxHp', 'moveSpeed', 'bulletSpeed', 'fireCooldown', 'maxBullets']) {
+      if (typeof spec[f] !== 'number' || !(spec[f] > 0)) fail(`tanks: spec ${spec.id}.${f} = ${spec[f]} is not a positive number`)
+    }
+    if (!Number.isInteger(spec.maxBullets)) fail(`tanks: spec ${spec.id}.maxBullets = ${spec.maxBullets} is not an integer`)
+    if (typeof spec.scoreValue !== 'number' || spec.scoreValue < 0) fail(`tanks: spec ${spec.id}.scoreValue = ${spec.scoreValue} invalid`)
+  }
+
+  // ── 7b) The armor spec is the multi-hit tank (AC4) ── maxHp > 1 AND === ARMOR_TANK_HP (the constants owner,
+  // changed 3→4 in F4 — the four-flash tank). A silent off-by-one (armor maxHp ≠ ARMOR_TANK_HP) fails loudly.
+  if (!(ARMOR.maxHp > 1)) fail(`tanks: ARMOR.maxHp = ${ARMOR.maxHp} must be > 1 (the multi-hit tank)`)
+  if (ARMOR.maxHp !== ARMOR_TANK_HP) fail(`tanks: ARMOR.maxHp = ${ARMOR.maxHp} != ARMOR_TANK_HP ${ARMOR_TANK_HP}`)
+  if (ARMOR_TANK_HP !== 4) fail(`tanks: ARMOR_TANK_HP = ${ARMOR_TANK_HP}, expected 4 (the four-flash armor tank, F4)`)
+
+  // ── 7c) The four enemy types DIFFER on a tunable stat (AC4) ── pairwise distinct on at least one of
+  // {moveSpeed, bulletSpeed, maxHp}. A regression that makes two types identical fails loudly (AC4 is a data
+  // check, not eyeballing). FAST out-moves BASIC; POWER out-shoots BASIC; ARMOR out-HPs BASIC (the spec intent).
+  const types = [BASIC, FAST, POWER, ARMOR]
+  for (let i = 0; i < types.length; i++) {
+    for (let j = i + 1; j < types.length; j++) {
+      const a = types[i]
+      const b = types[j]
+      const distinct = a.moveSpeed !== b.moveSpeed || a.bulletSpeed !== b.bulletSpeed || a.maxHp !== b.maxHp
+      if (!distinct) fail(`tanks: ${a.id} and ${b.id} are identical on {moveSpeed,bulletSpeed,maxHp} (AC4)`)
+    }
+  }
+  if (!(FAST.moveSpeed > BASIC.moveSpeed)) fail(`tanks: FAST should out-move BASIC (${FAST.moveSpeed} vs ${BASIC.moveSpeed})`)
+  if (!(POWER.bulletSpeed > BASIC.bulletSpeed)) fail(`tanks: POWER should out-shoot BASIC (${POWER.bulletSpeed} vs ${BASIC.bulletSpeed})`)
+  if (!(ARMOR.maxHp > BASIC.maxHp)) fail(`tanks: ARMOR should out-HP BASIC (${ARMOR.maxHp} vs ${BASIC.maxHp})`)
+
+  // ── 7d) rosterPick returns ONLY a known enemy id + is deterministic for a fixed rng (AC4) ── drive it over a
+  // representative spread of stage weights; the result must always be a key of ENEMY_SPECS. Determinism: two
+  // fresh rngs from the same seed → the SAME pick sequence (the seeded picks the spawn loop relies on, D8).
+  for (const stageIndex of [0, 4, 12, 30]) {
+    const w = stageConfig(stageIndex).enemyWeights
+    const a = mulberry32(0xfeed1234)
+    const b = mulberry32(0xfeed1234)
+    for (let k = 0; k < 200; k++) {
+      const ida = rosterPick(a, w)
+      const idb = rosterPick(b, w)
+      if (!(ida in ENEMY_SPECS)) fail(`tanks: rosterPick returned unknown id ${ida} at stage ${stageIndex}`)
+      if (ida !== idb) fail(`tanks: rosterPick non-deterministic for a fixed rng (${ida} !== ${idb}) at stage ${stageIndex}`)
+    }
+  }
+  // A degenerate all-zero roster falls back to a known id (the total fold — never undefined).
+  {
+    const id = rosterPick(mulberry32(1), { basic: 0, fast: 0, power: 0, armor: 0 })
+    if (!(id in ENEMY_SPECS)) fail(`tanks: rosterPick({all 0}) returned unknown id ${id}`)
+  }
+
+  // ── 7e) applyStarTier is MONOTONE-non-decreasing in bulletSpeed/maxBullets across tiers (AC6) ── each tier's
+  // folded spec must not LOWER the offensive stats vs. the previous tier. tier 0 must equal PLAYER_BASE (the
+  // identity fold — so threading the spec is behaviour-preserving for the player).
+  const tier0 = applyStarTier(0)
+  if (tier0.bulletSpeed !== PLAYER_BASE.bulletSpeed || tier0.maxBullets !== PLAYER_BASE.maxBullets || tier0.fireCooldown !== PLAYER_BASE.fireCooldown)
+    fail(`tanks: applyStarTier(0) != PLAYER_BASE (the identity fold)`)
+  let prevTier = tier0
+  for (let t = 1; t < PLAYER_STAR_TIERS.length; t++) {
+    const cur = applyStarTier(t)
+    if (cur.bulletSpeed < prevTier.bulletSpeed) fail(`tanks: applyStarTier bulletSpeed decreased at tier ${t}`)
+    if (cur.maxBullets < prevTier.maxBullets) fail(`tanks: applyStarTier maxBullets decreased at tier ${t}`)
+    if (cur.fireCooldown > prevTier.fireCooldown + 1e-12) fail(`tanks: applyStarTier fireCooldown increased at tier ${t} (should fire no slower)`)
+    prevTier = cur
+  }
+
+  // ── 7f) RunState.advance() is deterministic + stageIndex strictly increases (AC8) ── construct two run states
+  // from the SAME start seed + slots, drive advance() K times, and assert the (seed, stageIndex) chain is
+  // byte-identical AND stageIndex strictly increases by 1 each step. The successful node-import (above) re-proves
+  // RunState's purity. lives/tier/score are CARRIED (untouched by advance — D10): assert score stays put.
+  {
+    const RS_SEED = 0xc0ffee
+    const SLOTS = [1, 2]
+    const START_LIVES_T = 3
+    const a = createRunState(RS_SEED, SLOTS, START_LIVES_T)
+    const b = createRunState(RS_SEED, SLOTS, START_LIVES_T)
+    // Initial state sanity (AC8): stageIndex 0, the ledger seeded from stage 0, lives seeded per slot, score 0.
+    const cfg0 = stageConfig(0)
+    if (a.stageIndex !== 0) fail(`RunState: fresh stageIndex = ${a.stageIndex}, expected 0`)
+    if (a.score !== 0) fail(`RunState: fresh score = ${a.score}, expected 0`)
+    if (a.enemiesQueued !== cfg0.totalEnemies || a.enemiesRemaining !== cfg0.totalEnemies || a.enemiesAlive !== 0)
+      fail(`RunState: fresh spawn ledger not seeded from stageConfig(0)`)
+    for (const slot of SLOTS) {
+      if (a.lives[slot] !== START_LIVES_T) fail(`RunState: fresh lives[${slot}] = ${a.lives[slot]}, expected ${START_LIVES_T}`)
+      if (a.tier[slot] !== 0) fail(`RunState: fresh tier[${slot}] = ${a.tier[slot]}, expected 0`)
+    }
+    if (a.freezeTimer !== 0 || a.shovelTimer !== 0) fail(`RunState: fresh power-up timers not 0 (the neutral identity)`)
+    // Mutate a's carried state, then drive advance() — the carried score/lives/tier must SURVIVE advance (D10).
+    a.score = 4200
+    a.lives[1] = 1
+    const RS_K = 25
+    for (let i = 0; i < RS_K; i++) {
+      const prevStage = a.stageIndex
+      a.advance()
+      b.advance()
+      if (a.seed !== b.seed) fail(`RunState: advance() seed diverged at step ${i} (${a.seed} !== ${b.seed})`)
+      if (a.stageIndex !== b.stageIndex) fail(`RunState: advance() stageIndex diverged at step ${i}`)
+      if (a.stageIndex !== prevStage + 1) fail(`RunState: stageIndex not strictly +1 at step ${i} (${prevStage} → ${a.stageIndex})`)
+      // The ledger is reseeded from the NEW stage; the carried economy is untouched (D10).
+      const cfg = stageConfig(a.stageIndex)
+      if (a.enemiesQueued !== cfg.totalEnemies || a.enemiesAlive !== 0) fail(`RunState: ledger not reseeded at step ${i}`)
+      if (a.score !== 4200) fail(`RunState: score NOT carried across advance() (got ${a.score}) — D10`)
+      if (a.lives[1] !== 1) fail(`RunState: lives NOT carried across advance() — D10`)
+    }
+    // isBossStage() tracks stageConfig.isBoss (the boss-feature seam). Drive a fresh run to a boss stage.
+    const c = createRunState(1, [1], 3)
+    while (c.stageIndex < BOSS_STAGE_EVERY - 1) c.advance()
+    if (!c.isBossStage()) fail(`RunState: isBossStage() false at the first boss stage (index ${c.stageIndex})`)
+  }
+}
+
 console.log(
   `verify-gen OK: rng deterministic + pinned; constants ${GRID_COLS}x${GRID_ROWS} (pure node-import); ` +
     `save clone-no-alias; tiles TILE_PROPS total + helpers read the table; ` +
-    `stages monotonic over stageConfig(0..${STAGE_K}) (densities+counts+hardShare+boss cadence, D16); ` +
+    `stages monotonic over stageConfig(0..${STAGE_K}) (densities+counts+hardShare+boss cadence + F4 bulletSpeed/spawnInterval ramps, D16/F4-AC6); ` +
     `stage sweep ${SWEEP_SEEDS} seeds × ${SWEEP_STAGES.length} stages — determinism + bounds (≤scatterCells, D14) + ` +
-    `eagle enclosed&reachable (footprint BFS, D15) + spawn validity & window-center pin (D13); regression pin (D10). ` +
+    `eagle enclosed&reachable (footprint BFS, D15) + spawn validity & window-center pin (D13); regression pin (D10); ` +
+    `F4 roster well-formed + 4 types distinct + rosterPick known/deterministic + applyStarTier monotone + ` +
+    `RunState.advance() deterministic & stageIndex strictly increasing & economy carried (pure node-import, AC4/AC6/AC8). ` +
     `(FOOTPRINT=${FOOTPRINT} tiles.)`,
 )
 process.exit(0)

@@ -11,6 +11,9 @@ import {
   START_LIVES,
   BULLET_DAMAGE,
   FRIENDLY_FIRE,
+  SPAWN_BLINK_TIME,
+  SPAWN_STAGGER_BASE,
+  CARRIER_RATE,
 } from '../config/constants.js'
 import { TILE } from '../config/tiles.js'
 import { Input } from '../core/Input.js'
@@ -19,9 +22,15 @@ import { Base } from '../entities/Base.js'
 import { BulletPool } from '../combat/BulletPool.js'
 import type { BulletRect } from '../combat/BulletPool.js'
 import { Effects } from '../effects/Effects.js'
-import { stageConfig } from '../config/stages.js'
+import { stageConfig, spawnIntervalScale, bulletSpeedScale } from '../config/stages.js'
 import { generateStage } from '../world/LevelGenerator.js'
+import type { StageDescription, SpawnPoint } from '../world/LevelGenerator.js'
 import { TileMap } from '../world/TileMap.js'
+import { createRunState } from '../core/RunState.js'
+import type { RunState } from '../core/RunState.js'
+import { ENEMY_SPECS, rosterPick, applyStarTier } from '../config/tanks.js'
+import { mulberry32 } from '../util/rng.js'
+import type { RNG } from '../util/rng.js'
 
 // ── GameScene (F0 §5.3 + F1 §5.4 + F2 §5.4 + F3 Combat & terrain §5.4, Decisions D1/D3/D6/D7/D8/D9/D10/D11,
 // AC1–AC11) ──
@@ -48,14 +57,13 @@ import { TileMap } from '../world/TileMap.js'
 // `side`, so the enemy feature constructs `side:'enemy'` tanks that plug into the SAME overlap + onDeath with
 // NO refactor. F3 spawns NO enemies / power-ups / score readouts (each lands in its own feature — YAGNI).
 
-// A fixed dev seed for the generated stage (D11/D12 — the run/seed wiring is a LATER feature; F3 keeps the
-// stable F2 stage so the sandbox is reproducible). The stageIndex defaults to 0 (the first stage).
-const DEV_SEED = 0x7a4b1990
-const DEV_STAGE_INDEX = 0
-
 // A tank-collider GameObject carries a back-ref to its owning Tank so the bullet×tank overlap callback reads
 // the victim off the struck body (DRY — the reference's `enemyRect.enemyRef`, F3 §5.3).
 type TankCollider = Phaser.GameObjects.Rectangle & { tankRef?: Tank }
+
+// The IDLE intent a spawn-BLINKING enemy is ticked with (F4 §5.3, AC2) — all zero, so update() holds the body
+// still (no move, no facing change, no fire). A frozen literal shared by every blinking enemy (no allocation).
+const IDLE_INTENT = { up: false, down: false, left: false, right: false, dirX: 0, dirY: 0, firePressed: false }
 // A solidBodies child carries F2's grid tags (tileKind/tileCol/…) + the F3 back-ref to the Base (the eagle's
 // TILE.BASE body, found + tagged in create()). The terrain callback reads these off the struck body (D2/D3).
 type SolidRect = Phaser.GameObjects.Rectangle & {
@@ -75,19 +83,32 @@ export class GameScene extends Phaser.Scene {
   private p2: Tank | null = null
   private tileMap!: TileMap
 
-  // F3 combat state (§5.4) — the FX façade, the eagle entity, the present-players lives ledger, the spawn
-  // window-centers for respawn, and the one-shot run-end / rebuild guards.
+  // F3 combat state (§5.4) — the FX façade, the eagle entity, the spawn window-centers for respawn, and the
+  // one-shot run-end / rebuild guards. F4 (§5.4, D10): the F3 `lives` ledger MOVED onto RunState (the source
+  // of truth carried across the stage rebuild) — the scene reads runState.lives now.
   private effects!: Effects
   private base!: Base
-  // The lives ledger is seeded for the PRESENT players ONLY (P1 always; P2 only when TWO_PLAYER — D11). A
-  // phantom P2 slot is NEVER seeded when solo, so _checkRunOver (which iterates THESE keys) can't be blocked.
-  private lives!: Map<number, number>
   // The generated spawn window-center per present player slot — respawnAt re-places the tank here (DRY, D11).
   private spawnPos!: Map<number, { x: number; y: number }>
   // The present player tanks keyed by slot (1/2) — the bullet×tank overlap + the run drive these (D11).
   private playerTanks!: Map<number, Tank>
   private gameOver = false // one-shot run-end guard (D6/AC6/AC10) — _triggerGameOver fires once.
-  private transitioning = false // one-shot rebuild guard (reserved — F3 has no stage rebuild yet, D12).
+  private transitioning = false // one-shot stage-rebuild guard (F4 §5.4, D7/AC5/AC10) — _advanceStage fires once.
+
+  // ── F4 run + enemy state (F4 §5.4, Decisions D5/D8, AC1/AC5/AC8) ──
+  // runState: the SINGLE run owner (seed/stageIndex/lives/tier/score/the spawn ledger) — the scene is its
+  // only writer (D5). desc: the current stage's generated description (kept so _buildStage repositions players
+  // + the spawn loop reads the top enemy spawns). enemies: the live enemy tanks (ticked + torn down per stage).
+  // stageRng: the seeded per-stage RNG for the roster picks (re-seeded from runState.seed each _buildStage — the
+  // weighted pick is deterministic for a fixed stage seed; the AI's per-frame randomness is OFF this pin, D4).
+  // spawnTimer/spawnCursor: the staggered-spawn cadence + the round-robin L→C→R cursor over the three top spawns.
+  private runState!: RunState
+  private desc!: StageDescription
+  private enemies: Tank[] = []
+  private stageRng!: RNG
+  private spawnTimer = 0
+  private spawnCursor = 0
+  private stageLabel!: Phaser.GameObjects.Text // the "STAGE N" readout (updated in place on a stage advance).
 
   constructor() {
     super('Game')
@@ -106,29 +127,63 @@ export class GameScene extends Phaser.Scene {
     g.lineStyle(2, 0x30363d, 1)
     g.strokeRect(PLAYFIELD_X, PLAYFIELD_Y, PLAYFIELD_W, PLAYFIELD_H)
 
-    this.add
-      .text(DESIGN_WIDTH / 2, PLAYFIELD_Y - 28, `STAGE ${DEV_STAGE_INDEX + 1}`, {
+    // The "STAGE N" readout — created ONCE, updated in place on a stage advance (DRY — one text object, AC5).
+    this.stageLabel = this.add
+      .text(DESIGN_WIDTH / 2, PLAYFIELD_Y - 28, '', {
         fontFamily: UI_FONT,
         fontSize: '20px',
         color: '#8b949e',
       })
       .setOrigin(0.5)
 
-    // ── Build the generated stage (F2 §5.4, D11/D13) ── kept UNCHANGED: pick the difficulty params, generate
-    // the SEEDED 13×13 description (terrain + enclosed reachable eagle fort + spawns), render + body via TileMap.
-    const cfg = stageConfig(DEV_STAGE_INDEX)
-    const desc = generateStage(DEV_SEED, cfg)
-    this.tileMap = new TileMap(this, desc)
-
-    // ── The SINGLE Input owner + the shared BulletPool + the FX façade (Decision D9/D12, AC2/AC7) ──
+    // ── The SINGLE Input owner + the shared BulletPool + the FX façade (Decision D9/D12, AC2/AC7) ── these are
+    // RUN-scoped (they outlive a per-stage rebuild — the pool's releaseAll() clears in-flight shots, F4 §5.4).
     this.input2 = new Input(this)
     this.bullets = new BulletPool(this)
     this.effects = new Effects(this)
 
+    // ── Construct the SINGLE RunState (F4 §5.4, D5/D11) ── the run owner: a minted seed (replaces F3's fixed
+    // DEV_SEED), the present player slots ([1] solo / [1,2] co-op — the D11 scoping), and START_LIVES per slot.
+    // The scene is its ONLY writer (no module singleton — D5). The per-stage spawn ledger is seeded from stage 0.
+    const presentSlots = TWO_PLAYER ? [1, 2] : [1]
+    this.runState = createRunState(this._mintSeed(), presentSlots, START_LIVES)
+
+    // ── Build the first stage via the SHARED builder (F4 §5.4, D7 — extracted so create() + every rebuild run
+    // ONE path, DRY). It generates the seeded stage, the eagle, the present players, the spawn ledger, + the
+    // F3 overlaps; it reads everything it needs off the RunState (seed/stageIndex/tier/the ledger).
+    this._buildStage()
+  }
+
+  // ── _mintSeed() (F4 §5.4, D5) ── the WHOLE-run seed source. Mixes the wall clock so consecutive runs differ
+  // (a fresh procedural run each launch); >>> 0 keeps it an unsigned 32-bit int. RunState.advance() chains it
+  // deterministically from here, so the run is reproducible GIVEN this seed (the verifier drives advance() from
+  // a fixed seed — determinism is proved there; this only picks the run's starting point).
+  private _mintSeed(): number {
+    return (Date.now() ^ (this.time.now * 2654435761)) >>> 0
+  }
+
+  // ── _buildStage() (F4 §5.4, D7, AC5) — the SHARED stage builder (create() + every rebuild call it, DRY) ──
+  // Generates the SEEDED 13×13 stage from the CURRENT RunState (seed + stageIndex), builds the eagle + the
+  // present players (carrying lives/tier/score on the RunState across a rebuild), seeds the per-stage RNG +
+  // spawn ledger + cursor, and registers the F3 bullet×solids + bullet×tank overlaps. Repositions only the
+  // PRESENT players (D11). Leaves `enemies` empty (the staggered spawn loop streams them in update — AC1).
+  private _buildStage(): void {
+    const cfg = stageConfig(this.runState.stageIndex)
+    this.desc = generateStage(this.runState.seed, cfg)
+    this.tileMap = new TileMap(this, this.desc)
+    this.stageLabel.setText(`STAGE ${this.runState.stageIndex + 1}`)
+
+    // The per-stage roster RNG — seeded from the run seed so the weighted picks are deterministic for a fixed
+    // stage (the AI's per-frame randomness is separate, OFF this pin — D4). Reset the spawn cadence + cursor.
+    this.stageRng = mulberry32(this.runState.seed)
+    this.spawnTimer = 0
+    this.spawnCursor = 0
+    this.enemies = []
+
     // ── The eagle entity (F3 §5.4, D3/D6, AC6) ── draw the eagle VISUAL at the BASE tile's window-center
     // (the same coord F2's TileMap drew its TILE.BASE body at — DRY). The tank-blocking STATIC BODY ALREADY
     // exists in `solidBodies` (F2 emitted it). Wire the run-over edge to the guarded _triggerGameOver (D6).
-    this.base = new Base(this, desc.base.x, desc.base.y)
+    this.base = new Base(this, this.desc.base.x, this.desc.base.y)
     this.base.onDestroyed = () => this._triggerGameOver()
     // Back-reference the F2-emitted TILE.BASE body to the Base so the ONE bullet×solidBodies callback's
     // tileKind===TILE.BASE branch resolves the eagle hit via solidRect.baseRef.onHit() (D3 — no second body,
@@ -141,59 +196,62 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // ── Spawn the player tank(s) (F2 §5.4, D11/D13) ── P1 always; P2 only when TWO_PLAYER. Seed the lives
-    // ledger + the spawn-position map + the playerTanks map for the PRESENT players ONLY (D11 — a phantom P2
-    // is never seeded when solo, so _checkRunOver can never be blocked by a slot that's never driven/killed).
-    this.lives = new Map<number, number>()
+    // ── Spawn the player tank(s) (F4 §5.4, D10/D11/D13) ── P1 always; P2 only when TWO_PLAYER. Each is built
+    // FRESH per stage (the teardown destroyed the previous one) so its terrain collider + bullet overlap bind
+    // to THIS stage's tilemap (no stale-collider / duplicate-overlap leak across a rebuild — AC10). The run
+    // state (lives/tier/score) lives on the RunState (D10), so building fresh loses nothing. A player with NO
+    // lives left this stage is NOT spawned (it stayed down — the run continues until every present player is
+    // spent or the eagle dies). The spawn-position + playerTanks maps are seeded for the PRESENT players ONLY
+    // (D11 — a phantom P2 is never seeded when solo, so _checkRunOver can't be blocked).
     this.spawnPos = new Map<number, { x: number; y: number }>()
     this.playerTanks = new Map<number, Tank>()
 
-    const sp1 = desc.playerSpawns[0]
-    this.p1 = this._spawnPlayer(1, sp1.x, sp1.y)
-
+    const sp1 = this.desc.playerSpawns[0]
+    this.p1 = this._buildPlayer(1, sp1.x, sp1.y)
     if (TWO_PLAYER) {
-      const sp2 = desc.playerSpawns[1]
-      this.p2 = this._spawnPlayer(2, sp2.x, sp2.y)
+      const sp2 = this.desc.playerSpawns[1]
+      this.p2 = this._buildPlayer(2, sp2.x, sp2.y)
       this.physics.add.collider(this.p1.collider, this.p2.collider) // the two tanks can't overlap.
     }
 
     // ── Register the F3 overlaps (F3 §5.4, D1/D3, AC1–AC6/AC9) ──
     // bullet × terrain solids: ONE callback resolves brick (chip + despawn) / steel (despawn) / the eagle
     // (run over + despawn) by switching on the struck body's tileKind tag (D2/D3). The processCallback
-    // early-returns while gameOver (the reference's filter style) + on a stale bullet handle.
+    // early-returns while gameOver/transitioning (the reference's filter style) + on a stale bullet handle.
     this.physics.add.overlap(
       this.bullets.group,
       this.tileMap.solidBodies,
       (bulletRect, solidRect) => this._onBulletHitSolid(bulletRect as BulletRect, solidRect as SolidRect),
-      (bulletRect) => !this.gameOver && (bulletRect as BulletRect).bx.active,
+      (bulletRect) => !this.gameOver && !this.transitioning && (bulletRect as BulletRect).bx.active,
       this,
     )
-    // bullet × each present tank: friendly-fire-filtered (D8) damage funnel. The collider GameObject carries
-    // a `tankRef` back-ref (set in _spawnPlayer). NO bullet×water overlap is registered (AC3 — bullets fly
-    // over water). NO separate bullet×base overlap (the eagle rides inside solidBodies — D3/AC6).
-    for (const tank of this.playerTanks.values()) {
-      this.physics.add.overlap(
-        this.bullets.group,
-        tank.collider,
-        (bulletRect, tankRect) => this._onBulletHitTank(bulletRect as BulletRect, tankRect as TankCollider),
-        (bulletRect, tankRect) => this._bulletCanHitTank(bulletRect as BulletRect, tankRect as TankCollider),
-        this,
-      )
-    }
+    // (The bullet × player tank overlaps are registered per-player inside _buildPlayer; enemy tanks register
+    // their OWN in _spawnStep — all into the SAME side-generic shape via _registerTankOverlap, D9/AC9.)
   }
 
-  // ── Spawn a player tank for slot `slot` at the generated window-center (F3 §5.4, D11) ── construct the tank
-  // (F1, unchanged), collide it against the terrain (F2, kept), tag its collider with the back-ref, seed its
-  // life/spawn-position/tank entries, and wire its onDeath to the scene's life/respawn path (D11). ──
-  private _spawnPlayer(slot: number, x: number, y: number): Tank {
-    const tank = new Tank(this, x, y, 'player')
+  // ── _buildPlayer(slot,x,y) (F4 §5.4, D10/D11) ── build a present player FRESH for this stage. Construct it
+  // with the spec ctor folded over the player's tier (applyStarTier(runState.tier[slot]) — PLAYER_BASE at tier
+  // 0, the F1 feel preserved since PLAYER_BASE == the F1 constants), collide it against THIS stage's terrain,
+  // tag its collider with the back-ref, register its bullet×tank overlap (the F3 seam — D9), and wire its
+  // onDeath to the life/respawn path (D11). Lives/tier live on RunState (carried across the rebuild — D10), so
+  // a fresh tank loses nothing. A player out of lives stays DOWN (a parked corpse — no respawn, but still in
+  // the playerTanks map so _checkRunOver counts it). Seed the spawn-position + playerTanks maps for the slot.
+  private _buildPlayer(slot: number, x: number, y: number): Tank {
+    const tank = new Tank(this, x, y, 'player', applyStarTier(this.runState.tier[slot] ?? 0))
     ;(tank.collider as TankCollider).tankRef = tank // the bullet×tank overlap reads the victim off this (DRY).
     this._collideTankWithTerrain(tank) // AC10 (F2) — the tank stops at brick/steel/water/the eagle.
-    this.lives.set(slot, START_LIVES)
+    this._registerTankOverlap(tank) // the bullet×tank damage funnel (F3 seam, side-generic — D9/AC9).
+    tank.onDeath = () => this._onPlayerDeath(slot, tank)
+    // A player with no lives left this stage stays DOWN (its body parked/hidden) — it is still counted by
+    // _checkRunOver (the run ends only when EVERY present player is spent). respawnAt arms i-frames on a kill.
+    if ((this.runState.lives[slot] ?? 0) <= 0) {
+      tank.alive = false
+      tank.rect.setVisible(false)
+      tank.barrel.setVisible(false)
+      tank.body.enable = false
+    }
     this.spawnPos.set(slot, { x, y })
     this.playerTanks.set(slot, tank)
-    // The Tank reports its death; the SCENE owns the run economy (spend-a-life-and-respawn vs. stay-down, D11).
-    tank.onDeath = () => this._onPlayerDeath(slot, tank)
     return tank
   }
 
@@ -202,6 +260,21 @@ export class GameScene extends Phaser.Scene {
   private _collideTankWithTerrain(tank: Tank): void {
     this.physics.add.collider(tank.collider, this.tileMap.solidBodies)
     this.physics.add.collider(tank.collider, this.tileMap.waterBodies)
+  }
+
+  // ── _registerTankOverlap(tank) (F4 §5.4, D9, AC9) ── register a tank's collider into the bullet×tank overlap
+  // — the SAME shape F3 used for players, GENERIC over `side` (the F3 seam — so an enemy plugs in with NO new
+  // overlap architecture, D9). The filter/resolution (_bulletCanHitTank/_onBulletHitTank) are side-generic +
+  // friendly-fire-filtered, so a player bullet kills an enemy + an enemy bullet kills a player/the eagle, but
+  // same-side shots pass (FF off — for FREE). NO bullet×water overlap (bullets fly over water — AC3).
+  private _registerTankOverlap(tank: Tank): void {
+    this.physics.add.overlap(
+      this.bullets.group,
+      tank.collider,
+      (bulletRect, tankRect) => this._onBulletHitTank(bulletRect as BulletRect, tankRect as TankCollider),
+      (bulletRect, tankRect) => this._bulletCanHitTank(bulletRect as BulletRect, tankRect as TankCollider),
+      this,
+    )
   }
 
   // ── bullet × terrain solids resolution (F3 §5.3, D1/D2/D3/D4, AC1/AC2/AC6/AC10) ── ONE callback over the
@@ -281,8 +354,9 @@ export class GameScene extends Phaser.Scene {
   // death OR EVERY PRESENT player out of lives ends the run — D11). ──
   private _onPlayerDeath(slot: number, tank: Tank): void {
     this.effects.explosion(tank.collider.x, tank.collider.y, { big: true }) // the kill burst at the tank center.
-    const remaining = (this.lives.get(slot) ?? 0) - 1
-    this.lives.set(slot, Math.max(0, remaining))
+    // F4 (D10): lives live on RunState now (carried across a stage rebuild). Spend one + floor at 0.
+    const remaining = (this.runState.lives[slot] ?? 0) - 1
+    this.runState.lives[slot] = Math.max(0, remaining)
     if (remaining > 0) {
       const sp = this.spawnPos.get(slot)
       if (sp) tank.respawnAt(sp.x, sp.y) // re-place + refill HP + arm the i-frames (D11).
@@ -297,8 +371,8 @@ export class GameScene extends Phaser.Scene {
   // still has a life, the run continues; otherwise every present player is spent → the guarded run-over. This
   // scoping is the single-player fix (D11): a solo P1 is the ONLY key, so spending its last life ends the run.
   private _checkRunOver(): void {
-    for (const livesLeft of this.lives.values()) {
-      if (livesLeft > 0) return // someone still has a life → the run continues.
+    for (const slot of this.playerTanks.keys()) {
+      if ((this.runState.lives[slot] ?? 0) > 0) return // someone still has a life → the run continues.
     }
     this._triggerGameOver() // every present player spent → run over (guarded, fires once).
   }
@@ -315,6 +389,150 @@ export class GameScene extends Phaser.Scene {
     // Defer the transition a beat so the kill burst + flash read before the screen swaps (the reference's
     // delayedCall handoff). effects keep ticking until then (update's gameOver branch ticks the FX, AC7).
     this.time.delayedCall(700, () => this.scene.start('GameOver'))
+  }
+
+  // ── _spawnStep(gdt) (F4 §5.3/§5.4, Decisions D8, AC1/AC2/AC7) — the staggered/capped spawn loop ──
+  // Decays a spawn timer (on the GAMEPLAY dt so a future freeze pauses spawning too). When it elapses AND a
+  // slot is free (enemiesAlive < the stage's concurrentEnemies cap) AND there is a queued enemy, spawn ONE at
+  // the next top spawn point (round-robin L→C→R over the three F2 window-centers), pick its archetype via the
+  // PURE rosterPick (deterministic for the stage seed), flag it a carrier on a CARRIER_RATE roll, blink it
+  // (SPAWN_BLINK_TIME — inert during the blink, AC2), register the F3 overlap (D9), wire its onDeath +
+  // onDropFlag, and update the ledger. The stagger scales by the stage's spawnIntervalScale (deeper → faster).
+  private _spawnStep(gdt: number): void {
+    this.spawnTimer = Math.max(0, this.spawnTimer - gdt)
+    if (this.spawnTimer > 0) return
+
+    const cfg = stageConfig(this.runState.stageIndex)
+    if (this.runState.enemiesQueued <= 0) return // nothing left to stream in this stage.
+    if (this.runState.enemiesAlive >= cfg.concurrentEnemies) return // the on-screen cap is full — wait (AC1).
+
+    // Round-robin the three top enemy spawns (L→C→R) — the F2 generated window-centers (tankFits anchors, D13).
+    const topSpawns: SpawnPoint[] = this.desc.enemySpawns
+    const point = topSpawns[this.spawnCursor % topSpawns.length]
+    this.spawnCursor++
+
+    // Pick the archetype via the PURE weighted roster pick (deterministic for the stage seed — D1/D8), then
+    // scale the spec's bullet speed by the stage's monotone bulletSpeedScale (the enemy fire pressure, AC6).
+    const id = rosterPick(this.stageRng, cfg.enemyWeights)
+    const base = ENEMY_SPECS[id]
+    const spec = { ...base, bulletSpeed: Math.round(base.bulletSpeed * bulletSpeedScale(this.runState.stageIndex)) }
+
+    const enemy = new Tank(this, point.x, point.y, 'enemy', spec) // the WHOLE spec → all per-type stats (AC4).
+    ;(enemy.collider as TankCollider).tankRef = enemy
+    this._collideTankWithTerrain(enemy) // enemies stop at terrain too (F2 colliders — DRY).
+    enemy.carrier = this.stageRng() < CARRIER_RATE // red-flash power-up carrier (AC7).
+    enemy.spawnIframe = SPAWN_BLINK_TIME // blink before active/lethal (AC2 — inert during the blink).
+    enemy.onDeath = () => this._onEnemyKilled(enemy)
+    // The drop-flag hook fires ONCE at death for a carrier (the F5 pickup seam — F4 marks the drop point only).
+    enemy.onDropFlag = enemy.carrier ? (x, y) => this._markDrop(x, y) : null
+    this._registerTankOverlap(enemy) // the SAME bullet×tank overlap as players (F3 seam, D9/AC9).
+    this.enemies.push(enemy)
+
+    // Update the per-stage ledger (D8): one fewer queued, one more alive. enemiesRemaining = queued + alive
+    // (kept in sync so the HUD/readout + the clear predicate read one truth).
+    this.runState.enemiesQueued--
+    this.runState.enemiesAlive++
+
+    // Re-arm the spawn timer at the stage-scaled cadence (deeper stages stream faster, never instant — D8/AC6).
+    this.spawnTimer = SPAWN_STAGGER_BASE * spawnIntervalScale(this.runState.stageIndex)
+  }
+
+  // ── _tickEnemies(gdt) (F4 §5.3, Decisions D2/D3, AC2/AC3) ── drive every LIVE enemy. A spawn-BLINKING enemy
+  // (spawnIframe > 0) is INERT: it ticks update (decaying the blink) with an IDLE intent — no move, no AI, no
+  // fire (AC2). An active enemy runs updateAI (building its wander/seek intent), then update() drives it through
+  // the SAME movement spine the player uses (DRY — D3), and tryFire fires on the AI's beat. The AI ctx is the
+  // eagle center + the present ALIVE players' centers (the seek targets — AC3).
+  private _tickEnemies(gdt: number): void {
+    const eagle = { x: this.desc.base.x, y: this.desc.base.y }
+    const players: { x: number; y: number }[] = []
+    for (const t of this.playerTanks.values()) {
+      if (t.alive && t.isHittable()) players.push({ x: t.body.center.x, y: t.body.center.y })
+    }
+    for (const enemy of this.enemies) {
+      if (!enemy.alive) continue
+      if (enemy.spawnIframe > 0) {
+        enemy.update(gdt, IDLE_INTENT) // blinking — decay the i-frame; no move/fire (AC2).
+        continue
+      }
+      enemy.updateAI(gdt, { eagle, players }) // build the wander/seek intent (AC3).
+      enemy.update(gdt, enemy.aiIntent) // drive it through the SAME spine (DRY — D3).
+      if (enemy.aiIntent.firePressed) enemy.tryFire(this.bullets) // fire on the beat (the F1 fire path, D3).
+    }
+  }
+
+  // ── _onEnemyKilled(enemy) (F4 §5.3, Decisions D7/D10, AC5/AC7) ── the enemy's onDeath fired (HP funnel hit 0,
+  // F3). Bank its score (D10), decrement the alive ledger, fire the carrier drop-flag ONCE (AC7), and — if this
+  // was the LAST enemy of the stage (none queued, none alive) — DEFER the stage advance out of this death/overlap
+  // callback under the one-shot `transitioning` guard (the footgun discipline — AC10). The F3 onHit already
+  // hid + disabled the corpse; we remove it from the live list (its body is torn down on the stage teardown).
+  private _onEnemyKilled(enemy: Tank): void {
+    this.effects.explosion(enemy.collider.x, enemy.collider.y, { big: true }) // the kill burst at the tank center.
+    this.runState.score += enemy.spec.scoreValue // bank the score (D10 — the HUD/Hub features render/spend it).
+    this.runState.enemiesAlive = Math.max(0, this.runState.enemiesAlive - 1)
+    this.runState.enemiesRemaining = this.runState.enemiesQueued + this.runState.enemiesAlive
+    // A carrier drops a power-up: fire the hook ONCE with the death center (the F5 pickup seam — AC7). F4 marks
+    // the drop point; no power-up entity is constructed here (YAGNI).
+    if (enemy.carrier && enemy.onDropFlag) {
+      enemy.onDropFlag(enemy.collider.x, enemy.collider.y)
+      enemy.onDropFlag = null // one-shot (a same-frame double-hit can't re-fire — mirrors onDeath's discipline).
+    }
+
+    // The stage-clear predicate (AC5): no more queued AND none alive → every enemy is dead. Defer the rebuild
+    // out of this callback under the one-shot guard (a multi-frame final-kill advances exactly once — AC10).
+    if (this.runState.enemiesQueued <= 0 && this.runState.enemiesAlive <= 0 && !this.transitioning && !this.gameOver) {
+      this.transitioning = true
+      this.time.delayedCall(0, () => this._advanceStage())
+    }
+  }
+
+  // ── _markDrop(x,y) (F4 §5.3, AC7) ── the F5 power-up-pickup SEAM: a carrier died here. F4 pops a brief FX
+  // marker at the drop center (NO power-up entity is spawned — YAGNI); F5 swaps in the pickup spawn.
+  private _markDrop(x: number, y: number): void {
+    this.effects.explosion(x, y, { big: true }) // a brief marker burst where the power-up will drop (F5).
+  }
+
+  // ── _advanceStage() (F4 §5.3/§5.4, Decisions D5/D6/D7, AC5/AC10) ── the deferred stage→stage advance (run
+  // through delayedCall(0) out of the death callback — AC10). Advance the RunState (next seed + stageIndex++ +
+  // reseed the spawn ledger — D5/D6), tear down the per-stage world (leaks nothing — AC10), rebuild the next
+  // (harder) stage IN PLACE via the SHARED _buildStage (carrying lives/tier/score on the RunState — D10), and
+  // clear the one-shot guard. A guard re-check defends against a run-over racing the defer.
+  private _advanceStage(): void {
+    if (this.gameOver) {
+      this.transitioning = false
+      return
+    }
+    this.runState.advance() // next seed + stageIndex++ + reseed the ledger (D5/D6).
+    this._teardownStage() // destroy the tilemap / enemies / in-flight bullets / the eagle visual (AC10).
+    this._buildStage() // rebuild the next stage IN PLACE (carries lives/tier/score on the RunState — D10).
+    this.transitioning = false // re-arm for the next stage.
+  }
+
+  // ── _teardownStage() (F4 §5.4, D7/D10, AC10) ── tear down EVERY per-stage GameObject so a rebuild leaks none:
+  // release every in-flight bullet (BulletPool.releaseAll, F1 — a teardown is not a despawn, so no live-count
+  // touch), destroy every enemy AND player tank (its collider/rect/barrel — their colliders/overlaps bind to
+  // THIS stage's tilemap, so they must go + be rebuilt fresh against the next one — no stale collider, no
+  // duplicate overlap), destroy the tilemap (its solid/water bodies + decorations — TileMap.destroy, F2), and
+  // destroy the eagle VISUAL (its blocking body rode inside the tilemap — already gone). The RUN-scoped
+  // resources (Input, the bullet POOL itself, Effects, the RunState) survive; _buildStage rebuilds the rest.
+  // Runs OUTSIDE any overlap/death callback (called from _advanceStage's delayedCall(0) — AC10), so destroying
+  // bodies here is safe (no body destroyed mid-step). The run economy (lives/tier/score) is on RunState (D10).
+  private _teardownStage(): void {
+    this.bullets.releaseAll() // clear in-flight shots (F1 — no live-count decrement; a teardown is not a despawn).
+    for (const tank of this.enemies) this._destroyTank(tank)
+    this.enemies = []
+    for (const tank of this.playerTanks.values()) this._destroyTank(tank)
+    this.playerTanks.clear()
+    this.tileMap.destroy() // F2 — destroys the solid/water bodies + decorations (the eagle's body rode here).
+    this.base.rect.destroy() // the eagle VISUAL (its blocking body was a tilemap solid — already destroyed).
+  }
+
+  // Destroy a tank's three GameObjects (the collider owning the body + the visible rect + the barrel). Phaser
+  // destroying a GameObject also destroys its body + removes it from every group/collider it was registered in
+  // (so the bullet×tank overlap + the terrain colliders go with it — no stale handle, AC10). KISS, DRY.
+  private _destroyTank(tank: Tank): void {
+    tank.collider.destroy()
+    tank.rect.destroy()
+    tank.barrel.destroy()
   }
 
   // ── Per-frame tick (F3 §5.3, D10, AC of F1 reused) ── the dt/gdt split, the per-player fire+drive, the
@@ -345,6 +563,14 @@ export class GameScene extends Phaser.Scene {
     if (TWO_PLAYER && this.p2 && this.p2.alive) {
       if (s.p2.firePressed) this.p2.tryFire(this.bullets)
       this.p2.update(gdt, s.p2)
+    }
+
+    // F4 (§5.3, AC1/AC2/AC3) — stream new enemies in (staggered + capped), then tick every live enemy's AI +
+    // movement + fire. Both run on the GAMEPLAY dt (a future freeze pauses spawning + the enemy AI too). While
+    // transitioning (the deferred stage rebuild is queued) we skip both — the world is mid-teardown.
+    if (!this.transitioning) {
+      this._spawnStep(gdt)
+      this._tickEnemies(gdt)
     }
 
     // Advance every live bullet (hand-integrated travel on `gdt`; despawn off the playfield bounds — AC5/AC9).

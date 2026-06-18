@@ -17,6 +17,7 @@ import {
   ENEMIES_PER_STAGE,
   MAX_CONCURRENT_ENEMIES,
   BOSS_STAGE_EVERY,
+  SPAWN_INTERVAL_MIN_SCALE,
 } from './constants.js'
 
 // ── StageConfig — the params the generator reads (§5.2, AC2). ── Plain data (no functions) so it stays
@@ -126,6 +127,42 @@ export function stageConfig(stageIndex: number): StageConfig {
     // 10th, … in 1-based human terms). The verifier asserts exactly this cadence (AC2/AC9).
     isBoss: s % BOSS_STAGE_EVERY === BOSS_STAGE_EVERY - 1,
   }
+}
+
+// ── F4 enemy-pressure ramps (F4 Procedural stages extension §5.2/§5.5, Decisions D6, AC6) ──
+// Two PURE closed-form monotone ramps the F4 spawn/AI pressure rises with: the enemy BULLET SPEED scale and
+// the SPAWN INTERVAL scale. Both are pure functions of the stage number (NO RNG — like `stageConfig`); the
+// verifier RE-derives + sweeps each for monotonicity (AC6), extending F2's §5 sweep. They sit BESIDE the
+// existing terrain/count ramps (KISS — a couple of clamped linear ramps), keeping the difficulty envelope's
+// single owner here (DRY). `hardShare` (below, F2) is the third F4 enemy-hardness signal the verifier reads.
+
+// bulletSpeedScale base + ramp: every enemy's fired bullet speed is multiplied by this (≥ 1, NON-DECREASING),
+// so deeper stages' shots arrive faster — the enemy fire PRESSURE that climbs with the stage (AC6). Clamped to
+// a named cap so a deep-stage bullet stays dodgeable (never an un-reactable wall of fire — D3's "bounded" stance).
+const BULLET_SPEED_SCALE_BASE = 1.0 // stage-0 multiplier (the identity — enemies fire at their spec speed).
+const BULLET_SPEED_SCALE_PER_STAGE = 0.02 // +2% bullet speed per stage (non-decreasing by construction, k ≥ 0).
+export const BULLET_SPEED_SCALE_MAX = 1.6 // cap — a deep-stage enemy bullet is at most 1.6× its base speed.
+
+// spawnIntervalScale base + ramp: the staggered-spawn delay is multiplied by this (≤ 1, NON-INCREASING), so
+// deeper stages stream enemies FASTER (they arrive no slower — AC6). Clamped to SPAWN_INTERVAL_MIN_SCALE (the
+// shared floor, constants.ts) so the stream never becomes instant (a finite minimum cadence — D8). k ≤ 0.
+const SPAWN_INTERVAL_SCALE_BASE = 1.0 // stage-0 multiplier (the identity — the base SPAWN_STAGGER_BASE cadence).
+const SPAWN_INTERVAL_SCALE_PER_STAGE = -0.04 // −4% spawn delay per stage (non-increasing by construction, k ≤ 0).
+
+// ── bulletSpeedScale(stageIndex) → [1, BULLET_SPEED_SCALE_MAX] (D6, AC6) ── the closed-form monotone enemy
+// bullet-speed multiplier (NON-DECREASING in the stage). PURE + deterministic (no RNG). The spawn loop reads
+// it to scale the archetype's `bulletSpeed`; the verifier RE-derives + asserts it non-decreasing (AC6).
+export function bulletSpeedScale(stageIndex: number): number {
+  const s = Math.max(0, Math.floor(stageIndex || 0))
+  return clamp(BULLET_SPEED_SCALE_BASE + BULLET_SPEED_SCALE_PER_STAGE * s, BULLET_SPEED_SCALE_BASE, BULLET_SPEED_SCALE_MAX)
+}
+
+// ── spawnIntervalScale(stageIndex) → [SPAWN_INTERVAL_MIN_SCALE, 1] (D6/D8, AC6) ── the closed-form monotone
+// spawn-cadence multiplier (NON-INCREASING in the stage — enemies arrive no slower). PURE + deterministic. The
+// spawn loop multiplies SPAWN_STAGGER_BASE by it; the verifier RE-derives + asserts it non-increasing (AC6).
+export function spawnIntervalScale(stageIndex: number): number {
+  const s = Math.max(0, Math.floor(stageIndex || 0))
+  return clamp(SPAWN_INTERVAL_SCALE_BASE + SPAWN_INTERVAL_SCALE_PER_STAGE * s, SPAWN_INTERVAL_MIN_SCALE, SPAWN_INTERVAL_SCALE_BASE)
 }
 
 // ── hardShare(cfg) → [0,1] (D16, AC9) ── the EXACT normalized share of the two HARD enemy types
