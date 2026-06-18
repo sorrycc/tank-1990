@@ -327,8 +327,14 @@ export class GameScene extends Phaser.Scene {
     this.physics.add.overlap(
       this.bullets.group,
       tank.collider,
-      (bulletRect, tankRect) => this._onBulletHitTank(bulletRect as BulletRect, tankRect as TankCollider),
-      (bulletRect, tankRect) => this._bulletCanHitTank(bulletRect as BulletRect, tankRect as TankCollider),
+      // Phaser invokes a sprite-vs-group overlap callback as (sprite, groupMember): World.collideHandler swaps a
+      // group/sprite pair into collideSpriteVsGroup(sprite, group), which fires BOTH the collide and process
+      // callbacks as (bodyA=sprite, bodyB=member). tank.collider is the SPRITE, the bullet is the GROUP member —
+      // so the tank collider is arg1 and the bullet is arg2 (the INVERSE of the group-vs-group terrain overlap
+      // above, where bullets.group is object1 → the bullet is arg1, and matching the sprite-vs-group power-up
+      // overlap in _registerPowerUpOverlap). Bind accordingly; the two handlers keep their (bullet, tank) shape.
+      (tankRect, bulletRect) => this._onBulletHitTank(bulletRect as BulletRect, tankRect as TankCollider),
+      (tankRect, bulletRect) => this._bulletCanHitTank(bulletRect as BulletRect, tankRect as TankCollider),
       this,
     )
   }
