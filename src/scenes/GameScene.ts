@@ -784,6 +784,7 @@ export class GameScene extends Phaser.Scene {
         currencyBanked,
         bestScore: this.meta.getBestScore(),
         bestStage: this.meta.getBestStage(),
+        highScores: this.meta.getHighScores(), // read AFTER bankRun, so the table already includes this run (D4).
       }),
     )
   }

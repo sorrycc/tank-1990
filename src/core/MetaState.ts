@@ -34,6 +34,11 @@ export { applyUpgrades } from '../config/tank-upgrades.js'
 // code uses a numeric slot (1 | 2); this maps one to the other in ONE place (DRY) so no use site stringifies.
 type Slot = 1 | 2
 
+// The persistent high-score TABLE size — the classic top-5. A LOCAL const (not config/constants.ts): it is a
+// single private detail of the one writer below (the slice length), NOT a number any pure module / the
+// verifier reads, so importing it across the pure boundary for one consumer would be over-engineering (YAGNI).
+const HIGH_SCORE_COUNT = 5
+
 // ── MetaStateInstance (D8) ── the gameplay-facing meta API the Hub/GameScene/GameOver read meta through (never
 // util/save.ts directly — the decoupling, mirroring the reference's createMetaState shape adapted to Tank 1990's
 // shared-bank + per-player-trees schema). Reads never write; the three writers (buy/bankRun) each saveMeta.
@@ -43,8 +48,9 @@ export interface MetaStateInstance {
   getUpgrades(slot: Slot): Record<string, number> // the slot's owned-level map (GameScene caches it for the live re-fold — D4b).
   getBestScore(): number
   getBestStage(): number
+  getHighScores(): { score: number; stage: number }[] // the persistent top-5 finished runs, sorted descending by score (the Title + GameOver render it).
   buy(slot: Slot, id: string): boolean // debit the SHARED currency + increment upgrades[slot][id] if affordable + !maxed; SAVE.
-  bankRun(arg: { score: number; stage: number }): number // currency += floor(score·RATIO); bump bestScore/bestStage; SAVE → return the banked amount.
+  bankRun(arg: { score: number; stage: number }): number // currency += floor(score·RATIO); bump bestScore/bestStage; insert into the top-5; SAVE → return the banked amount.
   startSpec(slot: Slot): TankSpec // applyUpgrades(applyStarTier(0), upgrades[slot]) — the run-START seed spec (D5b/D7).
 }
 
@@ -77,6 +83,9 @@ export function createMetaState(): MetaStateInstance {
     getBestStage() {
       return meta.bestStage || 0
     },
+    getHighScores() {
+      return meta.highScores
+    },
 
     // ── buy(slot, id) (D8, AC6) ── buy the NEXT level of THAT player's upgrade if owned < maxLevel AND the
     // SHARED currency covers costs[owned]. On success: debit the shared bank, increment that slot's owned level,
@@ -98,13 +107,19 @@ export function createMetaState(): MetaStateInstance {
 
     // ── bankRun({ score, stage }) (D8, AC5) ── called ONCE per run by GameScene (under the gameOver guard) on
     // the run-over edge: add floor(score · CURRENCY_RATIO) to the SHARED currency bank, bump bestScore/bestStage
-    // (max), SAVE, and RETURN the banked amount (the GameOver summary DISPLAYS it — it does not itself save).
-    // `stage` is the human stage number (stageIndex + 1 — GameScene passes it). The single writer of the bests.
+    // (max), INSERT the finished run into the top-5 high-score table, SAVE, and RETURN the banked amount (the
+    // GameOver summary DISPLAYS it — it does not itself save). `stage` is the human stage number (stageIndex + 1
+    // — GameScene passes it). The single writer of ALL persisted run stats (the bests + the table — one save).
     bankRun({ score, stage }) {
       const banked = Math.floor(score * CURRENCY_RATIO)
       meta.currency += banked
       meta.bestScore = Math.max(meta.bestScore || 0, score)
       meta.bestStage = Math.max(meta.bestStage || 0, stage)
+      // The top-5 table: push this run, sort DESCENDING by score, keep the top HIGH_SCORE_COUNT. The same
+      // single saveMeta below persists the bests + the table together (no second writer / save — D2).
+      meta.highScores.push({ score, stage })
+      meta.highScores.sort((a, b) => b.score - a.score)
+      meta.highScores = meta.highScores.slice(0, HIGH_SCORE_COUNT)
       saveMeta(meta)
       return banked
     },

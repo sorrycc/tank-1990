@@ -44,10 +44,11 @@ export class TitleScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
 
-    // ── F7 (D6/AC6) — the BEST line under the subtitle ── read MetaState ONCE in create() (the impure save
-    // boundary — createMetaState() load()s a fresh view). A fresh save reads 0/0 (the defensive save degrades to
-    // defaults — never blank/crash). Localised via t('title.best', {score, stage}); positioned off the FIXED
-    // design resolution (cx + a fixed Y) so it centers under Scale.FIT — the Title's existing layout discipline.
+    // ── F7 (D6/AC6) — the BEST line under the subtitle + the high-score table below the controls ── read
+    // MetaState ONCE in create() (the impure save boundary — createMetaState() load()s a fresh view); the same
+    // instance feeds the BEST line here AND the top-5 table further down (DRY). A fresh save reads 0/0 + an empty
+    // table (the defensive save degrades to defaults — never blank/crash). Localised via t('title.best', {score,
+    // stage}); positioned off the FIXED design resolution (cx + a fixed Y) so it centers under Scale.FIT.
     const meta = createMetaState()
     this.add
       .text(cx, 234, t('title.best', { score: meta.getBestScore(), stage: meta.getBestStage() }), {
@@ -79,6 +80,33 @@ export class TitleScene extends Phaser.Scene {
       this.add
         .text(KEYS_X, y, t(keysKey), { fontFamily: UI_FONT, fontSize: '18px', color: '#c9d1d9' })
         .setOrigin(0, 0.5)
+    }
+
+    // ── High-score table (the persistent top-5 — D5/AC3) ── read off the SAME MetaState instance as the BEST
+    // line (one extra getHighScores() read — DRY). A heading + up to 5 rows (rank · score · stage) via t(),
+    // or a single empty-state line for a fresh save. All Y off the FIXED design resolution (centers under
+    // Scale.FIT), positioned below the controls block — the Title's existing layout discipline.
+    const HI_TITLE_Y = rowsTop + CONTROLS_ROWS.length * ROW_H + 18
+    this.add
+      .text(cx, HI_TITLE_Y, t('hi.title'), { fontFamily: UI_FONT, fontSize: '22px', color: '#5c6b7a', fontStyle: 'bold' })
+      .setOrigin(0.5)
+    const scores = meta.getHighScores()
+    if (scores.length === 0) {
+      this.add
+        .text(cx, HI_TITLE_Y + 34, t('hi.empty'), { fontFamily: UI_FONT, fontSize: '18px', color: '#8b949e' })
+        .setOrigin(0.5)
+    } else {
+      const HI_ROW_H = 26
+      for (let i = 0; i < scores.length; i++) {
+        const { score, stage } = scores[i]
+        this.add
+          .text(cx, HI_TITLE_Y + 32 + i * HI_ROW_H, t('hi.row', { rank: i + 1, score, stage }), {
+            fontFamily: UI_FONT,
+            fontSize: '18px',
+            color: '#c9d1d9',
+          })
+          .setOrigin(0.5)
+      }
     }
 
     this.add

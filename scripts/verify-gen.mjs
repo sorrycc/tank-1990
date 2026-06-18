@@ -115,7 +115,7 @@ if (DESIGN_WIDTH !== 1280) fail(`constants: DESIGN_WIDTH = ${DESIGN_WIDTH}, expe
 if (GRID_COLS !== 17 || GRID_ROWS !== 17) fail(`constants: grid is ${GRID_COLS}x${GRID_ROWS}, expected 17x17`)
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
-// 3) save — round-trip + the clone-no-alias contract (unchanged from F0).
+// 3) save — round-trip + the clone-no-alias contract (F0; EXTENDED with the highScores field — high-score table).
 // ════════════════════════════════════════════════════════════════════════════════════════════
 {
   saveMeta(loadMeta()) // round-trip; under node this is a defensive no-op (must not throw).
@@ -127,8 +127,15 @@ if (GRID_COLS !== 17 || GRID_ROWS !== 17) fail(`constants: grid is ${GRID_COLS}x
   if (!('1' in m.upgrades) || !('2' in m.upgrades)) fail(`save: upgrades missing per-player keys '1'/'2'`)
   if (m.upgrades['1'] === DEFAULT_META.upgrades['1']) fail(`save: upgrades['1'] ALIASES the frozen DEFAULT_META`)
   if (m.upgrades['2'] === DEFAULT_META.upgrades['2']) fail(`save: upgrades['2'] ALIASES the frozen DEFAULT_META`)
+  // The high-score TABLE field round-trips with a [] default + the SAME clone-no-alias contract as upgrades:
+  // a fresh/older save reads an EMPTY array that does NOT alias the frozen DEFAULT_META.highScores (a later
+  // bankRun push would otherwise mutate the shared frozen default / throw).
+  if (!Array.isArray(m.highScores)) fail(`save: highScores is not an array`)
+  if (m.highScores.length !== 0) fail(`save: highScores length = ${m.highScores.length}, expected 0 (the [] default)`)
+  if (m.highScores === DEFAULT_META.highScores) fail(`save: highScores ALIASES the frozen DEFAULT_META`)
   const m2 = loadMeta()
   if (m.upgrades['1'] === m2.upgrades['1']) fail(`save: two loads share the SAME upgrades['1'] container`)
+  if (m.highScores === m2.highScores) fail(`save: two loads share the SAME highScores container`)
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════

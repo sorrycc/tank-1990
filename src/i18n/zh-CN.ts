@@ -18,6 +18,11 @@ export const ZH_CN: Dict = {
     'title.start': '按 SPACE / ENTER 或点击开始',
     'title.best': '最高分数 {score} · 最高关卡 {stage}', // F7 (D6/AC6) — 标题界面的最佳成绩行。
 
+    // ── 高分榜（持久化的前 5 名战绩 — 标题界面 + 游戏结束，D6）── 标题、行模板（名次 · 分数 · 关卡）、空状态行。
+    'hi.title': '高分榜',
+    'hi.row': '{rank}. {score} · 关卡 {stage}',
+    'hi.empty': '暂无战绩 — 来争第一吧！',
+
     // ── 操作说明（F6 §5.2, D9, AC7 — 标题界面的双人按键参考）── 动作名翻译，按键 TOKEN（WASD/J/Numpad0/SPACE/
     // ENTER/M）保持原文（它们指代物理按键，按键绑定由 core/Input.ts 拥有，这里只是可读的镜像）。
     'controls.title': '操作说明',

@@ -19,8 +19,9 @@ interface RunSummary {
   currencyBanked: number // floor(score · CURRENCY_RATIO) — the amount added to the shared bank this run.
   bestScore: number // the freshly-bumped best (GameScene read it from MetaState after bankRun).
   bestStage: number
+  highScores: { score: number; stage: number }[] // the top-5 table (GameScene read it AFTER bankRun, so it INCLUDES this run — D4).
 }
-const DEFAULT_SUMMARY: RunSummary = { score: 0, stage: 0, currencyBanked: 0, bestScore: 0, bestStage: 0 }
+const DEFAULT_SUMMARY: RunSummary = { score: 0, stage: 0, currencyBanked: 0, bestScore: 0, bestStage: 0, highScores: [] }
 
 export class GameOverScene extends Phaser.Scene {
   constructor() {
@@ -53,7 +54,7 @@ export class GameOverScene extends Phaser.Scene {
       t('over.bestStage', { n: summary.bestStage }),
     ]
     const rowH = 40
-    const blockTop = cy - 60
+    const blockTop = cy - 150
     lines.forEach((line, i) => {
       // The CURRENCY BANKED line (index 2) is highlighted (cyan) — it's the meta payoff the run earned.
       const color = i === 2 ? '#4dd0e1' : '#e6edf3'
@@ -62,8 +63,38 @@ export class GameOverScene extends Phaser.Scene {
         .setOrigin(0.5)
     })
 
+    // ── High-score table (the persistent top-5 — D4/AC4) ── rendered from the scene-start DATA `highScores`
+    // (GameScene read it AFTER bankRun, so it ALREADY includes this run — the scene stays decoupled, it never
+    // reads MetaState). The row whose (score, stage) matches THIS run is highlighted gold (the just-finished
+    // run); the rest are normal text. The FIRST match is highlighted (a tie highlights one row). Empty DATA →
+    // the empty-state line (the safe-defaults discipline — never crashes). All Y off the FIXED design resolution.
+    const hiTop = blockTop + lines.length * rowH + 28
     this.add
-      .text(cx, blockTop + lines.length * rowH + 36, t('over.continue'), {
+      .text(cx, hiTop, t('hi.title'), { fontFamily: UI_FONT, fontSize: '22px', color: '#8b949e', fontStyle: 'bold' })
+      .setOrigin(0.5)
+    if (summary.highScores.length === 0) {
+      this.add
+        .text(cx, hiTop + 34, t('hi.empty'), { fontFamily: UI_FONT, fontSize: '18px', color: '#8b949e' })
+        .setOrigin(0.5)
+    } else {
+      const hiRowH = 26
+      let highlighted = false // highlight only the FIRST row matching this run (a tie highlights one).
+      for (let i = 0; i < summary.highScores.length; i++) {
+        const { score, stage } = summary.highScores[i]
+        const isRun = !highlighted && score === summary.score && stage === summary.stage
+        if (isRun) highlighted = true
+        this.add
+          .text(cx, hiTop + 32 + i * hiRowH, t('hi.row', { rank: i + 1, score, stage }), {
+            fontFamily: UI_FONT,
+            fontSize: '18px',
+            color: isRun ? '#feca57' : '#c9d1d9', // gold = the just-finished run.
+          })
+          .setOrigin(0.5)
+      }
+    }
+
+    this.add
+      .text(cx, DESIGN_HEIGHT - 56, t('over.continue'), {
         fontFamily: UI_FONT,
         fontSize: '22px',
         color: '#8b949e',
