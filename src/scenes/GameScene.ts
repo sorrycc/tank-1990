@@ -6,27 +6,30 @@ import {
   PLAYFIELD_Y,
   PLAYFIELD_W,
   PLAYFIELD_H,
-  TILE_SIZE,
-  TANK_SIZE,
-  STEEL_WALL_THICKNESS,
   TWO_PLAYER,
   MAX_DT,
 } from '../config/constants.js'
 import { Input } from '../core/Input.js'
 import { Tank } from '../entities/Tank.js'
 import { BulletPool } from '../combat/BulletPool.js'
+import { stageConfig } from '../config/stages.js'
+import { generateStage } from '../world/LevelGenerator.js'
+import { TileMap } from '../world/TileMap.js'
 
-// ── GameScene (F0 scaffold §5.3 + F1 Tank core §5.4, Decisions 3/9/10/12, AC2/AC4/AC6/AC7/AC8) ──
+// ── GameScene (F0 scaffold §5.3 + F1 Tank core §5.4 + F2 Procedural stages §5.4, Decisions 3/9/12 +
+// D11/D13, AC2/AC4/AC7/AC8/AC10/AC11) ──
 // The run scene — the only scene with an Arcade physics world (gravity 0; F0 Decision 3 — top-down: tanks
 // move on a grid, bullets travel straight, nothing falls; no `world.gravity` is ever set). F0 shipped a
-// STUB drawing one placeholder playfield rect; F1 turns it into a DRIVABLE tank sandbox: a centered
-// SQUARE test arena bounded by four STEEL border walls (static Arcade bodies), P1 (and P2 behind the
-// TWO_PLAYER flag), the SINGLE Input owner, one pooled BulletPool, and a sample-ONCE tick loop.
+// STUB; F1 made a DRIVABLE tank sandbox on a hand-built STEEL-walled test arena. F2 REPLACES that test
+// arena with a PROCEDURAL, SEEDED, headlessly-VERIFIED 13×13 stage (D11): `generateStage(seed,
+// stageConfig(stageIndex))` → a `TileMap` that renders + bodies the terrain, with the two players spawned
+// at the description's player-spawn window-centers (D13). The F1 Input + BulletPool + sample-once tick
+// loop are UNCHANGED — only the WORLD swaps (the four hand-made walls → a generated TileMap).
 //
-// The real terrain grid + a SEEDED generated stage (F2), bullet↔terrain/tank/eagle COLLISION + damage,
-// the eagle base, enemy tanks + the ONE FSM, the 4 enemy types, power-ups, the boss, and score/lives/HUD
-// readouts each land in their own LATER feature (YAGNI). F1's hand-made arena is deliberately minimal —
-// just enough to prove movement, walls, firing, and bullet despawn (Decision 10).
+// The seeded run/stage wiring (the seed + stageIndex come from a fixed dev value for now — D11/D12),
+// bullet↔terrain/tank/eagle COLLISION + damage, the eagle-loss condition, enemy tanks + the ONE FSM, the
+// 4 enemy types, power-ups, the boss, and score/lives/HUD readouts each land in their own LATER feature
+// (YAGNI). F2's scope is "GameScene builds the generated stage instead of the test arena" (D11).
 //
 // dt BOUNDARY (Decision 9, AC7): update() computes the dt in SECONDS ONCE — `dt = min(delta/1000, MAX_DT)`
 // — and feeds that to every tank.update + the pool.tick. No feel/cooldown/travel formula consumes the raw
@@ -35,7 +38,10 @@ import { BulletPool } from '../combat/BulletPool.js'
 // INPUT SAMPLE-ONCE (Decision 12, AC2): update() calls `this.input2.sample()` EXACTLY once per frame and
 // stores the snapshot — the sole-owner invariant for the two fire JustDown edges (see core/Input.ts).
 
-const STEEL_COLOR = 0x8d99ae // slate steel border wall (programmer-art primitive — AC11).
+// A fixed dev seed for the generated stage (D11/D12 — the run/seed wiring is a LATER feature; F2 builds a
+// stable stage so the sandbox is reproducible). The stageIndex defaults to 0 (the first stage).
+const DEV_SEED = 0x7a4b1990
+const DEV_STAGE_INDEX = 0
 
 export class GameScene extends Phaser.Scene {
   // F1 gameplay state (Phaser-coupled — the scene owns the world resources, SOLID). Null until create().
@@ -43,6 +49,8 @@ export class GameScene extends Phaser.Scene {
   private bullets!: BulletPool
   private p1!: Tank
   private p2: Tank | null = null
+  // F2 — the generated terrain (renders + bodies the stage; tanks collide with its tank-blocking bodies).
+  private tileMap!: TileMap
 
   constructor() {
     super('Game')
@@ -56,27 +64,24 @@ export class GameScene extends Phaser.Scene {
     // The centered 13×13 square playfield outline (kept from F0), drawn with a Graphics primitive (no
     // external assets — programmer-art only, AC11). Coordinates come from the single constants owner (DRY).
     const g = this.add.graphics()
-    g.fillStyle(0x11161f, 1) // dark playfield fill.
-    g.fillRect(PLAYFIELD_X, PLAYFIELD_Y, PLAYFIELD_W, PLAYFIELD_H)
-    g.lineStyle(2, 0x30363d, 1) // subtle border.
+    g.lineStyle(2, 0x30363d, 1) // subtle border (the TileMap backdrop fills the interior).
     g.strokeRect(PLAYFIELD_X, PLAYFIELD_Y, PLAYFIELD_W, PLAYFIELD_H)
 
     this.add
-      .text(DESIGN_WIDTH / 2, PLAYFIELD_Y - 28, 'STAGE (placeholder)', {
+      .text(DESIGN_WIDTH / 2, PLAYFIELD_Y - 28, `STAGE ${DEV_STAGE_INDEX + 1}`, {
         fontFamily: UI_FONT,
         fontSize: '20px',
         color: '#8b949e',
       })
       .setOrigin(0.5)
 
-    // ── Steel-walled test arena (Decision 10, AC6) ── four thin STEEL rectangles as STATIC Arcade bodies
-    // hugging the playfield INNER edges. Tanks collide with them (registered below) so a tank driving into
-    // a wall stops at it (no tunnel, no escape). The real terrain grid replaces this in F2.
-    const walls = this.physics.add.staticGroup()
-    this._addWall(walls, PLAYFIELD_X, PLAYFIELD_Y, PLAYFIELD_W, STEEL_WALL_THICKNESS) // top.
-    this._addWall(walls, PLAYFIELD_X, PLAYFIELD_Y + PLAYFIELD_H - STEEL_WALL_THICKNESS, PLAYFIELD_W, STEEL_WALL_THICKNESS) // bottom.
-    this._addWall(walls, PLAYFIELD_X, PLAYFIELD_Y, STEEL_WALL_THICKNESS, PLAYFIELD_H) // left.
-    this._addWall(walls, PLAYFIELD_X + PLAYFIELD_W - STEEL_WALL_THICKNESS, PLAYFIELD_Y, STEEL_WALL_THICKNESS, PLAYFIELD_H) // right.
+    // ── Build the generated stage (F2 §5.4, D11/D13, AC10) ── pick the stage's difficulty params via the
+    // PURE stageConfig(stageIndex), generate a SEEDED 13×13 description (terrain grid + enclosed reachable
+    // eagle fort + spawn points — the verifier proves these headlessly), and render + body it via TileMap.
+    // This REPLACES the F1 four-wall test arena; the generated terrain bounds the tanks now.
+    const cfg = stageConfig(DEV_STAGE_INDEX)
+    const desc = generateStage(DEV_SEED, cfg)
+    this.tileMap = new TileMap(this, desc)
 
     // ── The SINGLE Input owner + one shared BulletPool (Decision 12, AC2/AC9) ── Input always returns BOTH
     // players' intents; the SCENE (here) owns the 2-player policy via TWO_PLAYER. The pool is the shared
@@ -84,34 +89,27 @@ export class GameScene extends Phaser.Scene {
     this.input2 = new Input(this)
     this.bullets = new BulletPool(this)
 
-    // ── Spawn the player tank(s) (Decision 10, AC8) ── at the classic bottom row, roughly the original P1
-    // (left of center) + P2 (right of center) start cells. Grid-aligned to a tile lane so the first turn
-    // re-center is a no-op. The body is TANK_SIZE (≈2 tiles).
-    const bottomY = PLAYFIELD_Y + PLAYFIELD_H - STEEL_WALL_THICKNESS - TANK_SIZE / 2 - 2
-    const p1x = PLAYFIELD_X + TILE_SIZE * 4 + TANK_SIZE / 2
-    this.p1 = new Tank(this, p1x, bottomY, 'player')
-    this.physics.add.collider(this.p1.collider, walls) // AC6 — P1 stops at the steel walls.
+    // ── Spawn the player tank(s) at the description's player spawns (F2 §5.4, D11/D13, AC8) ── each spawn
+    // x/y is the ABSOLUTE 2×2-WINDOW CENTER (D13), so the TANK_SIZE (≈2-tile) body straddles EXACTLY the
+    // 2×2 footprint the spawn's tankFits cleared — never one cell up-left into uncleared territory. This
+    // REPLACES the F1 hand-math; the generator owns the spawn geometry now.
+    const sp1 = desc.playerSpawns[0]
+    this.p1 = new Tank(this, sp1.x, sp1.y, 'player')
+    this._collideTankWithTerrain(this.p1) // AC10 — P1 stops at brick/steel/water/the base.
 
     if (TWO_PLAYER) {
-      const p2x = PLAYFIELD_X + TILE_SIZE * 8 + TANK_SIZE / 2
-      this.p2 = new Tank(this, p2x, bottomY, 'player')
-      this.physics.add.collider(this.p2.collider, walls) // AC6 — P2 stops at the steel walls.
-      this.physics.add.collider(this.p1.collider, this.p2.collider) // AC6 — the two tanks can't overlap.
+      const sp2 = desc.playerSpawns[1]
+      this.p2 = new Tank(this, sp2.x, sp2.y, 'player')
+      this._collideTankWithTerrain(this.p2) // AC10 — P2 stops at the terrain.
+      this.physics.add.collider(this.p1.collider, this.p2.collider) // the two tanks can't overlap.
     }
   }
 
-  // Add ONE static-body steel border-wall rectangle to the group (programmer-art primitive — AC11). x/y is
-  // the TOP-LEFT; a static body is positioned by its center, so we offset to the center on add.
-  private _addWall(
-    group: Phaser.Physics.Arcade.StaticGroup,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-  ): void {
-    const rect = this.add.rectangle(x + w / 2, y + h / 2, w, h, STEEL_COLOR)
-    group.add(rect)
-    ;(rect.body as Phaser.Physics.Arcade.StaticBody).updateFromGameObject()
+  // Collide a tank against BOTH tank-blocking body groups (F2 §5.4, D7/D11, AC10): `solidBodies` (STEEL +
+  // BASE + every BRICK sub-cell) AND `waterBodies` (WATER blocks tanks; bullets pass over it LATER, D7).
+  private _collideTankWithTerrain(tank: Tank): void {
+    this.physics.add.collider(tank.collider, this.tileMap.solidBodies)
+    this.physics.add.collider(tank.collider, this.tileMap.waterBodies)
   }
 
   // ── Per-frame tick (Decision 9/12, AC2/AC4/AC7) ── dt in SECONDS, clamped, computed ONCE; sample the

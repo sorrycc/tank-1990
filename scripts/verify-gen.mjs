@@ -1,46 +1,82 @@
-// ── Headless determinism + purity verifier (F0 scaffold §7, Decision 9/9a, AC9/AC10) ──
-// Run by `npm run verify` under plain node (via tsx) — NO Phaser, NO browser. It imports the EXACT
-// PURE modules the game runs (util/rng.ts, config/constants.ts, util/save.ts) and asserts the
-// contracts the procedural foundation depends on. A SUCCESSFUL import of those modules already
-// RE-PROVES the purity convention (AC10): a Phaser-coupled module (any scene / main.ts) would throw
-// under node — which is exactly why this script never imports them. The check is an INDEPENDENT
-// proof, not self-certification: a stray `import 'phaser'` slipping into a "pure" module would make
-// `npm run verify` go RED here.
+// ── Headless determinism + procedural-stage verifier (F0 scaffold §7 + F2 Procedural stages §7,
+// Decisions D1/D9/D10/D13/D14/D15/D16, AC4–AC9/AC11) ──
+// Run by `npm run verify` under plain node (via tsx) — NO Phaser, NO browser. It imports the EXACT PURE
+// modules the game runs (util/rng.ts, config/constants.ts, util/save.ts, config/tiles.ts, config/stages.ts,
+// world/LevelGenerator.ts) and asserts the contracts the procedural foundation depends on. A SUCCESSFUL
+// import of those modules already RE-PROVES the purity convention (AC11): a Phaser-coupled module (any
+// scene / world/TileMap.ts / main.ts) would throw under node — which is exactly why this script NEVER
+// imports them. The check is an INDEPENDENT proof, not self-certification (D9): the enclosure +
+// reachability + spawn validity + bounds are RE-DERIVED from the EMITTED `tiles`/`spawns`, so a bug in the
+// generator's carve that "intended" a solvable stage is caught HERE, not trusted.
 //
-// F0 is a determinism + purity STUB; the REAL quality gate is the F2 seeded-stage sweep, which fills
-// this script in. F0 asserts:
-//   1. rng — mulberry32 determinism (two instances of one seed deep-equal over N draws) + a regression
-//      pin (a known seed matches a COMPUTED prefix; never hand-invented — if the algorithm ever drifts
-//      from the reference's byte-identical copy this fails loudly).
-//   2. constants — DESIGN_WIDTH === 1280 (the one trivial invariant; also re-proves node-importability).
-//   3. save — a saveMeta/loadMeta round-trip that ALSO exercises the AC8 clone-no-alias contract: the
-//      back-filled per-player upgrade maps must NOT be the SAME object reference as DEFAULT_META's, so a
-//      later buy() can't mutate the frozen default (the cross-instance-leak the clone fixes).
+// F0 shipped a determinism + purity STUB; F2 fills in the REAL quality gate — the seeded-stage sweep the
+// F0 doc always promised. Sections:
+//   1. rng determinism + regression pin (AC — the foundation; unchanged from F0).
+//   2. constants — the one trivial invariant (also re-proves node-importability / purity).
+//   3. save — round-trip + the clone-no-alias contract (unchanged from F0).
+//   4. tiles — TILE_PROPS totality + the helpers read the table (AC1).
+//   5. stages — monotonic difficulty across stageConfig(0..K): densities + counts + hardShare +
+//      boss cadence, all within named caps (AC2/AC9, D16).
+//   6. stage sweep over N seeds × the first K stages (incl. a boss stage), RE-deriving every property
+//      from the EMITTED description (AC4–AC8):
+//        a. determinism — generateStage(seed,cfg) twice → DEEP-EQUAL (AC4).
+//        b. regression pin — ONE fixed (seed,stageIndex) → a COMPUTED reference (deep-equal, AC5).
+//        c. bounds — grid dims; valid TILE ints; enemy counts within cfg bounds; each terrain count ≤
+//           scatterCells (the absolute max-count ceiling — D14, AC6).
+//        d. eagle present + enclosed + REACHABLE via a footprint-aware BFS to a fort-approach window (AC7).
+//        e. spawn validity — every spawn a tankFits anchor + its (x,y) == the window-center pin (AC8/D13).
 // Exits non-zero on ANY failure so `npm run verify` gates CI; prints `OK` + exits 0 on success.
 
 import { mulberry32, range } from '../src/util/rng.js'
-import { DESIGN_WIDTH } from '../src/config/constants.js'
+import { DESIGN_WIDTH, GRID_COLS, GRID_ROWS, TILE_SIZE, PLAYFIELD_X, PLAYFIELD_Y, MAX_CONCURRENT_ENEMIES, BOSS_STAGE_EVERY, ENEMIES_PER_STAGE } from '../src/config/constants.js'
 import { DEFAULT_META, loadMeta, saveMeta } from '../src/util/save.js'
+// F2 PURE modules (D1/D9): the tile semantics, the difficulty selector, and the seeded generator + its
+// SHARED predicates. Importing them here under node RE-PROVES their purity (a stray `import 'phaser'`
+// throws) — the convention every pure module satisfies.
+import { TILE, TILE_PROPS, isTankPassable, isBulletPassable, isDestructible } from '../src/config/tiles.js'
+import { stageConfig, hardShare, BRICK_DENSITY_MAX, STEEL_DENSITY_MAX, WATER_DENSITY_MAX, TREES_DENSITY_MAX, ICE_DENSITY_MAX, TOTAL_ENEMIES_MAX } from '../src/config/stages.js'
+import { generateStage, tankFits, isFortApproachWindow, windowCenter, FOOTPRINT } from '../src/world/LevelGenerator.js'
 
 function fail(msg) {
   console.error(`verify-gen FAILED: ${msg}`)
   process.exit(1)
 }
 
+// ── Element-wise deep-equal (the tiles grid is a 2-D int array, so `===` would test REFERENCE identity,
+// not value; two fresh generations have different array objects). Handles plain objects, arrays (incl. the
+// nested int grid), and primitives. KISS + sufficient for the pure-data descriptions (no functions on them).
+function deepEqual(a, b) {
+  if (a === b) return true
+  if (typeof a !== typeof b) return false
+  if (a === null || b === null) return a === b
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) if (!deepEqual(a[i], b[i])) return false
+    return true
+  }
+  if (typeof a === 'object') {
+    const ka = Object.keys(a)
+    const kb = Object.keys(b)
+    if (ka.length !== kb.length) return false
+    for (const k of ka) if (!deepEqual(a[k], b[k])) return false
+    return true
+  }
+  return false // primitives that weren't === (incl. NaN) are unequal.
+}
+
 // ════════════════════════════════════════════════════════════════════════════════════════════
-// 1) rng determinism + regression pin (AC7/AC9) — the determinism foundation.
+// 1) rng determinism + regression pin — the determinism foundation (unchanged from F0).
 // ════════════════════════════════════════════════════════════════════════════════════════════
 const RNG_SEED = 0x1234abcd
 const RNG_K = 5
-// Pinned vector: mulberry32(0x1234abcd) → first 5 outputs (COMPUTED from the verbatim algorithm,
-// never hand-invented; byte-identical to the read-only `dead-cell` reference's pin — proves the
-// copy in src/util/rng.ts is byte-identical, AC7). If rng.ts changes algorithm this fails loudly.
+// Pinned vector: mulberry32(0x1234abcd) → first 5 outputs (COMPUTED from the verbatim algorithm, never
+// hand-invented; byte-identical to the read-only `dead-cell` reference's pin — proves the copy in
+// src/util/rng.ts is byte-identical). If rng.ts changes algorithm this fails loudly.
 const RNG_EXPECTED = [
   0.10277144517749548, 0.5144855019170791, 0.07858735416084528, 0.6312816452700645,
   0.978210358414799,
 ]
 {
-  // (a) Determinism — two fresh instances of one seed yield the SAME sequence.
   const a = mulberry32(RNG_SEED)
   const b = mulberry32(RNG_SEED)
   for (let i = 0; i < RNG_K; i++) {
@@ -48,52 +84,284 @@ const RNG_EXPECTED = [
     const vb = b()
     if (va !== vb) fail(`rng determinism: draw ${i} differs (${va} !== ${vb})`)
   }
-  // (b) Regression pin — a known seed matches the COMPUTED reference prefix.
   const r = mulberry32(RNG_SEED)
   for (let i = 0; i < RNG_K; i++) {
     const v = r()
     if (v !== RNG_EXPECTED[i]) fail(`rng pin: draw ${i} = ${v}, expected ${RNG_EXPECTED[i]}`)
   }
-  // (c) range(rng,min,max) stays within [min,max) and is itself deterministic (a cheap smoke).
   const rr = mulberry32(RNG_SEED)
   const x = range(rr, 10, 20)
   if (!(x >= 10 && x < 20)) fail(`rng range: ${x} not in [10,20)`)
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
-// 2) constants — the one trivial invariant (also re-proves node-importability / purity, AC10).
+// 2) constants — the one trivial invariant (also re-proves node-importability / purity).
 // ════════════════════════════════════════════════════════════════════════════════════════════
 if (DESIGN_WIDTH !== 1280) fail(`constants: DESIGN_WIDTH = ${DESIGN_WIDTH}, expected 1280`)
+if (GRID_COLS !== 13 || GRID_ROWS !== 13) fail(`constants: grid is ${GRID_COLS}x${GRID_ROWS}, expected 13x13`)
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
-// 3) save — round-trip + the AC8 clone-no-alias contract (Decision 9a).
-// Under node there is NO localStorage, so saveMeta is a no-op (returns false, never throws — AC8)
-// and loadMeta degrades to the spread-backfilled DEFAULT_META. We assert:
-//   - the loaded shape is stable (currency/bestScore/bestStage are 0; upgrades has keys '1' + '2'),
-//   - the cloned per-player upgrade maps are NOT the SAME object reference as DEFAULT_META's (so a
-//     later buy() can't mutate the frozen default — the cross-instance leak the clone fixes).
+// 3) save — round-trip + the clone-no-alias contract (unchanged from F0).
 // ════════════════════════════════════════════════════════════════════════════════════════════
 {
-  saveMeta(loadMeta()) // round-trip; under node this is a defensive no-op (must not throw — AC8).
+  saveMeta(loadMeta()) // round-trip; under node this is a defensive no-op (must not throw).
   const m = loadMeta()
   if (m.currency !== 0) fail(`save: currency = ${m.currency}, expected 0`)
   if (m.bestScore !== 0) fail(`save: bestScore = ${m.bestScore}, expected 0`)
   if (m.bestStage !== 0) fail(`save: bestStage = ${m.bestStage}, expected 0`)
   if (!m.upgrades || typeof m.upgrades !== 'object') fail(`save: upgrades missing/not an object`)
   if (!('1' in m.upgrades) || !('2' in m.upgrades)) fail(`save: upgrades missing per-player keys '1'/'2'`)
-  // The clone-no-alias guarantee (AC8 / Decision 6/9a): each loaded meta owns its OWN per-player
-  // containers — they must NOT alias the frozen DEFAULT_META, or a buy() would mutate the default.
-  if (m.upgrades['1'] === DEFAULT_META.upgrades['1']) fail(`save: upgrades['1'] ALIASES the frozen DEFAULT_META (clone-no-alias violated)`)
-  if (m.upgrades['2'] === DEFAULT_META.upgrades['2']) fail(`save: upgrades['2'] ALIASES the frozen DEFAULT_META (clone-no-alias violated)`)
-  // And two independent loads must own DISTINCT containers (not share one with each other either).
+  if (m.upgrades['1'] === DEFAULT_META.upgrades['1']) fail(`save: upgrades['1'] ALIASES the frozen DEFAULT_META`)
+  if (m.upgrades['2'] === DEFAULT_META.upgrades['2']) fail(`save: upgrades['2'] ALIASES the frozen DEFAULT_META`)
   const m2 = loadMeta()
   if (m.upgrades['1'] === m2.upgrades['1']) fail(`save: two loads share the SAME upgrades['1'] container`)
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// 4) tiles — TILE_PROPS totality + the helpers READ the table (AC1).
+// Every TILE value has a TILE_PROPS row with the four fields, and the three helpers return the table's
+// booleans (a defensive `false` for an out-of-range value). The classic semantics are spot-checked so a
+// silent prop flip (e.g. making WATER block bullets) fails loudly.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+{
+  const allTiles = Object.values(TILE)
+  for (const t of allTiles) {
+    const p = TILE_PROPS[t]
+    if (!p) fail(`tiles: TILE_PROPS missing a row for tile ${t}`)
+    for (const f of ['passableByTank', 'passableByBullet', 'destructible']) {
+      if (typeof p[f] !== 'boolean') fail(`tiles: TILE_PROPS[${t}].${f} is not a boolean`)
+    }
+    if (typeof p.color !== 'number') fail(`tiles: TILE_PROPS[${t}].color is not a number`)
+    // The helpers must READ the table, not re-encode literals (AC1) — assert they agree with it.
+    if (isTankPassable(t) !== p.passableByTank) fail(`tiles: isTankPassable(${t}) disagrees with TILE_PROPS`)
+    if (isBulletPassable(t) !== p.passableByBullet) fail(`tiles: isBulletPassable(${t}) disagrees with TILE_PROPS`)
+    if (isDestructible(t) !== p.destructible) fail(`tiles: isDestructible(${t}) disagrees with TILE_PROPS`)
+  }
+  // Classic semantics spot-check (AC1): BRICK destructible+blocks both; STEEL blocks both, indestructible;
+  // WATER blocks tanks, bullets PASS; TREES/ICE pass both; BASE blocks both; EMPTY passes both.
+  if (!isDestructible(TILE.BRICK) || isTankPassable(TILE.BRICK) || isBulletPassable(TILE.BRICK)) fail(`tiles: BRICK semantics wrong`)
+  if (isDestructible(TILE.STEEL) || isTankPassable(TILE.STEEL) || isBulletPassable(TILE.STEEL)) fail(`tiles: STEEL semantics wrong`)
+  if (isTankPassable(TILE.WATER) || !isBulletPassable(TILE.WATER)) fail(`tiles: WATER must block tanks + pass bullets`)
+  if (!isTankPassable(TILE.TREES) || !isBulletPassable(TILE.TREES)) fail(`tiles: TREES must pass both`)
+  if (!isTankPassable(TILE.ICE) || !isBulletPassable(TILE.ICE)) fail(`tiles: ICE must pass both`)
+  if (isTankPassable(TILE.BASE) || isBulletPassable(TILE.BASE)) fail(`tiles: BASE must block both`)
+  if (!isTankPassable(TILE.EMPTY) || !isBulletPassable(TILE.EMPTY)) fail(`tiles: EMPTY must pass both`)
+  // The defensive default: an out-of-range tile is impassable/indestructible (never crashes).
+  if (isTankPassable(999) || isBulletPassable(999) || isDestructible(999)) fail(`tiles: out-of-range tile must default to false`)
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// 5) stages — MONOTONIC difficulty across stageConfig(0..K) (AC2/AC9, D16).
+// Each terrain density + totalEnemies + concurrentEnemies is non-decreasing; the NORMALIZED hardShare
+// (power+armor)/(basic+fast+power+armor) is non-decreasing (D16 — NOT each raw weight); every value is
+// within its named cap; concurrent ≤ MAX_CONCURRENT_ENEMIES; total ≥ concurrent; isBoss matches the
+// BOSS_STAGE_EVERY cadence. K spans several boss stages so the cadence is exercised.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+const STAGE_K = 30 // sweep stageConfig(0..STAGE_K) — covers multiple boss milestones (every 5th).
+{
+  let prev = null
+  for (let s = 0; s <= STAGE_K; s++) {
+    const cfg = stageConfig(s)
+    if (cfg.stageIndex !== s) fail(`stages: stageConfig(${s}).stageIndex = ${cfg.stageIndex}`)
+    // Within-cap + sanity bounds (AC2).
+    if (cfg.brickDensity < 0 || cfg.brickDensity > BRICK_DENSITY_MAX) fail(`stages: brickDensity ${cfg.brickDensity} out of [0,${BRICK_DENSITY_MAX}] at ${s}`)
+    if (cfg.steelDensity < 0 || cfg.steelDensity > STEEL_DENSITY_MAX) fail(`stages: steelDensity ${cfg.steelDensity} out of [0,${STEEL_DENSITY_MAX}] at ${s}`)
+    if (cfg.waterDensity < 0 || cfg.waterDensity > WATER_DENSITY_MAX) fail(`stages: waterDensity ${cfg.waterDensity} out of [0,${WATER_DENSITY_MAX}] at ${s}`)
+    if (cfg.treesDensity < 0 || cfg.treesDensity > TREES_DENSITY_MAX) fail(`stages: treesDensity ${cfg.treesDensity} out of [0,${TREES_DENSITY_MAX}] at ${s}`)
+    if (cfg.iceDensity < 0 || cfg.iceDensity > ICE_DENSITY_MAX) fail(`stages: iceDensity ${cfg.iceDensity} out of [0,${ICE_DENSITY_MAX}] at ${s}`)
+    if (cfg.totalEnemies < ENEMIES_PER_STAGE || cfg.totalEnemies > TOTAL_ENEMIES_MAX) fail(`stages: totalEnemies ${cfg.totalEnemies} out of [${ENEMIES_PER_STAGE},${TOTAL_ENEMIES_MAX}] at ${s}`)
+    if (cfg.concurrentEnemies < 1 || cfg.concurrentEnemies > MAX_CONCURRENT_ENEMIES) fail(`stages: concurrentEnemies ${cfg.concurrentEnemies} out of [1,${MAX_CONCURRENT_ENEMIES}] at ${s}`)
+    if (cfg.totalEnemies < cfg.concurrentEnemies) fail(`stages: totalEnemies < concurrentEnemies at ${s}`)
+    // Boss cadence (AC2): every BOSS_STAGE_EVERY-th stage (0-based: indices 4,9,14,…).
+    const expectBoss = s % BOSS_STAGE_EVERY === BOSS_STAGE_EVERY - 1
+    if (cfg.isBoss !== expectBoss) fail(`stages: isBoss(${s}) = ${cfg.isBoss}, expected ${expectBoss}`)
+    // Monotonicity (AC9/D16) — each axis non-decreasing vs. the previous stage.
+    if (prev) {
+      if (cfg.brickDensity < prev.brickDensity) fail(`stages: brickDensity decreased at ${s}`)
+      if (cfg.steelDensity < prev.steelDensity) fail(`stages: steelDensity decreased at ${s}`)
+      if (cfg.waterDensity < prev.waterDensity) fail(`stages: waterDensity decreased at ${s}`)
+      if (cfg.treesDensity < prev.treesDensity) fail(`stages: treesDensity decreased at ${s}`)
+      if (cfg.iceDensity < prev.iceDensity) fail(`stages: iceDensity decreased at ${s}`)
+      if (cfg.totalEnemies < prev.totalEnemies) fail(`stages: totalEnemies decreased at ${s}`)
+      if (cfg.concurrentEnemies < prev.concurrentEnemies) fail(`stages: concurrentEnemies decreased at ${s}`)
+      // The NORMALIZED hard-type share (D16) — non-decreasing (NOT each raw weight field).
+      if (hardShare(cfg) < hardShare(prev) - 1e-12) fail(`stages: hardShare decreased at ${s} (${hardShare(prev)} → ${hardShare(cfg)})`)
+    }
+    prev = cfg
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// 6) STAGE SWEEP over N seeds × the first K stages — RE-derive every property from the EMITTED
+// description (D9, AC4–AC8). The verifier OWNS its own BFS + count scans + coordinate re-derivation; it
+// trusts NOTHING from the generator's intent.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+// Count a tile kind in the emitted grid (RE-derived — AC6).
+function countTile(tiles, kind) {
+  let n = 0
+  for (const rowArr of tiles) for (const v of rowArr) if (v === kind) n++
+  return n
+}
+
+// The four orthogonal steps — the BFS neighbourhood + the enclosure scan.
+const ORTHO = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+
+// ── Footprint-aware reachability BFS (AC7, D5/D15) ── nodes are tankFits 2×2 windows (RE-derived from the
+// EMITTED tiles via the SHARED `tankFits` — same graph the generator carved, DRY); edges connect
+// orthogonally-adjacent windows. PASS iff a GOAL window — one satisfying the SHARED `isFortApproachWindow`
+// (a tankFits window orthogonally adjacent to a fort-ring BRICK cell) — is reached from the start window.
+function bfsReachesFort(desc, startCol, startRow) {
+  const { tiles, cols, rows, base } = desc
+  if (!tankFits(tiles, cols, rows, startCol, startRow)) return false
+  const seen = new Set()
+  const key = (c, r) => `${c},${r}`
+  const queue = [[startCol, startRow]]
+  seen.add(key(startCol, startRow))
+  while (queue.length) {
+    const [c, r] = queue.shift()
+    if (isFortApproachWindow(tiles, cols, rows, c, r, base)) return true
+    for (const [dc, dr] of ORTHO) {
+      const nc = c + dc
+      const nr = r + dr
+      if (seen.has(key(nc, nr))) continue
+      if (!tankFits(tiles, cols, rows, nc, nr)) continue
+      seen.add(key(nc, nr))
+      queue.push([nc, nr])
+    }
+  }
+  return false
+}
+
+// Assert one EMITTED description against AC6/AC7/AC8 (RE-derived). `cfg` is the stageConfig it was built
+// with (for the enemy-count bounds). `label` localizes a failure to its (seed, stage).
+function checkDescription(desc, cfg, label) {
+  const { tiles, cols, rows, base, enemySpawns, playerSpawns } = desc
+
+  // ── AC6 bounds — grid dims + valid TILE ints. ──
+  if (cols !== GRID_COLS || rows !== GRID_ROWS) fail(`${label}: grid is ${cols}x${rows}, expected ${GRID_COLS}x${GRID_ROWS}`)
+  if (tiles.length !== rows) fail(`${label}: tiles has ${tiles.length} rows, expected ${rows}`)
+  const validTiles = new Set(Object.values(TILE))
+  for (let r = 0; r < rows; r++) {
+    if (tiles[r].length !== cols) fail(`${label}: row ${r} has ${tiles[r].length} cols, expected ${cols}`)
+    for (let c = 0; c < cols; c++) {
+      if (!validTiles.has(tiles[r][c])) fail(`${label}: invalid tile ${tiles[r][c]} at (${c},${r})`)
+    }
+  }
+  // ── AC6 enemy-count bounds — the description carries the stage flags; the counts come from cfg. ──
+  if (desc.stageIndex !== cfg.stageIndex) fail(`${label}: stageIndex ${desc.stageIndex} != cfg ${cfg.stageIndex}`)
+  if (desc.isBoss !== cfg.isBoss) fail(`${label}: isBoss ${desc.isBoss} != cfg ${cfg.isBoss}`)
+  if (cfg.concurrentEnemies > MAX_CONCURRENT_ENEMIES) fail(`${label}: concurrentEnemies exceeds cap`)
+  if (cfg.totalEnemies < cfg.concurrentEnemies) fail(`${label}: totalEnemies < concurrentEnemies`)
+  // ── AC6 terrain max-count ceiling (D14) — each per-terrain count ≤ scatterCells (the EXACT eligible-cell
+  // count the scatter visited, recorded in the description). The per-cell Bernoulli places AT MOST one tile
+  // per eligible cell, so this hard ceiling holds on EVERY seed (NOT a flaky density·N mean). ──
+  if (!(desc.scatterCells >= 0 && desc.scatterCells <= cols * rows)) fail(`${label}: scatterCells ${desc.scatterCells} out of range`)
+  for (const kind of [TILE.BRICK, TILE.STEEL, TILE.WATER, TILE.TREES, TILE.ICE]) {
+    const n = countTile(tiles, kind)
+    if (n > desc.scatterCells) fail(`${label}: terrain kind ${kind} count ${n} exceeds scatterCells ceiling ${desc.scatterCells} (D14)`)
+  }
+
+  // ── AC7 eagle present + at bottom-center + fully enclosed. ──
+  let baseCount = 0
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) if (tiles[r][c] === TILE.BASE) baseCount++
+  if (baseCount !== 1) fail(`${label}: expected exactly 1 BASE tile, found ${baseCount}`)
+  if (tiles[base.row][base.col] !== TILE.BASE) fail(`${label}: base.col/row (${base.col},${base.row}) is not a BASE tile`)
+  if (base.row !== rows - 1 || base.col !== Math.floor(cols / 2)) fail(`${label}: base not at bottom-center`)
+  // Enclosure: every in-grid orthogonal neighbour that is not the base is BRICK or STEEL (the fort wall);
+  // an out-of-grid neighbour (the bottom edge) is the grid wall — also "enclosed".
+  for (const [dc, dr] of ORTHO) {
+    const nc = base.col + dc
+    const nr = base.row + dr
+    if (nc < 0 || nr < 0 || nc >= cols || nr >= rows) continue // grid edge = wall.
+    const t = tiles[nr][nc]
+    if (t !== TILE.BRICK && t !== TILE.STEEL) fail(`${label}: base neighbour (${nc},${nr}) is ${t}, not BRICK/STEEL (eagle exposed)`)
+  }
+
+  // ── AC8 spawn validity + coordinate pin (D13) ── every spawn is a tankFits anchor over the EMITTED
+  // tiles, the spawns are distinct + in-bounds, AND each spawn's (x,y) (and base.x/y) EXACTLY equals the
+  // 2×2-window center (PLAYFIELD_X+(col+1)·TILE_SIZE, PLAYFIELD_Y+(row+1)·TILE_SIZE).
+  const allSpawns = [...enemySpawns, ...playerSpawns]
+  if (enemySpawns.length !== 3) fail(`${label}: expected 3 enemy spawns, got ${enemySpawns.length}`)
+  if (playerSpawns.length !== 2) fail(`${label}: expected 2 player spawns, got ${playerSpawns.length}`)
+  const spawnKeys = new Set()
+  for (const s of allSpawns) {
+    if (!tankFits(tiles, cols, rows, s.col, s.row)) fail(`${label}: spawn ${s.which} at (${s.col},${s.row}) is not a tankFits anchor`)
+    const k = `${s.col},${s.row}`
+    if (spawnKeys.has(k)) fail(`${label}: duplicate spawn anchor at ${k}`)
+    spawnKeys.add(k)
+    const wc = windowCenter(s.col, s.row)
+    const expX = PLAYFIELD_X + (s.col + 1) * TILE_SIZE
+    const expY = PLAYFIELD_Y + (s.row + 1) * TILE_SIZE
+    if (wc.x !== expX || wc.y !== expY) fail(`${label}: windowCenter formula drift at ${s.which}`)
+    if (s.x !== expX || s.y !== expY) fail(`${label}: spawn ${s.which} (x,y)=(${s.x},${s.y}) != window-center (${expX},${expY}) — D13`)
+  }
+  // base.x/y obeys the SAME window-center formula (D13).
+  {
+    const expX = PLAYFIELD_X + (base.col + 1) * TILE_SIZE
+    const expY = PLAYFIELD_Y + (base.row + 1) * TILE_SIZE
+    if (base.x !== expX || base.y !== expY) fail(`${label}: base (x,y)=(${base.x},${base.y}) != window-center (${expX},${expY}) — D13`)
+  }
+
+  // ── AC7 reachability — a footprint-aware BFS from EACH top enemy spawn reaches a fort-approach goal
+  // window (RE-derived from the EMITTED grid). All three must reach (enemies stream from all three lanes).
+  for (const s of enemySpawns) {
+    if (!bfsReachesFort(desc, s.col, s.row)) fail(`${label}: enemy spawn ${s.which} cannot reach the eagle fort (BFS, AC7/D15)`)
+  }
+}
+
+// ── The sweep (AC4/AC5/AC6/AC7/AC8). N seeds × K stages, incl. a boss stage (BOSS_STAGE_EVERY-1). ──
+const SWEEP_SEEDS = 200
+const SWEEP_STAGES = [0, 1, 2, 3, BOSS_STAGE_EVERY - 1, 7, 12] // includes the first boss stage (index 4).
+for (let i = 0; i < SWEEP_SEEDS; i++) {
+  // Spread the seeds across the 32-bit space (the same shape the reference's sweep uses).
+  const seed = (i * 0x9e3779b1) >>> 0
+  for (const stageIndex of SWEEP_STAGES) {
+    const cfg = stageConfig(stageIndex)
+    const label = `seed=${seed} stage=${stageIndex}`
+    // (a) Determinism (AC4) — two generations DEEP-EQUAL.
+    const d1 = generateStage(seed, cfg)
+    const d2 = generateStage(seed, cfg)
+    if (!deepEqual(d1, d2)) fail(`${label}: generateStage is non-deterministic (two calls differ, AC4)`)
+    // (b–e) Bounds / enclosure / reachability / spawn validity (AC6/AC7/AC8) — RE-derived.
+    checkDescription(d1, cfg, label)
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// 6b) Regression pin (AC5, D10) — ONE fixed (seed, stageIndex) → a COMPUTED reference description (the
+// real function's output, never hand-invented; computed once + pinned as literals). A silent generator
+// change fails loudly here. The pin asserts the FULL int grid (a row-major digit serialization) + every
+// spawn/base coord + scatterCells + isBoss.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+{
+  const PIN_SEED = 0x1234abcd
+  const PIN_STAGE = 2
+  // The COMPUTED reference (from a one-off run of the REAL generateStage — D10):
+  const PIN_TILES =
+    '0010100001000|0050000000000|0010000304100|0003100000200|0000000000000|0000000201000|0000000010000|0000300000400|0004400202200|0000000000000|0000000000000|0000411000000|3000416100051'
+  const PIN_SCATTER = 77
+  const PIN_BASE = [6, 12, 520, 672]
+  const PIN_ENEMY = [['enemyL', 0, 0, 232, 96], ['enemyC', 5, 0, 472, 96], ['enemyR', 11, 0, 760, 96]]
+  const PIN_PLAYER = [['p1', 2, 11, 328, 624], ['p2', 8, 11, 616, 624]]
+  const PIN_ISBOSS = false
+
+  const d = generateStage(PIN_SEED, stageConfig(PIN_STAGE))
+  const tileStr = d.tiles.map((row) => row.join('')).join('|')
+  if (tileStr !== PIN_TILES) fail(`pin: tile grid drifted\n  got: ${tileStr}\n  exp: ${PIN_TILES}`)
+  if (d.scatterCells !== PIN_SCATTER) fail(`pin: scatterCells = ${d.scatterCells}, expected ${PIN_SCATTER}`)
+  if (!deepEqual([d.base.col, d.base.row, d.base.x, d.base.y], PIN_BASE)) fail(`pin: base drifted`)
+  if (!deepEqual(d.enemySpawns.map((s) => [s.which, s.col, s.row, s.x, s.y]), PIN_ENEMY)) fail(`pin: enemy spawns drifted`)
+  if (!deepEqual(d.playerSpawns.map((s) => [s.which, s.col, s.row, s.x, s.y]), PIN_PLAYER)) fail(`pin: player spawns drifted`)
+  if (d.isBoss !== PIN_ISBOSS) fail(`pin: isBoss = ${d.isBoss}, expected ${PIN_ISBOSS}`)
+}
+
 console.log(
-  `verify-gen OK: rng deterministic + pinned (byte-identical to reference); ` +
-    `constants DESIGN_WIDTH=1280 (pure node-import); ` +
-    `save round-trip + clone-no-alias (per-player upgrades['1']/['2'] don't alias frozen DEFAULT_META, AC8). ` +
-    `(F0 stub — F2 fills in the seeded-stage sweep.)`,
+  `verify-gen OK: rng deterministic + pinned; constants ${GRID_COLS}x${GRID_ROWS} (pure node-import); ` +
+    `save clone-no-alias; tiles TILE_PROPS total + helpers read the table; ` +
+    `stages monotonic over stageConfig(0..${STAGE_K}) (densities+counts+hardShare+boss cadence, D16); ` +
+    `stage sweep ${SWEEP_SEEDS} seeds × ${SWEEP_STAGES.length} stages — determinism + bounds (≤scatterCells, D14) + ` +
+    `eagle enclosed&reachable (footprint BFS, D15) + spawn validity & window-center pin (D13); regression pin (D10). ` +
+    `(FOOTPRINT=${FOOTPRINT} tiles.)`,
 )
 process.exit(0)
