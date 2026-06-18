@@ -46,6 +46,15 @@ export interface TankSpec {
   colorFlash: number // red-carrier flash fill (coupled Tank visual ONLY).
   scoreValue: number // points banked to RunState.score on this enemy's death (read in F4 — D10).
   canBreakSteel?: boolean // max-star player only — RESERVED (no bullet reads it in F4; the steel-break seam).
+
+  // ── F5 run-SETUP fields (F5 §5.2, D7) — OPTIONAL, default the IDENTITY (0) ── two Hub permanent-upgrade
+  // rows are run-SETUP, not per-tank FEEL: `+1 starting life` and `+star-start`. To keep applyUpgrades a PURE
+  // `spec → spec` fold (DRY with applyStarTier), they fold into these two OPTIONAL spec fields that ONLY the
+  // run-start setup reads (GameScene reads the folded MetaState.startSpec(slot) → seeds createRunState's
+  // per-slot {lives,tier} map — D5b). The per-tank movement/fire code IGNORES them (they're not feel stats).
+  // Defaulting to 0/undefined keeps a fresh meta byte-identical (the verifier's identity-fold pin holds).
+  startLivesBonus?: number // F5 (D7) — +N extra starting lives this slot launches a run with (default 0).
+  startTier?: number // F5 (D7) — the star tier this slot STARTS a run at (default 0 = the base spec).
 }
 
 // ── The four classic enemy types (AC4) ── they DIFFER MEANINGFULLY on at least one of {moveSpeed,

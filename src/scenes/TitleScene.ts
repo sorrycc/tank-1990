@@ -1,13 +1,14 @@
 import Phaser from 'phaser'
 import { DESIGN_WIDTH, DESIGN_HEIGHT, UI_FONT } from '../config/constants.js'
+import { t } from '../i18n/index.js'
 
-// ── TitleScene (F0 scaffold §5.3, Decision 2/4, AC6) ──
+// ── TitleScene (F0 scaffold §5.3 → F5 §5.4, Decision 2/4/D12, AC7/AC9) ──
 // Shows the game title + a Start prompt and routes to the HUB on a key OR a pointer (the flow is
-// Title → Hub → Game; the Hub is the between-runs upgrade lobby — its real two-column P1|P2 trees +
-// shared-currency readout are a LATER feature, this is a stub). All text is positioned from the
-// FIXED design resolution (Decision 1) — never window.innerWidth — so it stays centered under
-// Scale.FIT regardless of viewport size. Strings are inline literals in F0 (the i18n layer lands in
-// F1, then every text site swaps to t('...') against the same UI_FONT).
+// Title → Hub → Game). All text is positioned from the FIXED design resolution (Decision 1) — never
+// window.innerWidth — so it stays centered under Scale.FIT regardless of viewport size. F5 (D12/AC9):
+// the F0 inline literals are SWAPPED to t('...') against the same UI_FONT (the i18n adoption the F0 doc
+// promised when the layer landed — the user reads zh-CN, so a zh browser sees Chinese chrome). The live
+// locale is set ONCE at boot in main.ts (setLocale(detectLocale())), so every t() here reads the right locale.
 export class TitleScene extends Phaser.Scene {
   constructor() {
     super('Title')
@@ -17,7 +18,7 @@ export class TitleScene extends Phaser.Scene {
     const cx = DESIGN_WIDTH / 2
 
     this.add
-      .text(cx, 220, 'TANK 1990', {
+      .text(cx, 220, t('title.heading'), {
         fontFamily: UI_FONT,
         fontSize: '88px',
         color: '#e6edf3',
@@ -26,7 +27,7 @@ export class TitleScene extends Phaser.Scene {
       .setOrigin(0.5)
 
     this.add
-      .text(cx, 312, '坦克大战 — Battle City', {
+      .text(cx, 312, t('title.subtitle'), {
         fontFamily: UI_FONT,
         fontSize: '24px',
         color: '#8b949e',
@@ -34,7 +35,7 @@ export class TitleScene extends Phaser.Scene {
       .setOrigin(0.5)
 
     this.add
-      .text(cx, DESIGN_HEIGHT - 120, 'Press SPACE / ENTER or click to start', {
+      .text(cx, DESIGN_HEIGHT - 120, t('title.start'), {
         fontFamily: UI_FONT,
         fontSize: '24px',
         color: '#58d68d',

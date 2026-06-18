@@ -159,3 +159,11 @@ export const CARRIER_RATE = 0.25 // 0..1 — share of enemies that flash red + d
 // deep stage streams enemies FASTER but never instantly (a base of SPAWN_STAGGER_BASE × this is the fastest
 // cadence). Owned here so stages.ts + the verifier read the SAME floor (DRY). 0 < it ≤ 1.
 export const SPAWN_INTERVAL_MIN_SCALE = 0.35 // the smallest spawn-interval multiplier (the fastest stream).
+
+// ── F5 Power-ups & meta (F5 §5.2, Decisions D8, AC5) — PURE meta-economy DATA (no Phaser) ──
+// CURRENCY_RATIO (F5 §5.2, D8, AC5) — the fraction [0,1] of a run's final score banked into the SHARED
+// persistent currency on run end: `currency += floor(score · CURRENCY_RATIO)`. The SINGLE owner (DRY) —
+// MetaState.bankRun reads it. The power-up effect durations live in config/powerups.ts + the upgrade
+// costs/effects in config/tank-upgrades.ts (each beside its own concern — DRY); only this scalar is shared
+// broadly enough to sit in the constants owner. Keep it < 1 (the bank is a FRACTION of the run, not all of it).
+export const CURRENCY_RATIO = 0.1 // 10% of run score banks into the shared currency on run end (AC5).

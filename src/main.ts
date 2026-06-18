@@ -6,6 +6,14 @@ import { HubScene } from './scenes/HubScene.js'
 import { GameScene } from './scenes/GameScene.js'
 import { HUDScene } from './scenes/HUDScene.js'
 import { GameOverScene } from './scenes/GameOverScene.js'
+import { setLocale, detectLocale } from './i18n/index.js'
+
+// ── Set the live locale ONCE at boot (F5 §5.4, Decision D12, AC9) ── BEFORE any scene renders chrome. F5's
+// locked Hub scope does NOT add a `language` field to the meta schema (YAGNI — a language-switch row is a
+// later feature), so the locale is auto-DETECTED from the browser each boot: a zh browser → 'zh-CN' (the user
+// reads Chinese), else 'en'. detectLocale() is guarded (a headless/no-navigator env degrades to 'en', never
+// throws — mirrors save.ts's defensive discipline). This is the reference's boot seam, trimmed to the auto-detect.
+setLocale(detectLocale())
 
 // ── Single boot site (F0 scaffold §5.3, Decision 1/2/3, AC4/AC5/AC6) ──
 // Builds ONE Phaser.Game config and registers all SIX scenes. The scene registration ORDER

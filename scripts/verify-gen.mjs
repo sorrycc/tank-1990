@@ -41,6 +41,15 @@ import { generateStage, tankFits, isFortApproachWindow, windowCenter, FOOTPRINT 
 import { ENEMY_ARCHETYPES, ENEMY_SPECS, BASIC, FAST, POWER, ARMOR, PLAYER_BASE, PLAYER_STAR_TIERS, applyStarTier, rosterPick } from '../src/config/tanks.js'
 import { ARMOR_TANK_HP, SPAWN_INTERVAL_MIN_SCALE } from '../src/config/constants.js'
 import { createRunState } from '../src/core/RunState.js'
+// ── F5 PURE modules (D1/D3/D5/D6/D12): the power-up roster, the permanent upgrade rows + applyUpgrades, and
+// the i18n core + the two dictionaries. Importing them here under node RE-PROVES their purity (a stray
+// `import 'phaser'` throws) — the convention every pure module satisfies (AC9/AC11). The Phaser-coupled
+// entities/PowerUp.ts, world/TileMap.ts, the scenes, and MetaState's storage methods are NEVER imported.
+import { POWERUPS, POWERUP_BY_ID, POWERUP_KINDS, pickPowerUpKind, HELMET_SHIELD_SEC, CLOCK_FREEZE_SEC, SHOVEL_FORTIFY_SEC } from '../src/config/powerups.js'
+import { TANK_UPGRADES, TANK_UPGRADES_BY_ID, applyUpgrades } from '../src/config/tank-upgrades.js'
+import { t, tName, tDesc, setLocale } from '../src/i18n/index.js'
+import { EN } from '../src/i18n/en.js'
+import { ZH_CN } from '../src/i18n/zh-CN.js'
 
 function fail(msg) {
   console.error(`verify-gen FAILED: ${msg}`)
@@ -450,25 +459,29 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
     prevTier = cur
   }
 
-  // ── 7f) RunState.advance() is deterministic + stageIndex strictly increases (AC8) ── construct two run states
-  // from the SAME start seed + slots, drive advance() K times, and assert the (seed, stageIndex) chain is
-  // byte-identical AND stageIndex strictly increases by 1 each step. The successful node-import (above) re-proves
-  // RunState's purity. lives/tier/score are CARRIED (untouched by advance — D10): assert score stays put.
+  // ── 7f) RunState.advance() is deterministic + stageIndex strictly increases (AC8); the per-slot seed map +
+  // the timed power-up decay/reset (F5 D5b/D5c/AC3/AC6) ── RE-PINNED to the F5 createRunState signature: the F4
+  // scalar `startLives` is replaced by a PER-SLOT { [slot]: {lives, tier} } seed map (D5b — so each player's
+  // INDEPENDENT Hub +startLife/+starStart fold lands at run start). The same fresh-state invariants are asserted
+  // against the new shape; a new seeded case proves the per-slot lives/tier fold reaches run start (AC6). This is
+  // the ONE F4 verifier block F5 edits (D5c — the rest of the F0–F4 sweep is byte-unchanged).
   {
     const RS_SEED = 0xc0ffee
-    const SLOTS = [1, 2]
-    const START_LIVES_T = 3
-    const a = createRunState(RS_SEED, SLOTS, START_LIVES_T)
-    const b = createRunState(RS_SEED, SLOTS, START_LIVES_T)
+    // The fresh-state map: both present, lives 3, tier 0 (the F4 fresh-meta behaviour, expressed per-slot).
+    const FRESH = { 1: { lives: 3, tier: 0 }, 2: { lives: 3, tier: 0 } }
+    const a = createRunState(RS_SEED, { 1: { lives: 3, tier: 0 }, 2: { lives: 3, tier: 0 } })
+    const b = createRunState(RS_SEED, { 1: { lives: 3, tier: 0 }, 2: { lives: 3, tier: 0 } })
     // Initial state sanity (AC8): stageIndex 0, the ledger seeded from stage 0, lives seeded per slot, score 0.
     const cfg0 = stageConfig(0)
     if (a.stageIndex !== 0) fail(`RunState: fresh stageIndex = ${a.stageIndex}, expected 0`)
     if (a.score !== 0) fail(`RunState: fresh score = ${a.score}, expected 0`)
     if (a.enemiesQueued !== cfg0.totalEnemies || a.enemiesRemaining !== cfg0.totalEnemies || a.enemiesAlive !== 0)
       fail(`RunState: fresh spawn ledger not seeded from stageConfig(0)`)
-    for (const slot of SLOTS) {
-      if (a.lives[slot] !== START_LIVES_T) fail(`RunState: fresh lives[${slot}] = ${a.lives[slot]}, expected ${START_LIVES_T}`)
-      if (a.tier[slot] !== 0) fail(`RunState: fresh tier[${slot}] = ${a.tier[slot]}, expected 0`)
+    for (const slot of Object.keys(FRESH)) {
+      const s = Number(slot)
+      if (a.lives[s] !== 3) fail(`RunState: fresh lives[${s}] = ${a.lives[s]}, expected 3`)
+      if (a.tier[s] !== 0) fail(`RunState: fresh tier[${s}] = ${a.tier[s]}, expected 0`)
+      if (a.shieldTimer[s] !== 0) fail(`RunState: fresh shieldTimer[${s}] = ${a.shieldTimer[s]}, expected 0 (the identity)`)
     }
     if (a.freezeTimer !== 0 || a.shovelTimer !== 0) fail(`RunState: fresh power-up timers not 0 (the neutral identity)`)
     // Mutate a's carried state, then drive advance() — the carried score/lives/tier must SURVIVE advance (D10).
@@ -488,10 +501,182 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
       if (a.score !== 4200) fail(`RunState: score NOT carried across advance() (got ${a.score}) — D10`)
       if (a.lives[1] !== 1) fail(`RunState: lives NOT carried across advance() — D10`)
     }
+
+    // ── The per-slot lives/tier fold reaches run start (F5 D5b, AC6) ── a seeded { lives:5, tier:2 } map yields
+    // lives[1]===5 / tier[1]===2 (the Hub +startLife / +starStart upgrades land), and a SOLO seed map seeds ONLY
+    // the present slot (no phantom P2 — D11 present-scoping is the map's key set).
+    {
+      const solo = createRunState(0x5eed, { 1: { lives: 5, tier: 2 } })
+      if (solo.lives[1] !== 5) fail(`RunState: per-slot lives fold — lives[1] = ${solo.lives[1]}, expected 5 (AC6)`)
+      if (solo.tier[1] !== 2) fail(`RunState: per-slot tier fold — tier[1] = ${solo.tier[1]}, expected 2 (AC6)`)
+      if (2 in solo.lives) fail(`RunState: a SOLO seed map seeded a phantom P2 (lives[2] present) — D11`)
+      if (solo.shieldTimer[1] !== 0) fail(`RunState: per-slot fresh shieldTimer[1] != 0`)
+    }
+
+    // ── tickTimers(dt) decays the timed power-ups toward 0, clamped (F5 D5/AC3) ── set the three timers, drive
+    // tickTimers PAST their values, and assert each lands at EXACTLY 0 (never negative). The carried economy is
+    // UNTOUCHED by tickTimers (the F4 D10 invariant). Then advance() RESETS the timed power-ups (a clock/shovel/
+    // shield does NOT bleed into the next stage — AC3).
+    {
+      const r = createRunState(0xa11, { 1: { lives: 3, tier: 0 } })
+      r.freezeTimer = CLOCK_FREEZE_SEC
+      r.shovelTimer = SHOVEL_FORTIFY_SEC
+      r.shieldTimer[1] = HELMET_SHIELD_SEC
+      r.score = 999
+      // A partial step decays each by dt, never below 0; a step PAST the value lands at exactly 0.
+      r.tickTimers(0.5)
+      if (!(r.freezeTimer >= 0 && r.freezeTimer <= CLOCK_FREEZE_SEC)) fail(`RunState: tickTimers freezeTimer out of range`)
+      r.tickTimers(1000) // drive every timer well past its value.
+      if (r.freezeTimer !== 0) fail(`RunState: tickTimers freezeTimer = ${r.freezeTimer}, expected exactly 0 (clamped)`)
+      if (r.shovelTimer !== 0) fail(`RunState: tickTimers shovelTimer = ${r.shovelTimer}, expected exactly 0 (clamped)`)
+      if (r.shieldTimer[1] !== 0) fail(`RunState: tickTimers shieldTimer[1] = ${r.shieldTimer[1]}, expected exactly 0 (clamped)`)
+      if (r.score !== 999) fail(`RunState: tickTimers must NOT touch the carried score (D10)`)
+      // advance() RESETS the timed power-ups (AC3): set them again, advance, assert 0.
+      r.freezeTimer = CLOCK_FREEZE_SEC
+      r.shovelTimer = SHOVEL_FORTIFY_SEC
+      r.shieldTimer[1] = HELMET_SHIELD_SEC
+      r.advance()
+      if (r.freezeTimer !== 0 || r.shovelTimer !== 0) fail(`RunState: advance() did NOT reset freeze/shovel timers (AC3)`)
+      if (r.shieldTimer[1] !== 0) fail(`RunState: advance() did NOT reset shieldTimer (AC3)`)
+    }
+
     // isBossStage() tracks stageConfig.isBoss (the boss-feature seam). Drive a fresh run to a boss stage.
-    const c = createRunState(1, [1], 3)
+    const c = createRunState(1, { 1: { lives: 3, tier: 0 } })
     while (c.stageIndex < BOSS_STAGE_EVERY - 1) c.advance()
     if (!c.isBossStage()) fail(`RunState: isBossStage() false at the first boss stage (index ${c.stageIndex})`)
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// 8) F5 — power-up roster + permanent upgrade rows + applyUpgrades + the i18n dictionary structure
+// (F5 §7, Decisions D1/D3/D6/D7/D12, AC1/AC2/AC6/AC9/AC11). All PURE (node-imported above → re-proving
+// purity, AC11). The verifier proves DATA properties (well-formedness + cost-monotone + the never-weaker
+// fold + pick determinism + the i18n structure), NOT gameplay balance (the HONEST scope — D11).
+// ════════════════════════════════════════════════════════════════════════════════════════════
+{
+  // ── 8a) Power-up roster well-formed (AC1/AC2) ── all six kinds present; every PowerUpDef has a numeric colour
+  // + a duration ≥ 0; the THREE timed kinds (helmet/clock/shovel) carry a duration > 0; the lookup is total.
+  const EXPECTED_KINDS = ['helmet', 'clock', 'shovel', 'star', 'grenade', 'tank']
+  for (const kind of EXPECTED_KINDS) {
+    if (!POWERUP_KINDS.includes(kind)) fail(`powerups: kind '${kind}' missing from POWERUP_KINDS`)
+    const def = POWERUP_BY_ID[kind]
+    if (!def) fail(`powerups: POWERUP_BY_ID missing '${kind}'`)
+    if (def.kind !== kind || def.id !== kind) fail(`powerups: def '${kind}' id/kind mismatch`)
+    if (typeof def.color !== 'number') fail(`powerups: def '${kind}'.color is not a number`)
+    if (typeof def.durationSec !== 'number' || def.durationSec < 0) fail(`powerups: def '${kind}'.durationSec = ${def.durationSec} invalid`)
+  }
+  if (POWERUPS.length !== EXPECTED_KINDS.length) fail(`powerups: POWERUPS has ${POWERUPS.length} defs, expected ${EXPECTED_KINDS.length}`)
+  for (const timed of ['helmet', 'clock', 'shovel']) {
+    if (!(POWERUP_BY_ID[timed].durationSec > 0)) fail(`powerups: timed kind '${timed}' must have durationSec > 0`)
+  }
+  for (const instant of ['star', 'grenade', 'tank']) {
+    if (POWERUP_BY_ID[instant].durationSec !== 0) fail(`powerups: instant kind '${instant}' must have durationSec 0`)
+  }
+  // The timed defs' durations must equal the run-effect tunables the scene reads (DRY — one truth).
+  if (POWERUP_BY_ID.helmet.durationSec !== HELMET_SHIELD_SEC) fail(`powerups: helmet duration != HELMET_SHIELD_SEC`)
+  if (POWERUP_BY_ID.clock.durationSec !== CLOCK_FREEZE_SEC) fail(`powerups: clock duration != CLOCK_FREEZE_SEC`)
+  if (POWERUP_BY_ID.shovel.durationSec !== SHOVEL_FORTIFY_SEC) fail(`powerups: shovel duration != SHOVEL_FORTIFY_SEC`)
+
+  // ── 8b) pickPowerUpKind is total + deterministic (AC1) ── over a long draw it ONLY ever returns a known kind;
+  // two fresh rngs from the SAME seed → the SAME kind sequence (the seeded drop the carrier death relies on, D3).
+  {
+    const a = mulberry32(0xbeef)
+    const b = mulberry32(0xbeef)
+    for (let i = 0; i < 500; i++) {
+      const ka = pickPowerUpKind(a)
+      const kb = pickPowerUpKind(b)
+      if (!POWERUP_KINDS.includes(ka)) fail(`powerups: pickPowerUpKind returned unknown kind '${ka}'`)
+      if (ka !== kb) fail(`powerups: pickPowerUpKind non-deterministic for a fixed rng ('${ka}' !== '${kb}')`)
+    }
+  }
+
+  // ── 8c) Permanent upgrade rows well-formed + cost-monotone (AC6) ── each row has a string id/name/desc, a
+  // maxLevel ≥ 1, costs.length === maxLevel, and the costs are MONOTONE non-decreasing (deeper levels cost ≥
+  // shallower). The id lookup is total. Mirrors the reference's upgrades.ts row contract.
+  for (const row of TANK_UPGRADES) {
+    if (typeof row.id !== 'string' || row.id.length === 0) fail(`upgrades: a row has no id`)
+    if (typeof row.name !== 'string' || typeof row.desc !== 'string') fail(`upgrades: row '${row.id}' name/desc not a string`)
+    if (!Number.isInteger(row.maxLevel) || row.maxLevel < 1) fail(`upgrades: row '${row.id}'.maxLevel = ${row.maxLevel} invalid`)
+    if (!Array.isArray(row.costs) || row.costs.length !== row.maxLevel) fail(`upgrades: row '${row.id}'.costs.length != maxLevel`)
+    for (let i = 0; i < row.costs.length; i++) {
+      if (typeof row.costs[i] !== 'number' || row.costs[i] < 0) fail(`upgrades: row '${row.id}'.costs[${i}] invalid`)
+      if (i > 0 && row.costs[i] < row.costs[i - 1]) fail(`upgrades: row '${row.id}'.costs not monotone non-decreasing at ${i}`)
+    }
+    if (TANK_UPGRADES_BY_ID[row.id] !== row) fail(`upgrades: row '${row.id}' missing from TANK_UPGRADES_BY_ID`)
+  }
+
+  // ── 8d) applyUpgrades — identity fold + the never-weaker contract (AC6) ── applyUpgrades(PLAYER_BASE, {})
+  // deep-equals a CLONE of PLAYER_BASE (a fresh meta is byte-unchanged) and returns a NEW object (no aliasing).
+  // For each row + each owned level, apply returns a NEW spec that NEVER WEAKENS the player on the field it
+  // touches (the magnitude is ≥ the base / the bonus field is ≥ 0). Unknown ids + over-maxLevel levels degrade.
+  {
+    const identity = applyUpgrades(PLAYER_BASE, {})
+    if (!deepEqual(identity, PLAYER_BASE)) fail(`upgrades: applyUpgrades(base, {}) != a clone of base (the identity fold)`)
+    if (identity === PLAYER_BASE) fail(`upgrades: applyUpgrades(base, {}) must return a NEW object (no aliasing)`)
+    // Per-row never-weaker: compare the touched magnitude field to the base.
+    const FIELD = { maxBullets: 'maxBullets', bulletSpeed: 'bulletSpeed', tankSpeed: 'moveSpeed', baseArmor: 'maxHp' }
+    for (const row of TANK_UPGRADES) {
+      for (let lvl = 1; lvl <= row.maxLevel; lvl++) {
+        const out = applyUpgrades(PLAYER_BASE, { [row.id]: lvl })
+        if (out === PLAYER_BASE) fail(`upgrades: applyUpgrades('${row.id}') aliased the base`)
+        const f = FIELD[row.id]
+        if (f) {
+          if (!(out[f] >= PLAYER_BASE[f])) fail(`upgrades: row '${row.id}' level ${lvl} WEAKENED ${f} (${out[f]} < ${PLAYER_BASE[f]})`)
+        } else if (row.id === 'startLife') {
+          if (!((out.startLivesBonus ?? 0) >= 0)) fail(`upgrades: row 'startLife' produced a negative startLivesBonus`)
+          if (!(out.startLivesBonus >= lvl)) fail(`upgrades: row 'startLife' level ${lvl} did not raise startLivesBonus`)
+        } else if (row.id === 'starStart') {
+          if (!((out.startTier ?? 0) >= 0)) fail(`upgrades: row 'starStart' produced a negative startTier`)
+          if (out.startTier !== lvl) fail(`upgrades: row 'starStart' level ${lvl} startTier = ${out.startTier}, expected ${lvl}`)
+        }
+      }
+    }
+    // Graceful degradation: an unknown id is skipped + an over-maxLevel stored level is clamped (no throw, no weaken).
+    const degraded = applyUpgrades(PLAYER_BASE, { __nope__: 9, maxBullets: 999 })
+    if (degraded.maxBullets < PLAYER_BASE.maxBullets) fail(`upgrades: a clamped/over-large level weakened the player`)
+    if (degraded.maxBullets !== PLAYER_BASE.maxBullets + TANK_UPGRADES_BY_ID.maxBullets.maxLevel)
+      fail(`upgrades: an over-maxLevel maxBullets did not clamp to maxLevel`)
+  }
+
+  // ── 8e) i18n dictionary structure (AC9) — re-scoped to what's headlessly PROVABLE (the scenes are NEVER
+  // imported, and there is no shared scene-key registry, so "every key the scenes use exists" is unprovable;
+  // this block proves the dictionary STRUCTURE instead). EN.ui is non-empty; ZH_CN.ui ⊆ EN.ui (no orphan zh
+  // chrome key without an en fallback source); every `upgrade` content Entry in BOTH locales is well-formed
+  // (name/desc, when present, are strings) and every id ZH_CN.upgrade overrides exists in TANK_UPGRADES_BY_ID
+  // (no orphan content override); the fallback chain is correct (a missing zh key returns en, never blank; an
+  // absent key returns itself verbatim; an un-overridden content id returns the passed-in en string).
+  {
+    if (!EN.ui || Object.keys(EN.ui).length === 0) fail(`i18n: EN.ui is empty`)
+    for (const k of Object.keys(ZH_CN.ui)) {
+      if (!(k in EN.ui)) fail(`i18n: ZH_CN.ui key '${k}' has no EN.ui fallback source (orphan chrome key)`)
+    }
+    // Content `upgrade` entries well-formed + keyed to real rows, in BOTH locales.
+    for (const loc of [EN, ZH_CN]) {
+      const up = loc.upgrade || {}
+      for (const id of Object.keys(up)) {
+        if (!(id in TANK_UPGRADES_BY_ID)) fail(`i18n: an 'upgrade' override id '${id}' is not a real TANK_UPGRADES row`)
+        const e = up[id]
+        if (e.name !== undefined && typeof e.name !== 'string') fail(`i18n: upgrade '${id}'.name is not a string`)
+        if (e.desc !== undefined && typeof e.desc !== 'string') fail(`i18n: upgrade '${id}'.desc is not a string`)
+      }
+    }
+    // The fallback chain with the live locale forced to zh-CN.
+    setLocale('zh-CN')
+    // Pick an EN-only chrome key (one present in EN.ui but ABSENT from ZH_CN.ui), if any, → t() returns the EN string.
+    const enOnly = Object.keys(EN.ui).find((k) => !(k in ZH_CN.ui))
+    if (enOnly && t(enOnly) !== EN.ui[enOnly]) fail(`i18n: t('${enOnly}') did not fall back to the EN string under zh-CN`)
+    // A present zh key returns the zh string; a present-in-both key returns the zh override.
+    const both = Object.keys(ZH_CN.ui)[0]
+    if (both && t(both) !== ZH_CN.ui[both]) fail(`i18n: t('${both}') did not return the zh-CN override`)
+    // An ABSENT key returns the key verbatim (never blank/undefined).
+    if (t('__totally_absent_key__') !== '__totally_absent_key__') fail(`i18n: t(absent) did not return the key verbatim`)
+    // A content id with NO zh override returns the passed-in EN string (never blank).
+    const noOverrideId = Object.keys(TANK_UPGRADES_BY_ID).find((id) => !((ZH_CN.upgrade || {})[id]))
+    if (noOverrideId) {
+      if (tName('upgrade', noOverrideId, 'EN_NAME') !== 'EN_NAME') fail(`i18n: tName(no-override) did not return the en string`)
+      if (tDesc('upgrade', noOverrideId, 'EN_DESC') !== 'EN_DESC') fail(`i18n: tDesc(no-override) did not return the en string`)
+    }
+    setLocale('en') // restore (defensive — the verifier exits after, but keep the module state clean).
   }
 }
 
@@ -502,7 +687,10 @@ console.log(
     `stage sweep ${SWEEP_SEEDS} seeds × ${SWEEP_STAGES.length} stages — determinism + bounds (≤scatterCells, D14) + ` +
     `eagle enclosed&reachable (footprint BFS, D15) + spawn validity & window-center pin (D13); regression pin (D10); ` +
     `F4 roster well-formed + 4 types distinct + rosterPick known/deterministic + applyStarTier monotone + ` +
-    `RunState.advance() deterministic & stageIndex strictly increasing & economy carried (pure node-import, AC4/AC6/AC8). ` +
-    `(FOOTPRINT=${FOOTPRINT} tiles.)`,
+    `RunState.advance() deterministic & stageIndex strictly increasing & economy carried + per-slot seed fold + ` +
+    `tickTimers decay/clamp + advance-reset (F5 D5b/D5c/AC3/AC6); ` +
+    `F5 power-ups well-formed (6 kinds, durations, pickPowerUpKind deterministic) + upgrade rows cost-monotone + ` +
+    `applyUpgrades identity/never-weaker/graceful + i18n structure (ZH⊆EN, content keyed to real rows, fallback chain) ` +
+    `(pure node-import, AC1/AC2/AC6/AC9/AC11). (FOOTPRINT=${FOOTPRINT} tiles.)`,
 )
 process.exit(0)

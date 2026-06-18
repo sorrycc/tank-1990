@@ -27,10 +27,25 @@ import { generateStage } from '../world/LevelGenerator.js'
 import type { StageDescription, SpawnPoint } from '../world/LevelGenerator.js'
 import { TileMap } from '../world/TileMap.js'
 import { createRunState } from '../core/RunState.js'
-import type { RunState } from '../core/RunState.js'
+import type { RunState, SlotSeed } from '../core/RunState.js'
 import { ENEMY_SPECS, rosterPick, applyStarTier } from '../config/tanks.js'
+import { applyUpgrades } from '../config/tank-upgrades.js'
 import { mulberry32 } from '../util/rng.js'
 import type { RNG } from '../util/rng.js'
+// ── F5 Power-ups & meta (F5 §5.4) ── the pooled power-up entity + the persistence-facing meta wrapper. The
+// PowerUpPool is run-scoped (beside BulletPool); MetaState is read ONCE in create() (the impure save boundary)
+// + cached so the per-frame fold/HUD publish never touches localStorage.
+import { PowerUpPool } from '../entities/PowerUp.js'
+import type { PowerUpRect } from '../entities/PowerUp.js'
+import { createMetaState } from '../core/MetaState.js'
+import type { MetaStateInstance } from '../core/MetaState.js'
+import {
+  pickPowerUpKind,
+  HELMET_SHIELD_SEC,
+  CLOCK_FREEZE_SEC,
+  SHOVEL_FORTIFY_SEC,
+} from '../config/powerups.js'
+import type { PowerUpKind } from '../config/powerups.js'
 
 // ── GameScene (F0 §5.3 + F1 §5.4 + F2 §5.4 + F3 Combat & terrain §5.4, Decisions D1/D3/D6/D7/D8/D9/D10/D11,
 // AC1–AC11) ──
@@ -110,6 +125,18 @@ export class GameScene extends Phaser.Scene {
   private spawnCursor = 0
   private stageLabel!: Phaser.GameObjects.Text // the "STAGE N" readout (updated in place on a stage advance).
 
+  // ── F5 power-up + meta state (F5 §5.4, Decisions D1/D4/D4b/D8, AC1/AC2/AC5/AC6) ──
+  // powerups: the run-scoped pooled power-up entity (the carrier-death drop + the player×pickup overlap). meta:
+  // the persistence wrapper, loaded ONCE in create() (the impure save boundary) — the per-frame HUD publish + the
+  // live spec re-fold read the CACHED `upgrades[slot]` (D4b), never localStorage per frame. ringCells: the eagle
+  // fort-ring tile coords, derived ONCE from desc.base (the shovel fortify/revert target — D4a/§5.3 step 2).
+  // shovelWasActive: the shovel-timer FALLING-edge latch so the revert fires exactly once when the timer hits 0.
+  private powerups!: PowerUpPool
+  private meta!: MetaStateInstance
+  private upgrades: Record<number, Record<string, number>> = {} // cached per-slot Hub tree (read once — D4b).
+  private ringCells: Array<{ col: number; row: number }> = [] // the fort-ring tile coords (D4a).
+  private shovelWasActive = false // the shovel-timer falling-edge latch (revert fires once — D4a/D10).
+
   constructor() {
     super('Game')
   }
@@ -136,17 +163,35 @@ export class GameScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
 
-    // ── The SINGLE Input owner + the shared BulletPool + the FX façade (Decision D9/D12, AC2/AC7) ── these are
-    // RUN-scoped (they outlive a per-stage rebuild — the pool's releaseAll() clears in-flight shots, F4 §5.4).
+    // ── The SINGLE Input owner + the shared BulletPool + the FX façade + the power-up pool (Decision D9/D12/D1,
+    // AC2/AC7/AC1) ── all RUN-scoped (they outlive a per-stage rebuild — the pools' releaseAll() clears in-flight
+    // shots/pickups, F4/F5 §5.4). The PowerUpPool sits beside BulletPool: the carrier-death drop acquires from it
+    // + each player's overlap collects from it (D1).
     this.input2 = new Input(this)
     this.bullets = new BulletPool(this)
     this.effects = new Effects(this)
+    this.powerups = new PowerUpPool(this)
 
-    // ── Construct the SINGLE RunState (F4 §5.4, D5/D11) ── the run owner: a minted seed (replaces F3's fixed
-    // DEV_SEED), the present player slots ([1] solo / [1,2] co-op — the D11 scoping), and START_LIVES per slot.
-    // The scene is its ONLY writer (no module singleton — D5). The per-stage spawn ledger is seeded from stage 0.
+    // ── Load the persistent meta ONCE (F5 §5.4, D8/D4b — the impure save boundary) ── createMetaState() load()s a
+    // FRESH view of localStorage (reflecting any Hub buys + the prior run's bank). Cache each present slot's Hub
+    // tree (upgrades[slot]) so the per-frame live spec re-fold + the HUD currency read NEVER touch storage (D4b).
+    // The save.ts try/catch makes a disabled storage degrade to in-memory defaults (never throws — AC5).
+    this.meta = createMetaState()
     const presentSlots = TWO_PLAYER ? [1, 2] : [1]
-    this.runState = createRunState(this._mintSeed(), presentSlots, START_LIVES)
+    for (const slot of presentSlots) this.upgrades[slot] = this.meta.getUpgrades(slot as 1 | 2)
+
+    // ── Construct the SINGLE RunState (F4 §5.4 + F5 §5.4, D5/D5b/D11) ── the run owner: a minted seed, and a
+    // PER-SLOT { [slot]: {lives, tier} } seed map (F5 D5b — replaces F4's scalar startLives). Each present slot's
+    // run-start lives/tier come from THAT slot's folded Hub spec (MetaState.startSpec): lives = START_LIVES +
+    // spec.startLivesBonus, tier = spec.startTier (the +startLife/+starStart upgrades land at run start — D7). A
+    // fresh meta yields {lives: START_LIVES, tier: 0} (the F4 behaviour, per-slot). The scene is its ONLY writer (D5).
+    const seeds: Record<number, SlotSeed> = {}
+    for (const slot of presentSlots) {
+      const spec = this.meta.startSpec(slot as 1 | 2)
+      seeds[slot] = { lives: START_LIVES + (spec.startLivesBonus ?? 0), tier: spec.startTier ?? 0 }
+    }
+    this.runState = createRunState(this._mintSeed(), seeds)
+    this.shovelWasActive = false // F5 (D4a) — the shovel falling-edge latch starts clear.
 
     // ── Build the first stage via the SHARED builder (F4 §5.4, D7 — extracted so create() + every rebuild run
     // ONE path, DRY). It generates the seeded stage, the eagle, the present players, the spawn ledger, + the
@@ -179,6 +224,11 @@ export class GameScene extends Phaser.Scene {
     this.spawnTimer = 0
     this.spawnCursor = 0
     this.enemies = []
+
+    // ── The fort-ring tile coords (F5 §5.4, D4a) ── derive ONCE per stage from desc.base: the in-grid orthogonal
+    // BRICK neighbours of the base (the SAME fort ring LevelGenerator §5.3 step 2 stamps — DRY, no generator call).
+    // The shovel power-up's fortifyBaseRing/revertBaseRing swap exactly these tiles' brick ⇄ steel (D4a/§5.5).
+    this.ringCells = this._deriveRingCells()
 
     // ── The eagle entity (F3 §5.4, D3/D6, AC6) ── draw the eagle VISUAL at the BASE tile's window-center
     // (the same coord F2's TileMap drew its TILE.BASE body at — DRY). The tank-blocking STATIC BODY ALREADY
@@ -237,10 +287,16 @@ export class GameScene extends Phaser.Scene {
   // a fresh tank loses nothing. A player out of lives stays DOWN (a parked corpse — no respawn, but still in
   // the playerTanks map so _checkRunOver counts it). Seed the spawn-position + playerTanks maps for the slot.
   private _buildPlayer(slot: number, x: number, y: number): Tank {
-    const tank = new Tank(this, x, y, 'player', applyStarTier(this.runState.tier[slot] ?? 0))
+    // F5 (D4b): the running tank spec folds the per-player Hub tree OVER the carried star tier —
+    // applyUpgrades(applyStarTier(tier[slot]), this.upgrades[slot]) — so +maxBullets/+bulletSpeed/+tankSpeed/
+    // +baseArmor reach the live tank AND a mid-run star COMPOSES with (never strips) the Hub upgrades (AC2/AC6).
+    // The cached this.upgrades[slot] was read once in create() (no per-frame save touch). The SAME expression
+    // the star re-fold uses (DRY — _refoldPlayerSpec).
+    const tank = new Tank(this, x, y, 'player', this._playerSpec(slot))
     ;(tank.collider as TankCollider).tankRef = tank // the bullet×tank overlap reads the victim off this (DRY).
     this._collideTankWithTerrain(tank) // AC10 (F2) — the tank stops at brick/steel/water/the eagle.
     this._registerTankOverlap(tank) // the bullet×tank damage funnel (F3 seam, side-generic — D9/AC9).
+    this._registerPowerUpOverlap(slot, tank) // F5 (D1) — the player×pickup collect funnel (the new seam).
     tank.onDeath = () => this._onPlayerDeath(slot, tank)
     // A player with no lives left this stage stays DOWN (its body parked/hidden) — it is still counted by
     // _checkRunOver (the run ends only when EVERY present player is spent). respawnAt arms i-frames on a kill.
@@ -275,6 +331,171 @@ export class GameScene extends Phaser.Scene {
       (bulletRect, tankRect) => this._bulletCanHitTank(bulletRect as BulletRect, tankRect as TankCollider),
       this,
     )
+  }
+
+  // ── _playerSpec(slot) (F5 §5.4, D4b, AC2/AC6) ── the live player tank spec: the per-player Hub tree folded
+  // OVER the carried star tier. applyUpgrades(applyStarTier(tier[slot]), upgrades[slot]) — so the Hub upgrades
+  // (+maxBullets/+bulletSpeed/+tankSpeed/+baseArmor) reach the running tank AND a star power-up COMPOSES with the
+  // Hub tree (never strips it). The cached this.upgrades[slot] needs no per-frame save touch. ONE expression,
+  // ONE source of truth (the build site + the star re-fold both call this — DRY).
+  private _playerSpec(slot: number) {
+    return applyUpgrades(applyStarTier(this.runState.tier[slot] ?? 0), this.upgrades[slot] ?? {})
+  }
+
+  // ── _refoldPlayerSpec(slot) (F5 §5.4, D4b, AC2/AC6 — the star re-fold) ── after a star bumps tier[slot], rebuild
+  // the live tank's per-tank feel fields from the re-folded spec so the faster bullet / more shots apply WITHOUT a
+  // full respawn (re-placing the body would feel like a death). Copy ONLY the magnitude fields Tank reads in
+  // update()/tryFire() (the same fields the ctor copies — DRY). The Hub tree is folded OVER the new tier, so the
+  // star composes with the bought stats (never strips them). A no-op if the slot's tank is gone (defensive).
+  private _refoldPlayerSpec(slot: number): void {
+    const tank = this.playerTanks.get(slot)
+    if (!tank) return
+    const spec = this._playerSpec(slot)
+    tank.spec = spec
+    tank.maxBullets = spec.maxBullets
+    tank.moveSpeed = spec.moveSpeed
+    tank.bulletSpeed = spec.bulletSpeed
+    tank.fireCooldown = spec.fireCooldown
+    // maxHp/hp are NOT bumped mid-run by a star (a star is an offence up-tier, not a heal — the classic); the
+    // baseArmor Hub upgrade already seeded the run-start maxHp via the spec at _buildPlayer (D7).
+  }
+
+  // ── _registerPowerUpOverlap(slot, tank) (F5 §5.4, D1, AC2) ── register a player tank's collider into the
+  // player×pickup overlap (the SAME shape as the bullet×tank overlap — the pool group × the tank collider). On a
+  // live player tank touching a live pickup the callback reads `rect.pu.kind`, releases the pickup (release() only
+  // DISABLES the body — safe inside the step, D10), and applies the effect via the ONE _applyPowerUp switch. The
+  // overlap goes with the rebuilt tank on a stage teardown (Phaser destroys the collider → removes the overlap —
+  // no stale handle, AC10). The filter early-returns while gameOver/transitioning + on a dead tank.
+  private _registerPowerUpOverlap(slot: number, tank: Tank): void {
+    this.physics.add.overlap(
+      tank.collider,
+      this.powerups.group,
+      (_tankRect, puRect) => this._onPlayerGetPowerUp(slot, puRect as PowerUpRect),
+      () => !this.gameOver && !this.transitioning && tank.alive,
+      this,
+    )
+  }
+
+  // ── _onPlayerGetPowerUp(slot, puRect) (F5 §5.4, D1/D4/D10, AC2) ── the player×pickup overlap resolution. Read
+  // the kind off the struck pickup, release it (DISABLE only — safe in the step), and apply the effect. The
+  // re-guard defends a same-frame double-overlap (a released pickup's pu.active is false). DESTRUCTIVE effects
+  // (grenade/shovel) DEFER their body work out of this callback (D10 — see _applyPowerUp).
+  private _onPlayerGetPowerUp(slot: number, puRect: PowerUpRect): void {
+    if (!puRect.pu.active) return // already collected this frame (a multi-overlap race) — ignore.
+    const kind = puRect.pu.kind
+    this.powerups.release(puRect) // release() only DISABLES the body — safe inside the overlap step (D10/AC10).
+    if (kind) this._applyPowerUp(slot, kind)
+  }
+
+  // ── _applyPowerUp(slot, kind) (F5 §5.4, D4/D10, AC2) ── the SIX effects in ONE switch. Each writes an EXISTING
+  // F4 run-economy seam (freezeTimer/shovelTimer/tier/lives/spawnIframe) + the ONE new shieldTimer field, not a
+  // new subsystem (KISS/DRY/YAGNI). DESTRUCTIVE effects (grenade kills enemies; shovel swaps the ring's bodies)
+  // DEFER their body work out of this overlap callback via time.delayedCall(0) (the F3/F4 footgun discipline —
+  // D10/AC10). The scene owns the run economy (SOLID — the pool reports a kind, the scene applies it).
+  private _applyPowerUp(slot: number, kind: PowerUpKind): void {
+    switch (kind) {
+      case 'helmet': {
+        // A timed shield: arm the per-player i-frame window (RunState.shieldTimer — the new field) AND the tank's
+        // spawnIframe (reuse the F3 i-frame blink + the isHittable() gate — no new shield code, D4). The tank
+        // reads spawnIframe for isHittable(); the HUD reads shieldTimer for the readout (both ticked on gdt).
+        this.runState.shieldTimer[slot] = HELMET_SHIELD_SEC
+        const tank = this.playerTanks.get(slot)
+        if (tank) tank.spawnIframe = HELMET_SHIELD_SEC
+        break
+      }
+      case 'clock':
+        // Freeze every enemy: set freezeTimer (the F4 placeholder, now driven). update() sets gdt=0 while > 0, so
+        // enemies don't move + AI/fire are skipped; the timer counts down on the gameplay dt (tickTimers — D4/D5).
+        this.runState.freezeTimer = CLOCK_FREEZE_SEC
+        break
+      case 'shovel':
+        // Fortify the eagle's brick ring → steel for SHOVEL_FORTIFY_SEC. Set the timer (read by the freeze-edge
+        // revert), then DEFER the real body swap (TileMap.fortifyBaseRing — destroys brick sub-cells + adds steel
+        // bodies) out of this overlap callback (D4a/D10/AC10). The falling-edge revert is in update() (D4a).
+        this.runState.shovelTimer = SHOVEL_FORTIFY_SEC
+        this.shovelWasActive = true // arm the falling-edge latch so revert fires when the timer hits 0 (D4a).
+        this.time.delayedCall(0, () => this.tileMap.fortifyBaseRing(this.ringCells))
+        break
+      case 'star':
+        // Upgrade this player's tank one star tier (clamped to the table) + re-fold the live spec OVER the Hub
+        // tree (D4b — the star composes with, never strips, the bought stats). The carried tier[slot] keeps the
+        // up-tier across stages (the F4 carry). applyStarTier clamps internally, so capping here keeps tier sane.
+        this.runState.tier[slot] = Math.min((this.runState.tier[slot] ?? 0) + 1, 3)
+        this._refoldPlayerSpec(slot)
+        break
+      case 'grenade':
+        // Destroy every on-screen enemy via the SAME kill funnel (onHit → onDeath → score/ledger/possible drop).
+        // DEFER it out of this overlap callback (onHit hides + disables a body + may advance the stage — the
+        // footgun; D10/AC10). Snapshot the live enemies NOW (the closure runs next tick). A big lethal hit kills
+        // even an armor tank in one (its multi-hit HP is bypassed by a >= maxHp damage).
+        this.time.delayedCall(0, () => {
+          for (const enemy of this.enemies) {
+            if (enemy.alive && enemy.isHittable()) enemy.onHit(enemy.maxHp) // lethal — one funnel, banks score (AC4).
+          }
+        })
+        break
+      case 'tank':
+        // +1 extra life for this slot (the shared per-slot life ledger — F4 D10). The HUD reads it live; a downed
+        // player is NOT auto-respawned by a life gain (it respawns on its next death if a life remains — AC4).
+        this.runState.lives[slot] = (this.runState.lives[slot] ?? 0) + 1
+        break
+    }
+  }
+
+  // ── _deriveRingCells() (F5 §5.4, D4a) ── the eagle fort-ring tile coords = the in-grid orthogonal BRICK
+  // neighbours of desc.base (the SAME ring LevelGenerator §5.3 step 2 stamps — DRY, re-derived from the EMITTED
+  // grid, no generator call). The shovel fortifyBaseRing/revertBaseRing swap exactly these tiles. A cell that the
+  // bullet erosion has already chipped to non-BRICK is skipped (fortify only fortifies what brick remains — D4a).
+  private _deriveRingCells(): Array<{ col: number; row: number }> {
+    const cells: Array<{ col: number; row: number }> = []
+    const { col, row } = this.desc.base
+    const ortho: Array<[number, number]> = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+    for (const [dc, dr] of ortho) {
+      const nc = col + dc
+      const nr = row + dr
+      if (nc < 0 || nr < 0 || nc >= this.desc.cols || nr >= this.desc.rows) continue // grid edge — the wall.
+      if (this.desc.tiles[nr][nc] === TILE.BRICK) cells.push({ col: nc, row: nr })
+    }
+    return cells
+  }
+
+  // ── _publishHud() (F5 §5.4, D-decoupled/AC8) ── write the FULL HUD state to the scene REGISTRY each frame
+  // (the parallel HUDScene reads it — it NEVER reaches into the world, the reference's decoupling). The
+  // registry is a flat key→value bag both scenes share (this.registry === the HUD's registry). Lives are read
+  // per PRESENT slot (the seeded keys — solo {1}, co-op {1,2}); the active power-up + its remaining seconds are
+  // the highest-priority live timer (freeze > shovel > shield) the HUD renders. KISS — one publish, no allocation
+  // beyond the small value writes (Phaser dedupes unchanged registry sets, but a flat write each frame is cheap).
+  private _publishHud(): void {
+    const r = this.registry
+    r.set('hud.stage', this.runState.stageIndex + 1) // the human stage number (1-based — the HUD readout).
+    r.set('hud.score', this.runState.score) // the shared run score (banked per kill — AC4).
+    r.set('hud.enemies', this.runState.enemiesRemaining) // enemies LEFT to clear this stage (queued + alive).
+    r.set('hud.currency', this.meta.getCurrency()) // the SHARED persistent bank (cached MetaState — no save touch).
+    r.set('hud.p1Lives', this.runState.lives[1] ?? 0) // P1 lives (always present).
+    r.set('hud.p2Lives', TWO_PLAYER ? this.runState.lives[2] ?? 0 : -1) // P2 lives; -1 = hidden in 1P (AC8).
+
+    // The ACTIVE power-up + its remaining seconds (AC8): the highest-priority live timer (freeze > shovel >
+    // shield). shieldTimer is per-player — surface the largest live shield across present slots (the HUD shows
+    // "a shield is up" + its seconds). null kind = nothing active (the HUD hides the line). DRY — the HUD reads
+    // the kind id through t('power.<kind>'); GameScene only reports the kind + the seconds.
+    let activeKind: PowerUpKind | null = null
+    let activeSecs = 0
+    if (this.runState.freezeTimer > 0) {
+      activeKind = 'clock'
+      activeSecs = this.runState.freezeTimer
+    } else if (this.runState.shovelTimer > 0) {
+      activeKind = 'shovel'
+      activeSecs = this.runState.shovelTimer
+    } else {
+      let maxShield = 0
+      for (const slot of this.playerTanks.keys()) maxShield = Math.max(maxShield, this.runState.shieldTimer[slot] ?? 0)
+      if (maxShield > 0) {
+        activeKind = 'helmet'
+        activeSecs = maxShield
+      }
+    }
+    r.set('hud.powerKind', activeKind) // the active power-up kind id (or null — the HUD keys t('power.<kind>') off it).
+    r.set('hud.powerSecs', Math.ceil(activeSecs)) // whole seconds remaining (the HUD readout — POWERUP_BY_ID is timed).
   }
 
   // ── bullet × terrain solids resolution (F3 §5.3, D1/D2/D3/D4, AC1/AC2/AC6/AC10) ── ONE callback over the
@@ -377,18 +598,37 @@ export class GameScene extends Phaser.Scene {
     this._triggerGameOver() // every present player spent → run over (guarded, fires once).
   }
 
-  // ── _triggerGameOver (F3 §5.3, D6, AC6/AC10 — the ONE guarded run-end edge) ── BOTH run-end edges funnel
-  // here: the eagle's destruction (base.onDestroyed) AND every-present-player-out-of-lives (_checkRunOver).
-  // The one-shot `gameOver` flag (set FIRST, the reference's ordering) means a same-frame double-trigger
-  // transitions EXACTLY once. Flash the camera, then hand off to GameOverScene (F0 stub — F3 passes nothing
-  // it doesn't own yet; the run-summary/banking readout is a LATER feature, D12). ──
+  // ── _triggerGameOver (F3 §5.3 → F5 §5.3, D6/D8, AC5/AC6/AC10 — the ONE guarded run-end edge) ── BOTH run-end
+  // edges funnel here: the eagle's destruction (base.onDestroyed) AND every-present-player-out-of-lives
+  // (_checkRunOver). The one-shot `gameOver` flag (set FIRST, the reference's ordering) means a same-frame
+  // double-trigger transitions EXACTLY once. F5 (D8/AC5): under the guard, bank the run ONCE — bankRun adds
+  // floor(score · CURRENCY_RATIO) to the SHARED currency + bumps bestScore/bestStage (the single writer; SAVE),
+  // returning the banked amount. Pass a run-summary SNAPSHOT to GameOverScene (it DISPLAYS it — it does not save).
+  // The HUD is stopped so it doesn't outlive the run. Flash, then hand off after a beat so the kill burst reads.
   private _triggerGameOver(): void {
     if (this.gameOver) return // one-shot guard — the SECOND edge of a same-frame double-trigger early-returns.
     this.gameOver = true
+
+    // Bank the run ONCE (F5 §5.3, D8/AC5) — the single writer under the gameOver guard. `stage` is the human
+    // stage number reached (stageIndex + 1). bankRun returns the banked amount (the GameOver summary displays it).
+    const score = this.runState.score
+    const stage = this.runState.stageIndex + 1
+    const currencyBanked = this.meta.bankRun({ score, stage })
+
     this.cameras.main.flash(280, 200, 40, 40) // a brief red flash marks the run end.
+    this.scene.stop('HUD') // stop the parallel overlay so it doesn't outlive the run (the HUD is GameScene-owned).
     // Defer the transition a beat so the kill burst + flash read before the screen swaps (the reference's
-    // delayedCall handoff). effects keep ticking until then (update's gameOver branch ticks the FX, AC7).
-    this.time.delayedCall(700, () => this.scene.start('GameOver'))
+    // delayedCall handoff). effects keep ticking until then (update's gameOver branch ticks the FX, AC7). Pass the
+    // run-summary snapshot (score/stage/banked + the freshly-bumped bests) as scene-start DATA (decoupled — D8/AC5).
+    this.time.delayedCall(700, () =>
+      this.scene.start('GameOver', {
+        score,
+        stage,
+        currencyBanked,
+        bestScore: this.meta.getBestScore(),
+        bestStage: this.meta.getBestStage(),
+      }),
+    )
   }
 
   // ── _spawnStep(gdt) (F4 §5.3/§5.4, Decisions D8, AC1/AC2/AC7) — the staggered/capped spawn loop ──
@@ -485,10 +725,15 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  // ── _markDrop(x,y) (F4 §5.3, AC7) ── the F5 power-up-pickup SEAM: a carrier died here. F4 pops a brief FX
-  // marker at the drop center (NO power-up entity is spawned — YAGNI); F5 swaps in the pickup spawn.
+  // ── _markDrop(x,y) (F4 §5.3 → F5 §5.3, D1/D3, AC1) ── a carrier died here: ACQUIRE a power-up from the pool at
+  // the drop center with a kind picked DETERMINISTICALLY off the stage RNG (pickPowerUpKind — the SAME seeded
+  // source the roster picks use, so a fixed stage seed yields a deterministic power-up stream — D3). The drop is a
+  // static colour-pulsing rect that persists until collected / the stage rebuilds (D2). Keep the F4 kill burst
+  // (cosmetic). Exactly one power-up per carrier death (the F4 onDropFlag one-shot discipline is preserved — AC1).
   private _markDrop(x: number, y: number): void {
-    this.effects.explosion(x, y, { big: true }) // a brief marker burst where the power-up will drop (F5).
+    const kind = pickPowerUpKind(this.stageRng) // PURE uniform pick, deterministic per stage (D3/AC1).
+    this.powerups.acquire(x, y, kind) // place the static pulsing pickup at the drop window-center (D1/D2).
+    this.effects.explosion(x, y, { big: true }) // keep the kill burst where the power-up dropped (cosmetic).
   }
 
   // ── _advanceStage() (F4 §5.3/§5.4, Decisions D5/D6/D7, AC5/AC10) ── the deferred stage→stage advance (run
@@ -518,6 +763,7 @@ export class GameScene extends Phaser.Scene {
   // bodies here is safe (no body destroyed mid-step). The run economy (lives/tier/score) is on RunState (D10).
   private _teardownStage(): void {
     this.bullets.releaseAll() // clear in-flight shots (F1 — no live-count decrement; a teardown is not a despawn).
+    this.powerups.releaseAll() // F5 (AC10) — release any uncollected power-ups (they don't carry across stages).
     for (const tank of this.enemies) this._destroyTank(tank)
     this.enemies = []
     for (const tank of this.playerTanks.values()) this._destroyTank(tank)
@@ -540,7 +786,28 @@ export class GameScene extends Phaser.Scene {
   // keep settling. Arcade resolves the registered overlaps (bullet×solids, bullet×tank) during its step.
   update(_time: number, delta: number): void {
     const dt = Math.min(delta / 1000, MAX_DT) // REAL dt in SECONDS, clamped (AC7 — no raw delta reaches a formula).
-    const gdt = dt // GAMEPLAY dt — the IDENTITY in F3 (D10); the later clock power-up drives this to 0.
+
+    // ── F5 power-up timers + the freeze boundary (F5 §5.3, D4/D5/AC3) ── decay freeze/shovel/shield on the
+    // GAMEPLAY dt BEFORE the freeze is applied for the frame (so the freeze timer itself counts down in real
+    // gameplay time and ends — the reference's clock-freeze does the same). THEN compute the gameplay dt:
+    // gdt = 0 while frozen (the WIRED F4 boundary, now DRIVEN — enemies don't move + AI/fire are skipped), else
+    // the real dt. FX + the HUD countdown read the REAL dt (a freeze never pauses the pop — the F3 contract).
+    this.runState.tickTimers(dt)
+    const gdt = this.runState.freezeTimer > 0 ? 0 : dt // GAMEPLAY dt — the clock power-up drives it to 0 (D4).
+
+    // ── The shovel falling edge (F5 §5.3, D4a/D10/AC3) ── when the shovel timer reaches 0 (it WAS active),
+    // revert the eagle ring's STEEL back to its EXACT pre-fortify brick state. DEFER the body swap out of this
+    // step via delayedCall(0) (the footgun discipline — never destroy/rebuild a body inside update's collision
+    // resolution). The latch fires the revert exactly once. revertBaseRing is idempotent (a no-op if not fortified).
+    if (this.shovelWasActive && this.runState.shovelTimer <= 0) {
+      this.shovelWasActive = false
+      this.time.delayedCall(0, () => this.tileMap.revertBaseRing())
+    }
+
+    // Publish the FULL HUD state to the scene REGISTRY each frame (F5 §5.4, D-decoupled/AC8) — the parallel HUD
+    // reads it (it never reaches into the world). Done on EVERY frame, incl. while frozen / mid-transition, so
+    // the readouts (lives/enemies/stage/score/currency/active power-up + its seconds) stay live.
+    this._publishHud()
 
     // Sample the SINGLE Input owner ONCE this frame (AC2 — the sole JustDown owner for the fire edges).
     const s = this.input2.sample()
@@ -551,6 +818,9 @@ export class GameScene extends Phaser.Scene {
       this.effects.tick(dt)
       return
     }
+
+    // F5 (D2) — pulse every live power-up's kind colour (the classic blink). Cosmetic; off the scene clock.
+    this.powerups.tick()
 
     // P1 — fire off the edge (the scene owns the pool, D12), then tick movement/facing/cooldown on `gdt`. A
     // dead-but-not-yet-respawned P1 isn't driven (Tank.update early-returns while !alive — defensive).
@@ -565,10 +835,14 @@ export class GameScene extends Phaser.Scene {
       this.p2.update(gdt, s.p2)
     }
 
-    // F4 (§5.3, AC1/AC2/AC3) — stream new enemies in (staggered + capped), then tick every live enemy's AI +
-    // movement + fire. Both run on the GAMEPLAY dt (a future freeze pauses spawning + the enemy AI too). While
-    // transitioning (the deferred stage rebuild is queued) we skip both — the world is mid-teardown.
-    if (!this.transitioning) {
+    // F4 (§5.3, AC1/AC2/AC3) + F5 (D4/AC2, the clock freeze) — stream new enemies in (staggered + capped), then
+    // tick every live enemy's AI + movement + fire. Both run on the GAMEPLAY dt (so the spawn cadence pauses
+    // while frozen). While the clock power-up is active (freezeTimer > 0) the enemies are FULLY frozen: skip BOTH
+    // the spawn step AND the enemy tick entirely, so no enemy moves, runs AI, or fires (AC2 — "enemies don't move,
+    // AI/fire skipped"; gdt=0 alone stops movement but not the AI/fire branches). While transitioning (the
+    // deferred stage rebuild is queued) we skip both too — the world is mid-teardown.
+    const frozen = this.runState.freezeTimer > 0
+    if (!this.transitioning && !frozen) {
       this._spawnStep(gdt)
       this._tickEnemies(gdt)
     }

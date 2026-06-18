@@ -60,12 +60,24 @@ export class TileMap {
   // The brick sub-cell rects, keyed by `${col},${row},${subCol},${subRow}` so destroyBrickSubCell finds one.
   private _brickSubCells!: Map<string, TileRect>
 
+  // ── F5 shovel seam (F5 §5.5, D4a) ── the shovel power-up swaps the eagle's fort-ring brick to STEEL for a
+  // timed window, then reverts it to EXACTLY its pre-fortify brick state (erosion-lossless). The ring is built as
+  // 4 independent sub-cell bodies per tile (_addBrick) while steel is one TILE_SIZE body (_addSolidTile) — so a
+  // fortify CANNOT recolour in place: it must destroy the surviving brick sub-cells + add a steel body, and the
+  // revert must rebuild EXACTLY the surviving sub-cells (including any quarter-brick erosion). _fortifyBodies holds
+  // the temporary steel bodies; _fortifyState records, per ring tile, the (subCol,subRow) set that survived at
+  // fortify time so the revert restores it byte-for-byte. Null _fortifyState = nothing fortified (idempotent).
+  private _fortifyBodies!: Phaser.Physics.Arcade.StaticGroup // the temporary STEEL ring bodies (tank-blocking).
+  private _fortifyState: Map<string, Array<[number, number]>> | null = null // per-cell `${col},${row}` → surviving (subCol,subRow)[].
+
   // scene: GameScene. desc: a StageDescription from generateStage (pure data; never mutated here).
   constructor(scene: Phaser.Scene, desc: StageDescription) {
     this.scene = scene
     this.desc = desc
     this.solidBodies = scene.physics.add.staticGroup()
     this.waterBodies = scene.physics.add.staticGroup()
+    this._fortifyBodies = scene.physics.add.staticGroup() // F5 (D4a) — the shovel's temporary STEEL ring bodies.
+    this._fortifyState = null // F5 (D4a) — nothing fortified yet (idempotent guard).
     this._objects = []
     this._brickSubCells = new Map<string, TileRect>()
 
@@ -113,27 +125,34 @@ export class TileMap {
     return PLAYFIELD_Y + row * TILE_SIZE
   }
 
-  // BRICK → SUB_CELLS² (2×2 = 4) independent static sub-cell bodies (D6). Each is a SUB_CELL_SIZE rect
-  // promoted to its OWN static body + tracked by (col,row,subCol,subRow), so destroyBrickSubCell removes
-  // exactly one without touching the others (sub-cell erosion — the classic quarter-brick chip).
+  // BRICK → SUB_CELLS² (2×2 = 4) independent static sub-cell bodies (D6). Each is built by _addBrickSubCell so
+  // the F5 shovel-revert can rebuild a SINGLE surviving sub-cell with the IDENTICAL construction (DRY — D4a).
   private _addBrick(col: number, row: number): void {
-    const ox = this._cellX(col)
-    const oy = this._cellY(row)
     for (let sr = 0; sr < SUB_CELLS; sr++) {
       for (let sc = 0; sc < SUB_CELLS; sc++) {
-        const x = ox + sc * SUB_CELL_SIZE + SUB_CELL_SIZE / 2
-        const y = oy + sr * SUB_CELL_SIZE + SUB_CELL_SIZE / 2
-        const rect = this.scene.add.rectangle(x, y, SUB_CELL_SIZE, SUB_CELL_SIZE, TILE_PROPS[TILE.BRICK].color) as TileRect
-        rect.setDepth(DEPTH_TERRAIN)
-        rect.tileCol = col
-        rect.tileRow = row
-        rect.subCol = sc
-        rect.subRow = sr
-        rect.tileKind = TILE.BRICK
-        this.solidBodies.add(rect) // staticGroup.add promotes it to a static Arcade body automatically.
-        this._brickSubCells.set(brickKey(col, row, sc, sr), rect)
+        this._addBrickSubCell(col, row, sc, sr)
       }
     }
+  }
+
+  // ── _addBrickSubCell(col,row,sc,sr) (D6 + F5 §5.5 D4a) ── build ONE brick sub-cell: a SUB_CELL_SIZE rect
+  // promoted to its OWN static body + tracked by (col,row,subCol,subRow), so destroyBrickSubCell removes exactly
+  // one without touching the others (the classic quarter-brick chip) AND revertBaseRing rebuilds exactly the
+  // surviving set. Idempotent w.r.t. the map (a re-add overwrites the key's rect — but callers never double-add).
+  private _addBrickSubCell(col: number, row: number, sc: number, sr: number): void {
+    const ox = this._cellX(col)
+    const oy = this._cellY(row)
+    const x = ox + sc * SUB_CELL_SIZE + SUB_CELL_SIZE / 2
+    const y = oy + sr * SUB_CELL_SIZE + SUB_CELL_SIZE / 2
+    const rect = this.scene.add.rectangle(x, y, SUB_CELL_SIZE, SUB_CELL_SIZE, TILE_PROPS[TILE.BRICK].color) as TileRect
+    rect.setDepth(DEPTH_TERRAIN)
+    rect.tileCol = col
+    rect.tileRow = row
+    rect.subCol = sc
+    rect.subRow = sr
+    rect.tileKind = TILE.BRICK
+    this.solidBodies.add(rect) // staticGroup.add promotes it to a static Arcade body automatically.
+    this._brickSubCells.set(brickKey(col, row, sc, sr), rect)
   }
 
   // STEEL / BASE → one TILE_SIZE tank-blocking static body in `solidBodies` (D6). One rect per tile.
@@ -198,15 +217,73 @@ export class TileMap {
     this.solidBodies.remove(rect, true, true) // remove from the group + destroy the GameObject + its body.
   }
 
-  // ── destroy() (D6, AC10) ── tear down EVERY GameObject + body this TileMap created (the in-place
+  // ── fortifyBaseRing(cells) (F5 §5.5, D4a, AC2/AC10 — the shovel rising edge) ── swap the eagle's fort-ring
+  // BRICK to STEEL. For each ring tile (col,row): RECORD the (subCol,subRow) set of its surviving brick sub-cells
+  // (0..4 — a partially-eroded ring fortifies whatever brick remains), DESTROY those sub-cell bodies via the
+  // EXISTING destroyBrickSubCell path, then add ONE TILE_SIZE STEEL static body (the _addSolidTile shape) into
+  // _fortifyBodies tagged by (col,row). Idempotent: if _fortifyState is already non-null (already fortified) it is
+  // a no-op (a double-fortify can't stack steel). `cells` = the fort-ring tile coords (GameScene derives them
+  // from desc.base — DRY, no generator call). The scene DEFERS this out of the overlap callback (D10).
+  fortifyBaseRing(cells: Array<{ col: number; row: number }>): void {
+    if (this._fortifyState) return // already fortified — idempotent no-op (D4a).
+    const state = new Map<string, Array<[number, number]>>()
+    for (const { col, row } of cells) {
+      // Record the surviving sub-cells of this ring tile, then destroy them (so the steel body replaces the brick).
+      const survivors: Array<[number, number]> = []
+      for (let sr = 0; sr < SUB_CELLS; sr++) {
+        for (let sc = 0; sc < SUB_CELLS; sc++) {
+          if (this._brickSubCells.has(brickKey(col, row, sc, sr))) {
+            survivors.push([sc, sr])
+            this.destroyBrickSubCell(col, row, sc, sr) // the SAME chip path the bullet erosion uses (DRY).
+          }
+        }
+      }
+      state.set(cellKey(col, row), survivors) // record EXACTLY what was there (lossless revert — even if 0 left).
+      // Add ONE TILE_SIZE STEEL static body (the _addSolidTile shape) into the temporary fortify group.
+      const rect = this.scene.add.rectangle(
+        this._cellX(col) + TILE_SIZE / 2,
+        this._cellY(row) + TILE_SIZE / 2,
+        TILE_SIZE,
+        TILE_SIZE,
+        TILE_PROPS[TILE.STEEL].color,
+      ) as TileRect
+      rect.setDepth(DEPTH_TERRAIN)
+      rect.tileCol = col
+      rect.tileRow = row
+      rect.tileKind = TILE.STEEL
+      this._fortifyBodies.add(rect)
+    }
+    this._fortifyState = state // non-null = fortified (the revert + the idempotent guard read it).
+  }
+
+  // ── revertBaseRing() (F5 §5.5, D4a, AC2/AC3/AC10 — the shovel falling edge) ── un-fortify: destroy every
+  // temporary STEEL body, then for each recorded ring tile REBUILD exactly the surviving brick sub-cells (the
+  // _addBrickSubCell construction, restricted to the recorded set) so the pre-fortify erosion state is restored
+  // byte-for-byte (a quarter-chipped ring reverts to a quarter-chipped ring — the classic shovel). Idempotent: if
+  // _fortifyState is null (nothing fortified) it is a no-op. The scene DEFERS this out of the timer step (D10).
+  revertBaseRing(): void {
+    if (!this._fortifyState) return // nothing fortified — idempotent no-op (D4a).
+    this._fortifyBodies.clear(true, true) // destroy every temporary STEEL body + its Arcade body.
+    for (const [key, survivors] of this._fortifyState) {
+      const [col, row] = key.split(',').map(Number)
+      for (const [sc, sr] of survivors) this._addBrickSubCell(col, row, sc, sr) // rebuild EXACTLY what survived.
+    }
+    this._fortifyState = null // back to un-fortified (the idempotent guard re-arms).
+  }
+
+  // ── destroy() (D6 + F5 §5.5 D4a, AC10) ── tear down EVERY GameObject + body this TileMap created (the in-place
   // stage→stage rebuild depends on leaking nothing — the reference's clear(true,true) + tracked-objects
   // discipline). staticGroup.clear(true,true) destroys members + their bodies; we also destroy the tracked
-  // loose decorations (bg, trees, ice) + the groups themselves + drop the sub-cell map.
+  // loose decorations (bg, trees, ice) + the groups themselves + drop the sub-cell map + the F5 fortify group/state
+  // (so a stage rebuild while fortified leaks nothing — AC10).
   destroy(): void {
     this.solidBodies.clear(true, true)
     this.waterBodies.clear(true, true)
+    this._fortifyBodies.clear(true, true) // F5 (D4a) — destroy any live steel ring bodies before the group goes.
     this.solidBodies.destroy(true)
     this.waterBodies.destroy(true)
+    this._fortifyBodies.destroy(true)
+    this._fortifyState = null
     for (const o of this._objects) if (o && o.active) o.destroy()
     this._objects = []
     this._brickSubCells.clear()
@@ -217,4 +294,10 @@ export class TileMap {
 // `get`/`delete` agree byte-for-byte.
 function brickKey(col: number, row: number, subCol: number, subRow: number): string {
   return `${col},${row},${subCol},${subRow}`
+}
+
+// The fortify-ring per-tile key (F5 §5.5, D4a) — one place (DRY) so fortifyBaseRing's `set` + revertBaseRing's
+// split agree. `${col},${row}` so the revert's `.split(',').map(Number)` recovers the exact (col,row).
+function cellKey(col: number, row: number): string {
+  return `${col},${row}`
 }

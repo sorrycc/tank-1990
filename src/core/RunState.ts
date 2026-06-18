@@ -37,13 +37,26 @@ export interface RunState {
   enemiesQueued: number // not-yet-spawned enemies waiting to stream in (the spawn loop decrements it).
   enemiesAlive: number // enemies currently on-screen (≤ concurrentEnemies; the clear predicate reads it).
 
-  // ── PLACEHOLDER power-up timers (seeded 0 = inactive, the neutral identity; consumed in F5 — the seam) ──
-  freezeTimer: number // s — the clock power-up's "freeze all enemies" timer (F5 reads it; 0 = no freeze).
-  shovelTimer: number // s — the shovel power-up's "fortify base walls → steel" timer (F5 reads it; 0 = off).
+  // ── Power-up timers (F5 §5.2, D4/D5 — DRIVEN now: clock/shovel/helmet write them, tickTimers decays them) ──
+  // Seeded 0 = inactive (the neutral identity). F4 left freezeTimer/shovelTimer as placeholders; F5 WRITES them
+  // (the clock/shovel power-ups), ticks them down (tickTimers), and reads them (the scene's gdt-freeze / fortify).
+  freezeTimer: number // s — the clock power-up's "freeze all enemies" timer (gdt=0 while > 0; 0 = no freeze).
+  shovelTimer: number // s — the shovel power-up's "fortify base ring → steel" timer (TileMap swap; 0 = off).
+  shieldTimer: Record<number, number> // F5 (D5) — per-PRESENT-player helmet i-frame window (0 = no shield, identity).
 
   // ── Methods ──
-  advance(): RunState // next seed + stageIndex++ + reseed the spawn ledger (carries lives/tier/score — D5/D6).
+  advance(): RunState // next seed + stageIndex++ + reseed the spawn ledger + RESET the timed power-ups (carries lives/tier/score — D5/D6).
   isBossStage(): boolean // stageConfig(stageIndex).isBoss (the boss feature reads it; F4 spawns the normal roster).
+  tickTimers(dt: number): void // F5 (D5/AC3) — decay freezeTimer/shovelTimer/shieldTimer[*] toward 0, clamped ≥ 0.
+}
+
+// ── SlotSeed (F5 §5.2, D5b) ── the per-slot run-START seed a present player launches with: its lives + its
+// star tier, both already FOLDED by the caller (GameScene) from MetaState.startSpec(slot) — so the Hub's
+// per-player +startLife / +starStart upgrades land at run start. A plain `{ lives, tier }` pair (KISS — exactly
+// what the run needs, nothing more); createRunState seeds runState.lives[slot]/tier[slot] from it.
+export interface SlotSeed {
+  lives: number // the slot's run-start lives = START_LIVES + the folded spec's startLivesBonus (D7).
+  tier: number // the slot's run-start star tier = the folded spec's startTier (D7; 0 = the base spec).
 }
 
 // ── Deterministic seed chain (D5) ── the Knuth multiplicative advance, byte-identical to the read-only
@@ -51,16 +64,24 @@ export interface RunState {
 // seed/stage sequence (AC8). >>> 0 keeps every seed an unsigned 32-bit int.
 const nextSeed = (s: number): number => (s * 2654435761 + 0x9e3779b9) >>> 0
 
-// ── createRunState(startSeed, presentSlots) → RunState (D5/D11) ── the factory. Seeds lives/tier for the
-// PRESENT players ONLY (the F3 D11 present-players scoping — solo → [1], co-op → [1,2]; a phantom P2 is never
-// seeded), stageIndex=0, score=0, the spawn ledger from stageConfig(0), and the power-up timers 0 (the neutral
-// identity). PURE (no Phaser, no clock read) so the verifier constructs + drives it headlessly (AC8).
-export function createRunState(startSeed: number, presentSlots: number[], startLives: number): RunState {
+// ── createRunState(startSeed, seeds) → RunState (D5/D5b/D11) ── the factory. Seeds lives/tier for the PRESENT
+// players ONLY (the F3 D11 present-players scoping) — but now from a PER-SLOT `{ [slot]: {lives, tier} }` seed
+// map (F5 D5b — the reviewer's blocking issue: the F4 scalar `startLives` shared across slots can't express two
+// INDEPENDENT Hub trees). The present-slots set IS `Object.keys(seeds)` (the map is the present-players list —
+// DRY, the separate presentSlots arg is dropped). Each slot's run-start lives/tier come straight from that
+// slot's folded spec (GameScene computes them from MetaState.startSpec(slot) — D7). stageIndex=0, score=0, the
+// spawn ledger from stageConfig(0), the power-up timers 0 (the neutral identity). PURE (no Phaser, no clock
+// read) so the verifier constructs + drives it headlessly (AC6/AC8).
+export function createRunState(startSeed: number, seeds: Record<number, SlotSeed>): RunState {
   const lives: Record<number, number> = {}
   const tier: Record<number, number> = {}
-  for (const slot of presentSlots) {
-    lives[slot] = startLives // each present player starts with startLives (the F3 START_LIVES, passed IN — purity).
-    tier[slot] = 0 // tier 0 = the base spec (the F5 star power-up bumps it).
+  const shieldTimer: Record<number, number> = {}
+  for (const key of Object.keys(seeds)) {
+    const slot = Number(key)
+    const s = seeds[slot]
+    lives[slot] = s.lives // the slot's folded run-start lives (START_LIVES + the +startLife fold — D7).
+    tier[slot] = s.tier // the slot's folded run-start star tier (the +starStart fold — D7; 0 = the base spec).
+    shieldTimer[slot] = 0 // no helmet shield at run start (the neutral identity — the helmet power-up arms it).
   }
   // Seed the per-stage spawn ledger from stage 0: every enemy is QUEUED, none alive yet (the spawn loop streams
   // them); enemiesRemaining = the stage's totalEnemies (the clear predicate counts it down to 0 — AC5).
@@ -77,12 +98,15 @@ export function createRunState(startSeed: number, presentSlots: number[], startL
     enemiesAlive: 0,
     freezeTimer: 0,
     shovelTimer: 0,
+    shieldTimer,
 
-    // ── advance() (D5/D6, AC5/AC8) — next seed + stageIndex++ + reseed the spawn ledger ── ALWAYS: chain the
-    // next seed (deterministic), increment the run-global stageIndex (NEVER resets — D6), and RESEED the
-    // per-stage ledger from the new stageConfig (all queued, none alive). lives/tier/score are CARRIED (the
-    // stage rebuild reads them — D10): advance() touches ONLY the seed/stage/ledger, never the run economy. The
-    // ENDLESS divergence: no isRunComplete gate — advance() is always callable (the locked decision, D6).
+    // ── advance() (D5/D6, AC3/AC5/AC8) — next seed + stageIndex++ + reseed the spawn ledger + RESET the timed
+    // power-ups ── ALWAYS: chain the next seed (deterministic), increment the run-global stageIndex (NEVER
+    // resets — D6), RESEED the per-stage ledger from the new stageConfig (all queued, none alive), and RESET the
+    // timed power-ups to 0 (a clock/shovel/shield does NOT bleed into the next stage — the classic; the verifier
+    // asserts the reset, AC3). lives/tier/score are CARRIED (the stage rebuild reads them — D10): advance()
+    // touches ONLY the seed/stage/ledger/timers, never the run economy. The ENDLESS divergence: no
+    // isRunComplete gate — advance() is always callable (the locked decision, D6).
     advance(this: RunState): RunState {
       this.seed = nextSeed(this.seed)
       this.stageIndex += 1
@@ -90,6 +114,10 @@ export function createRunState(startSeed: number, presentSlots: number[], startL
       this.enemiesRemaining = cfg.totalEnemies
       this.enemiesQueued = cfg.totalEnemies
       this.enemiesAlive = 0
+      // RESET the timed power-ups (F5 D5/AC3) — a stage advance drops any active freeze/shovel/shield.
+      this.freezeTimer = 0
+      this.shovelTimer = 0
+      for (const slot of Object.keys(this.shieldTimer)) this.shieldTimer[Number(slot)] = 0
       return this
     },
 
@@ -98,6 +126,20 @@ export function createRunState(startSeed: number, presentSlots: number[], startL
     // but exposes the predicate now (the seam) so the boss feature plugs in with no RunState change. PURE.
     isBossStage(this: RunState): boolean {
       return stageConfig(this.stageIndex).isBoss
+    },
+
+    // ── tickTimers(dt) (F5 §5.2, D5, AC3) ── decay every timed power-up toward 0 on the GAMEPLAY dt (in
+    // SECONDS), clamped at 0 so a timer never goes negative (the verifier drives it past a timer's value and
+    // asserts it lands at EXACTLY 0). PURE — no Phaser, no clock read: the COUNTDOWN lives here; the freeze
+    // EFFECT (gdt=0) + the fortify/revert body-swap live in the scene (Phaser-coupled). The freeze timer counts
+    // down in real gameplay time (fed dt BEFORE the freeze is applied for the frame), so the freeze itself ends.
+    tickTimers(this: RunState, dt: number): void {
+      this.freezeTimer = Math.max(0, this.freezeTimer - dt)
+      this.shovelTimer = Math.max(0, this.shovelTimer - dt)
+      for (const slot of Object.keys(this.shieldTimer)) {
+        const s = Number(slot)
+        this.shieldTimer[s] = Math.max(0, this.shieldTimer[s] - dt)
+      }
     },
   }
 }
