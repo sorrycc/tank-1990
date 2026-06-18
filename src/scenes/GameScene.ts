@@ -95,6 +95,11 @@ const IDLE_INTENT = { up: false, down: false, left: false, right: false, dirX: 0
 // constants.ts. ~1.4 s sits in the spec's ~1.2–1.6 s window — long enough to read the stage, short enough to feel snappy.
 const STAGE_INTRO_SEC = 1.4 // s — how long the STAGE-N intro curtain holds before enemy spawning/AI resumes.
 
+// The firing-juice muzzle-flash offset (px) — how far ahead of the tank center, along its facing, the cool
+// muzzle spark pops (a hair past the barrel tip). A cosmetic coupled-scene tunable (not a shared pure number),
+// so it lives here, not in constants.ts — half a tile sits the flick at the gun mouth for the ~1-tile tank.
+const MUZZLE_OFFSET = 14 // px — the muzzle-spark standoff ahead of the tank center along facing.
+
 // ── F9 Eagle-destroyed loss sequence (F9 §5.3, D3/D4) ── the run's most dramatic beat gets a HEAVIER blast than a
 // generic kill: 2–3 big blooms STAGGERED at the eagle center + a stronger camera flash/shake, then the unchanged
 // run-over. Coupled-scene tunables (cosmetic FX, not shared pure numbers), so they live here, not in constants.ts.
@@ -831,6 +836,23 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  // ── _muzzleFlash(tank) (the firing JUICE) ── pop the cool muzzle spark at the tank's GUN MOUTH on a
+  // successful shot: the body center offset a few px along `facing` (the SAME standoff idea BulletPool uses to
+  // place the bullet ahead of the tank — so the flick sits at the barrel tip, not the body center). ONE helper,
+  // called from the three fire sites behind the tryFire boolean (so it fires exactly once per real shot — DRY).
+  private _muzzleFlash(tank: Tank): void {
+    const c = tank.body.center
+    let mx = c.x
+    let my = c.y
+    switch (tank.facing) {
+      case 'up': my -= MUZZLE_OFFSET; break
+      case 'down': my += MUZZLE_OFFSET; break
+      case 'left': mx -= MUZZLE_OFFSET; break
+      case 'right': mx += MUZZLE_OFFSET; break
+    }
+    this.effects.muzzleFlash(mx, my)
+  }
+
   // ── _spawnStep(gdt) (F4 §5.3/§5.4, Decisions D8, AC1/AC2/AC7) — the staggered/capped spawn loop ──
   // Decays a spawn timer (on the GAMEPLAY dt so a future freeze pauses spawning too). When it elapses AND a
   // slot is free (enemiesAlive < the stage's concurrentEnemies cap) AND there is a queued enemy, spawn ONE at
@@ -899,8 +921,12 @@ export class GameScene extends Phaser.Scene {
       enemy.update(gdt, enemy.aiIntent) // drive it through the SAME spine (DRY — D3).
       // F6 (D6/AC6) — enemy fire audio routes through the scene like the players' (every tank's shot plays fire();
       // the boss's telegraphed volley fires here too — tryFire's boolean gates the blip). The throttle collapses a
-      // same-frame multi-shot pile-up into one transient so a busy frame doesn't machine-gun the blip.
-      if (enemy.aiIntent.firePressed && enemy.tryFire(this.bullets)) this.sfx.fire()
+      // same-frame multi-shot pile-up into one transient so a busy frame doesn't machine-gun the blip. The muzzle
+      // flash pops behind the SAME tryFire boolean (the firing JUICE — once per real shot, players + enemies alike).
+      if (enemy.aiIntent.firePressed && enemy.tryFire(this.bullets)) {
+        this.sfx.fire()
+        this._muzzleFlash(enemy)
+      }
     }
   }
 
@@ -1117,14 +1143,21 @@ export class GameScene extends Phaser.Scene {
     // P1 — fire off the edge (the scene owns the pool, D12), then tick movement/facing/cooldown on `gdt`. A
     // dead-but-not-yet-respawned P1 isn't driven (Tank.update early-returns while !alive — defensive).
     if (this.p1.alive) {
-      // F6 (D6/AC6) — tryFire now returns whether a shot fired; play sound.fire() on success (the one audio owner).
-      if (s.p1.firePressed && this.p1.tryFire(this.bullets)) this.sfx.fire()
+      // F6 (D6/AC6) — tryFire now returns whether a shot fired; play sound.fire() + pop the muzzle flash on
+      // success (the firing JUICE, behind the SAME boolean so each fires exactly once per real shot).
+      if (s.p1.firePressed && this.p1.tryFire(this.bullets)) {
+        this.sfx.fire()
+        this._muzzleFlash(this.p1)
+      }
       this.p1.update(gdt, s.p1)
     }
 
     // P2 — gated on TWO_PLAYER (AC8). Input still returned p2 (cheap); the SCENE decides whether to drive it.
     if (TWO_PLAYER && this.p2 && this.p2.alive) {
-      if (s.p2.firePressed && this.p2.tryFire(this.bullets)) this.sfx.fire() // F6 (D6/AC6) — co-op fire blip.
+      if (s.p2.firePressed && this.p2.tryFire(this.bullets)) {
+        this.sfx.fire() // F6 (D6/AC6) — co-op fire blip.
+        this._muzzleFlash(this.p2) // the firing JUICE, behind the same tryFire boolean.
+      }
       this.p2.update(gdt, s.p2)
     }
 
