@@ -73,9 +73,13 @@ const ICE_PER_STAGE = 0.004
 
 // Enemy-count ramps: total climbs from ENEMIES_PER_STAGE toward TOTAL_ENEMIES_MAX; concurrent climbs
 // from a gentle 1 toward MAX_CONCURRENT_ENEMIES (so early stages stagger fewer tanks on-screen).
-const TOTAL_ENEMIES_PER_STAGE = 1 // +1 enemy to clear per stage (clamped to TOTAL_ENEMIES_MAX).
+// feel-balance (D3): the 17×17 board + 6 concurrent slots afford more pressure, so the ramps reach the cap
+// a touch sooner — TOTAL_ENEMIES_PER_STAGE 1→2 (total climbs faster toward TOTAL_ENEMIES_MAX) and
+// CONCURRENT_PER_STAGES 4→3 (6-concurrent is reached by stage 15, not 20). Both keep k > 0 + the same caps,
+// so the verifier's monotonicity + cap sweep stays green (non-decreasing + bounded by construction).
+const TOTAL_ENEMIES_PER_STAGE = 2 // +2 enemies to clear per stage (clamped to TOTAL_ENEMIES_MAX; feel-balance: 1→2).
 const CONCURRENT_BASE = 1
-const CONCURRENT_PER_STAGES = 4 // +1 concurrent enemy every this-many stages (clamped to MAX_CONCURRENT_ENEMIES).
+const CONCURRENT_PER_STAGES = 3 // +1 concurrent enemy every this-many stages (clamped to MAX_CONCURRENT_ENEMIES; feel-balance: 4→3).
 
 // Enemy-mix ramp (D16): the HARD types (power/armor) gain weight as the easy types (basic/fast) taper,
 // so the NORMALIZED `hardShare` is monotonically non-decreasing. The easy weights MAY DECREASE — which

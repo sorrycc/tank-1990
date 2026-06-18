@@ -1,7 +1,8 @@
 import Phaser from 'phaser'
 import {
   TANK_SIZE,
-  SUB_CELL_SIZE,
+  TILE_SIZE,
+  LANE_INSET,
   PLAYFIELD_X,
   PLAYFIELD_Y,
   LANE_SNAP_EPSILON,
@@ -39,9 +40,10 @@ import type { TankSpec } from '../config/tanks.js'
 //     the CROSS-axis velocity component is held at EXACTLY 0. We NEVER set both components non-zero in one
 //     frame, so Arcade can NEVER integrate a diagonal — AC3 is structural, not emergent.
 //   • On a TURN (facing switches between a horizontal and a vertical cardinal) we re-center the body's
-//     CROSS corner to its nearest SUB_CELL_SIZE (20 px) lane in ONE discrete write to body.position[cross]
-//     (the cross VELOCITY stays 0 — still no diagonal), gated by a LANE_SNAP_EPSILON dead-band (no
-//     oscillation) and a !blocked/!touching collision check (never fight a collider Arcade is resolving).
+//     CROSS corner to its nearest 1-TILE corridor lane — the TILE lattice OFFSET by LANE_INSET, so a
+//     ~1-tile tank lands EXACTLY centered in its lane (a 2px inset) — in ONE discrete write to
+//     body.position[cross] (the cross VELOCITY stays 0 — still no diagonal), gated by a LANE_SNAP_EPSILON
+//     dead-band (no oscillation) and a !blocked/!touching collision check (never fight a resolving collider).
 
 export type TankSide = 'player' | 'enemy'
 export type Facing = 'up' | 'down' | 'left' | 'right'
@@ -266,15 +268,15 @@ export class Tank {
     // 4) Turn-time re-center — a DISCRETE, collision-aware, velocity-ONLY snap (Decision 5/6, AC3), run
     // ONLY on a turn frame. On a non-turn frame do NOTHING here (steady single-axis driving already holds
     // the cross velocity at 0, so the tank stays in its lane). On a turn we re-center the body's CROSS
-    // corner to its nearest SUB_CELL_SIZE (20 px) lane in ONE write to body.position[cross] (the cross
-    // VELOCITY stays 0 — no diagonal). We snap the body's CORNER (not the center) to the lane lattice so
-    // laneIndex/target stay exact + integer-clean regardless of the body size.
+    // corner to its nearest 1-TILE corridor lane in ONE write to body.position[cross] (the cross VELOCITY
+    // stays 0 — no diagonal). We snap the body's CORNER (not the center) to the LANE_INSET-offset TILE
+    // lattice (D1) so a ~1-tile tank lands EXACTLY centered (a 2px inset) in a 1-tile corridor lane.
     if (turned) {
       if (driveAxis === 'x') {
-        // Driving horizontally → the CROSS axis is Y; snap the body's TOP corner to the 20 px Y-lane.
+        // Driving horizontally → the CROSS axis is Y; snap the body's TOP corner to the centered Y-lane.
         this._recenterCross('y', this.body.y, PLAYFIELD_Y)
       } else if (driveAxis === 'y') {
-        // Driving vertically → the CROSS axis is X; snap the body's LEFT corner to the 20 px X-lane.
+        // Driving vertically → the CROSS axis is X; snap the body's LEFT corner to the centered X-lane.
         this._recenterCross('x', this.body.x, PLAYFIELD_X)
       }
     }
@@ -313,17 +315,20 @@ export class Tank {
     }
   }
 
-  // ── Turn-time cross-axis re-center (Decision 6, §5.3 step 4) — snap the body's CROSS corner to its
-  // nearest SUB_CELL_SIZE lane in ONE discrete write, with three guards in order:
+  // ── Turn-time cross-axis re-center (Decision 6, §5.3 step 4 → feel-balance D1) — snap the body's CROSS
+  // corner to its nearest 1-TILE corridor lane in ONE discrete write, with three guards in order:
   //   • Dead-band: within LANE_SNAP_EPSILON of the target lane → no-op (stops per-frame oscillation).
   //   • Collision guard: blocked/touching on the cross axis → SKIP (a wall/tank is being resolved on that
   //     axis; snapping would fight Arcade — retry on the next clear turn frame).
   //   • Otherwise: body.position[cross] = target (the cross velocity stays 0 — no diagonal introduced).
-  // This is the ONLY place the entity touches body.position, gated to the turn frame + these conditions,
-  // honouring D6's "Arcade owns the body / never fight the collider" contract. ──
+  // The lane lattice is the TILE lattice OFFSET by LANE_INSET (D1) — i.e. `origin + LANE_INSET + k·TILE_SIZE`
+  // — which is the windowCenter-derived clean corner for a ~1-tile tank, so the snap lands it EXACTLY
+  // centered (a 2px inset) in a 1-tile corridor. This is the ONLY place the entity touches body.position,
+  // gated to the turn frame + these conditions, honouring D6's "Arcade owns the body / never fight the
+  // collider" contract. ──
   private _recenterCross(cross: 'x' | 'y', corner: number, origin: number): void {
-    const laneIndex = Math.round((corner - origin) / SUB_CELL_SIZE)
-    const target = origin + laneIndex * SUB_CELL_SIZE
+    const laneIndex = Math.round((corner - origin - LANE_INSET) / TILE_SIZE)
+    const target = origin + LANE_INSET + laneIndex * TILE_SIZE
     const delta = target - corner
     if (Math.abs(delta) <= LANE_SNAP_EPSILON) return // dead-band — already lane-aligned.
     // Collision guard — read both blocked + touching on the specific cross axis (a wall vs a tank are

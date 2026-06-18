@@ -89,10 +89,18 @@ export const TWO_PLAYER = true
 // tab-refocus delta spike can't teleport a fast body through a wall (it bounds one integration step).
 export const MAX_DT = 1 / 30 // s — cap a single step at ~33 ms.
 
-// LANE_SNAP_EPSILON (F1 §5.2, D5/D6, AC3) — the dead-band (px) for the turn-time cross-axis re-center
-// (§5.3 step 4): if the body's cross-corner is already within this of its nearest SUB_CELL_SIZE lane the
-// snap is a NO-OP, so the re-center can never oscillate around a lane center or fight Arcade frame-to-frame.
-// Sub-pixel (0.5) so the corner stays visually lane-aligned. The single PURE owner so any later tuning is DRY.
+// LANE_INSET (feel-balance §3, D1) — the centered-in-tile inset (px) for a ~1-tile tank: a TANK_SIZE body
+// centered in a TILE_SIZE corridor tile sits its CORNER `(TILE_SIZE − TANK_SIZE)/2` from the tile edge (2px
+// at 36px body / 40px tile). The turn-time lane-snap (Tank._recenterCross) snaps the cross CORNER to the
+// TILE lattice OFFSET by this inset (= the windowCenter-derived clean corner) — so a 1-tile tank ends EXACTLY
+// centered in a 1-tile corridor lane. DERIVED from the TILE_SIZE/TANK_SIZE owners (DRY); the single PURE owner.
+export const LANE_INSET = (TILE_SIZE - TANK_SIZE) / 2 // px — the ~1-tile tank's centered-in-tile corner inset (2).
+
+// LANE_SNAP_EPSILON (F1 §5.2, D5/D6, AC3 → feel-balance §3, D2) — the dead-band (px) for the turn-time
+// cross-axis re-center (§5.3 step 4): if the body's cross-corner is already within this of its nearest
+// LANE_INSET-offset TILE lane the snap is a NO-OP, so the re-center can never oscillate around the lane
+// center or fight Arcade frame-to-frame. Sub-pixel (0.5) so the corner stays visually lane-aligned + a real
+// post-turn misalignment is always corrected. The single PURE owner so any later tuning is DRY.
 export const LANE_SNAP_EPSILON = 0.5 // px.
 
 // ── F3 Combat & terrain (F3 §5.2, Decisions D4/D7/D8, AC5/AC6/AC8/AC9) — PURE combat DATA (no Phaser) ──
