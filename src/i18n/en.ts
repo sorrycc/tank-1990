@@ -14,6 +14,23 @@ export const EN: Dict = {
     'title.subtitle': '坦克大战 — Battle City',
     'title.start': 'Press SPACE / ENTER or click to start',
 
+    // ── Controls reference (F6 §5.2, D9, AC7) — the shared CONTROLS_ROWS the Title renders so a first-time
+    // player discovers both schemes. The action labels localise; the key TOKENS (WASD/J/Numpad0/SPACE/ENTER/M)
+    // stay literal — they name physical keys (the bindings owned by core/Input.ts; this table mirrors them).
+    'controls.title': 'CONTROLS',
+    'controls.p1Move': 'P1 MOVE',
+    'controls.p1Move.keys': 'W A S D',
+    'controls.p1Fire': 'P1 FIRE',
+    'controls.p1Fire.keys': 'J',
+    'controls.p2Move': 'P2 MOVE',
+    'controls.p2Move.keys': 'Arrow Keys',
+    'controls.p2Fire': 'P2 FIRE',
+    'controls.p2Fire.keys': 'Numpad0',
+    'controls.start': 'START',
+    'controls.start.keys': 'SPACE / ENTER',
+    'controls.mute': 'MUTE',
+    'controls.mute.keys': 'M',
+
     // ── Hub (the two-column shared-bank upgrade lobby — D9) ──
     'hub.title': 'HUB',
     'hub.currency': 'CURRENCY {n}',
@@ -35,6 +52,8 @@ export const EN: Dict = {
     'hud.p2Lives': 'P2 LIVES {n}',
     'hud.power': 'POWER {name} {secs}s',
     'hud.powerInstant': 'POWER {name}',
+    'hud.stageCleared': 'STAGE {n} CLEARED', // F6 (D5, AC3) — the boss-stage clear banner (a timed overlay).
+    'hud.muted': 'MUTED', // F6 (D8, AC6) — the mute cue shown while audio is muted (M toggle).
 
     // ── GameOver (the run-summary snapshot — AC5) ──
     'over.heading': 'GAME OVER',

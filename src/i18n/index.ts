@@ -81,3 +81,21 @@ export function tDesc(cat: Category, id: string, en: string): string {
   if (current === 'en') return en
   return LOCALES[current]?.[cat]?.[id]?.desc ?? en
 }
+
+// ── CONTROLS_ROWS (F6 §5.2, D9, AC7) — the ONE shared, ordered controls list the Title renders ──
+// Copied FAITHFUL in SHAPE from the read-only `dead-cell` reference's i18n/index.ts CONTROLS_ROWS export (its
+// Decision 6): an ordered list of [actionKey, keysKey] pairs. The CHROME strings live in en.ts / zh-CN.ts
+// (`controls.*`) — so the bindings sit in ONE place (the i18n table), read by the Title as TWO fixed-x text
+// columns per row (action label | keys), the CJK-safe alignment discipline (never padEnd, which only aligns
+// under monospace). Trimmed to Tank 1990's two schemes: P1 (WASD move · J fire), P2 (arrows move · Numpad0 fire),
+// + the shared keys (SPACE/ENTER start · M mute). The key TOKENS (WASD/J/Numpad0/SPACE/ENTER/M) stay literal
+// (they name PHYSICAL keys — not translatable), the ACTION labels localise. The bindings themselves stay owned by
+// core/Input.ts (the single key owner — `addKeys`); this table is a human-readable MIRROR (a rebind updates both).
+export const CONTROLS_ROWS: readonly (readonly [string, string])[] = [
+  ['controls.p1Move', 'controls.p1Move.keys'],
+  ['controls.p1Fire', 'controls.p1Fire.keys'],
+  ['controls.p2Move', 'controls.p2Move.keys'],
+  ['controls.p2Fire', 'controls.p2Fire.keys'],
+  ['controls.start', 'controls.start.keys'],
+  ['controls.mute', 'controls.mute.keys'],
+]

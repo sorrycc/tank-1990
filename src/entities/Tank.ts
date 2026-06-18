@@ -9,6 +9,7 @@ import {
   AI_REDECIDE_MIN,
   AI_REDECIDE_MAX,
   AI_SEEK_BIAS,
+  TELEGRAPH_FILL,
 } from '../config/constants.js'
 import type { PlayerIntent } from '../core/Input.js'
 import type { BulletPool } from '../combat/BulletPool.js'
@@ -101,6 +102,16 @@ export class Tank {
   private aiRedecideTimer: number // s — decays by dt; at ≤ 0 (or when blocked) the AI re-decides a cardinal (D4).
   aiIntent: PlayerIntent // the PlayerIntent-shaped snapshot updateAI emits; the scene drives update(gdt, this.aiIntent).
 
+  // ── F6 boss telegraph (F6 §5.3, D2, AC2) ── additive over the F4 AI spine. `telegraphSec` (copied from the
+  // spec in the ctor; 0 = no telegraph, the IDENTITY for every non-boss spec) is the pre-fire wind-up window.
+  // `telegraphTimer`/`telegraphing` are the runtime wind-up state: when a boss's fire beat elapses it ARMS the
+  // timer + sets `telegraphing` (holding fire during the visible warning blink) instead of firing immediately,
+  // then fires the frame the timer elapses (updateAI). A spec with telegraphSec === 0 NEVER touches these — the
+  // gated branch is skipped, so the four archetypes + the player take the existing immediate-fire path unchanged.
+  telegraphSec: number // s — the pre-fire wind-up window (from spec.telegraphSec ?? 0; > 0 only for the boss).
+  telegraphing: boolean // true while a shot is winding up (the render cue blinks the warning fill — issue #4).
+  private telegraphTimer: number // s — decays by dt while telegraphing; at ≤ 0 the held shot fires (updateAI).
+
   constructor(scene: Phaser.Scene, x: number, y: number, side: TankSide, spec: TankSpec) {
     this.scene = scene
     this.side = side
@@ -130,6 +141,12 @@ export class Tank {
     this.onDropFlag = null
     this.aiRedecideTimer = 0 // re-decide immediately on the first AI tick.
     this.aiIntent = { up: false, down: false, left: false, right: false, dirX: 0, dirY: 0, firePressed: false }
+
+    // F6 boss telegraph (D2) — copy the spec's pre-fire wind-up window (default 0 = no telegraph, the identity
+    // for every non-boss spec → the gated branch in updateAI is skipped). The runtime wind-up state starts clear.
+    this.telegraphSec = spec.telegraphSec ?? 0
+    this.telegraphing = false
+    this.telegraphTimer = 0
 
     const fill = spec.color // F4 (D1): the body fill is the spec's colour (per-type distinct).
 
@@ -246,6 +263,18 @@ export class Tank {
       const flash = Math.floor(this.scene.time.now / 200) % 2 === 0
       this.rect.setFillStyle(flash ? this.spec.colorFlash : this.spec.color)
     }
+
+    // F6 (§5.3 issue #4, D2/AC2) — the TELEGRAPH render cue: a DISTINCT branch (NOT the carrier-flash hook — the
+    // boss is a non-carrier (D11), so it could never enter that branch). Fires for ANY tank actively winding up a
+    // shot (telegraphing). Gated on spawnIframe <= 0 so it does NOT fight the spawn-blink ALPHA branch above
+    // (which owns the alpha while spawnIframe > 0); this branch only ever calls setFillStyle (NEVER setAlpha), so
+    // even in an overlap the two write DIFFERENT visual channels. The fill swaps to TELEGRAPH_FILL at ~5 Hz off
+    // the scene clock (faster than the carrier pulse — a "charging" cue), resting at the spec fill between blinks.
+    else if (this.telegraphing && this.spawnIframe <= 0) {
+      const warn = Math.floor(this.scene.time.now / 100) % 2 === 0 // ~5 Hz blink.
+      this.rect.setFillStyle(warn ? TELEGRAPH_FILL : this.spec.color) // body warns; resting fill between blinks.
+      this.barrel.setFillStyle(warn ? TELEGRAPH_FILL : BARREL_COLOR) // the barrel co-warns (the "charging" cue).
+    }
   }
 
   // ── Turn-time cross-axis re-center (Decision 6, §5.3 step 4) — snap the body's CROSS corner to its
@@ -301,12 +330,16 @@ export class Tank {
     }
   }
 
-  // ── Fire (Decision 12, AC4) — GameScene calls this on the fire EDGE. The Tank owns its cooldown + the
-  // live cap; the SCENE owns the pool (the shared world resource) — mirrors the reference's player.attack()
-  // (latch intent) → scene spawns the effect split. A press is a NO-OP unless the cooldown has elapsed AND
-  // the tank has a free bullet slot. On a successful acquire: arm the cooldown + increment the live count. ──
-  tryFire(pool: BulletPool): void {
-    if (this.cooldownTimer > 0 || this.liveBullets >= this.maxBullets) return
+  // ── Fire (Decision 12, AC4 → F6 §5.4 issue #6, D6/AC6) — GameScene calls this on the fire EDGE. The Tank owns
+  // its cooldown + the live cap; the SCENE owns the pool (the shared world resource) — mirrors the reference's
+  // player.attack() (latch intent) → scene spawns the effect split. A press is a NO-OP unless the cooldown has
+  // elapsed AND the tank has a free bullet slot. On a successful acquire: arm the cooldown + increment the live
+  // count. F6 (issue #6): RETURNS whether a shot was fired this call (the existing `got` acquire result, coerced to
+  // a boolean), so the SCENE — the one audio owner (D6) — can play `sound.fire()` on success; a `false` return
+  // means cooldown/cap blocked the shot. This is purely ADDITIVE: a caller that IGNORES the return (the prior
+  // behaviour) is unchanged. ──
+  tryFire(pool: BulletPool): boolean {
+    if (this.cooldownTimer > 0 || this.liveBullets >= this.maxBullets) return false
     // Spawn from the tank's body center along its facing at THIS tank's bulletSpeed (the pool applies the
     // muzzle standoff). F4 (issue #1): passing this.bulletSpeed is what makes POWER's faster bullet real.
     const got = pool.acquire(this, this.body.center.x, this.body.center.y, this.facing, this.bulletSpeed)
@@ -314,6 +347,7 @@ export class Tank {
       this.cooldownTimer = this.fireCooldown // F4 (issue #2): the per-tank attack beat (was FIRE_COOLDOWN).
       this.liveBullets++
     }
+    return got !== null // F6 (issue #6): the scene plays sound.fire() on a true return (the one audio owner, D6/AC6).
   }
 
   // ── The pool calls this on a bullet's release (Decision 8/12, AC4/AC5) so the firer's live count
@@ -391,7 +425,32 @@ export class Tank {
 
     // Fire on the attack beat (AC3): firePressed is true whenever the cooldown has elapsed (the scene gates the
     // actual acquire on a free bullet slot via tryFire — the same edge-driven fire path the player uses, D3).
-    this.aiIntent.firePressed = this.cooldownTimer <= 0
+    //
+    // F6 (§5.3, D2/AC2) — the TELEGRAPH branch is gated behind telegraphSec > 0, so a non-boss tank takes the
+    // EXISTING immediate-fire path BYTE-UNCHANGED (no behaviour change for the four archetypes — the boss is a
+    // purely additive variant, DRY: one fire decision, a telegraphed wind-up for the boss). The wind-up:
+    //   • cooldown elapsed AND not yet telegraphing → ARM the wind-up (telegraphTimer = telegraphSec, telegraphing
+    //     = true); firePressed stays false (holding fire — the warning blink shows; the render cue reads this flag).
+    //   • telegraphing → decay telegraphTimer on dt; firePressed = (telegraphTimer <= 0); when it elapses, fire THIS
+    //     frame + clear telegraphing (the cooldown then re-arms on the successful tryFire in the scene's tick).
+    // The timer decays on the GAMEPLAY dt the scene passes (so a clock freeze pauses the wind-up too — the SAME
+    // "freeze pauses every gameplay timer" contract every enemy obeys; §5.4 issue (a)).
+    if (this.telegraphSec > 0) {
+      if (this.telegraphing) {
+        this.telegraphTimer = Math.max(0, this.telegraphTimer - dt)
+        this.aiIntent.firePressed = this.telegraphTimer <= 0
+        if (this.telegraphTimer <= 0) this.telegraphing = false // fire this frame; the wind-up is done.
+      } else if (this.cooldownTimer <= 0) {
+        this.telegraphing = true // ARM the wind-up (the warning blink begins); hold fire until it elapses.
+        this.telegraphTimer = this.telegraphSec
+        this.aiIntent.firePressed = false
+      } else {
+        this.aiIntent.firePressed = false // still on cooldown — nothing to telegraph yet.
+      }
+    } else {
+      // The existing immediate-fire path (telegraphSec === 0) — byte-unchanged for the four archetypes + player.
+      this.aiIntent.firePressed = this.cooldownTimer <= 0
+    }
   }
 
   // ── isHittable() (F3 §5.2, D7, AC5/AC8 — the victim filter) ── a bullet only damages a tank that is ALIVE
@@ -439,6 +498,8 @@ export class Tank {
     this.facing = 'up'
     this.lastDriveAxis = null
     this.cooldownTimer = 0
+    this.telegraphing = false // F6 — a fresh spawn starts with no shot winding up (defensive; the boss never respawns).
+    this.telegraphTimer = 0
     this.rect.setPosition(x, y).setVisible(true).setAlpha(1)
     this.barrel.setVisible(true)
     this._orientBarrel()

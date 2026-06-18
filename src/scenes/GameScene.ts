@@ -14,6 +14,7 @@ import {
   SPAWN_BLINK_TIME,
   SPAWN_STAGGER_BASE,
   CARRIER_RATE,
+  STAGE_CLEARED_BANNER_SEC,
 } from '../config/constants.js'
 import { TILE } from '../config/tiles.js'
 import { Input } from '../core/Input.js'
@@ -28,7 +29,7 @@ import type { StageDescription, SpawnPoint } from '../world/LevelGenerator.js'
 import { TileMap } from '../world/TileMap.js'
 import { createRunState } from '../core/RunState.js'
 import type { RunState, SlotSeed } from '../core/RunState.js'
-import { ENEMY_SPECS, rosterPick, applyStarTier } from '../config/tanks.js'
+import { ENEMY_SPECS, rosterPick, applyStarTier, bossSpecForStage } from '../config/tanks.js'
 import { applyUpgrades } from '../config/tank-upgrades.js'
 import { mulberry32 } from '../util/rng.js'
 import type { RNG } from '../util/rng.js'
@@ -46,6 +47,11 @@ import {
   SHOVEL_FORTIFY_SEC,
 } from '../config/powerups.js'
 import type { PowerUpKind } from '../config/powerups.js'
+// ── F6 Boss & co-op polish (F6 §5.4/§5.5) ── the WebAudio SFX façade (the one audio owner — D6) + the i18n
+// banner template. Sound is Phaser/WebAudio-coupled (never verifier-imported); the banner string is localised
+// via t('hud.stageCleared') and published to the registry for the parallel HUD to render (the decoupling — D5).
+import { Sound } from '../audio/Sound.js'
+import { t } from '../i18n/index.js'
 
 // ── GameScene (F0 §5.3 + F1 §5.4 + F2 §5.4 + F3 Combat & terrain §5.4, Decisions D1/D3/D6/D7/D8/D9/D10/D11,
 // AC1–AC11) ──
@@ -137,6 +143,19 @@ export class GameScene extends Phaser.Scene {
   private ringCells: Array<{ col: number; row: number }> = [] // the fort-ring tile coords (D4a).
   private shovelWasActive = false // the shovel-timer falling-edge latch (revert fires once — D4a/D10).
 
+  // ── F6 boss + banner + audio state (F6 §5.4, Decisions D4/D5/D6/D8, AC1/AC3/AC4/AC6) ──
+  // sfx: the ONE audio owner (the reference's per-scene `new Sound(this)` — D6; named `sfx`, NOT `sound`, so it
+  // does not shadow Phaser.Scene's own public `sound` manager). Constructed in create(); every resolution site
+  // calls an `sfx.*` method; the M key flips its mute proxy (D8). boss/bossSpawned: the capstone boss + the
+  // "spawned this stage?" latch (D4 — the boss spawns ONCE, after the normal roster clears). bannerTimer/bannerStage:
+  // the STAGE-N-CLEARED banner countdown (decayed on the REAL dt so it shows through the run-end freeze beat) + the
+  // human stage number it shows (D5). All reset in _buildStage (a fresh stage hasn't spawned its boss).
+  private sfx!: Sound
+  private boss: Tank | null = null
+  private bossSpawned = false
+  private bannerTimer = 0
+  private bannerStage = 0
+
   constructor() {
     super('Game')
   }
@@ -171,6 +190,16 @@ export class GameScene extends Phaser.Scene {
     this.bullets = new BulletPool(this)
     this.effects = new Effects(this)
     this.powerups = new PowerUpPool(this)
+
+    // ── F6 (D6/D8, AC6) — the ONE audio owner + the M mute toggle ── construct the WebAudio façade once (the
+    // reference's per-scene `new Sound(this)`); every resolution site below calls a `sound.*` method (the scene
+    // orchestrates world events, the entities stay audio-free — D6). A NoAudio manager makes every call a safe
+    // no-op (AC6). The M key flips Phaser's GLOBAL mute via the façade's proxy (D8 — runtime only, not persisted);
+    // `keyup-M` (once per release) avoids a held key machine-gunning the toggle. The HUD reads `hud.muted` for a cue.
+    this.sfx = new Sound(this)
+    this.input.keyboard!.on('keydown-M', () => {
+      this.sfx.mute = !this.sfx.mute
+    })
 
     // ── Load the persistent meta ONCE (F5 §5.4, D8/D4b — the impure save boundary) ── createMetaState() load()s a
     // FRESH view of localStorage (reflecting any Hub buys + the prior run's bank). Cache each present slot's Hub
@@ -224,6 +253,12 @@ export class GameScene extends Phaser.Scene {
     this.spawnTimer = 0
     this.spawnCursor = 0
     this.enemies = []
+
+    // F6 (D4) — a fresh stage hasn't spawned its boss yet (the capstone latch resets each stage). The banner timer
+    // is NOT reset here (it decays on its own + must survive a stage advance so the just-cleared banner finishes
+    // showing into the new stage's first frames — _advanceStage rebuilds the world but the banner is a HUD overlay).
+    this.boss = null
+    this.bossSpawned = false
 
     // ── The fort-ring tile coords (F5 §5.4, D4a) ── derive ONCE per stage from desc.base: the in-grid orthogonal
     // BRICK neighbours of the base (the SAME fort ring LevelGenerator §5.3 step 2 stamps — DRY, no generator call).
@@ -399,6 +434,10 @@ export class GameScene extends Phaser.Scene {
   // DEFER their body work out of this overlap callback via time.delayedCall(0) (the F3/F4 footgun discipline —
   // D10/AC10). The scene owns the run economy (SOLID — the pool reports a kind, the scene applies it).
   private _applyPowerUp(slot: number, kind: PowerUpKind): void {
+    // F6 (D6/AC6) — the pickup blip for EVERY kind, plus the 1-up chime layered on for the `tank` (+1 life) kind
+    // (a distinct throttle key so it isn't swallowed by the same-frame powerUp()). The scene owns the audio (D6).
+    this.sfx.powerUp()
+    if (kind === 'tank') this.sfx.oneUp()
     switch (kind) {
       case 'helmet': {
         // A timed shield: arm the per-player i-frame window (RunState.shieldTimer — the new field) AND the tank's
@@ -502,6 +541,12 @@ export class GameScene extends Phaser.Scene {
     }
     r.set('hud.powerKind', activeKind) // the active power-up kind id (or null — the HUD keys t('power.<kind>') off it).
     r.set('hud.powerSecs', Math.ceil(activeSecs)) // whole seconds remaining (the HUD readout — POWERUP_BY_ID is timed).
+
+    // F6 (D5/D8, AC3/AC6) — the STAGE-N-CLEARED banner string (localised while the timer is live, else '') + the
+    // MUTED cue. The banner is presentation state → the registry is its home (the HUD renders it timed — D5). The
+    // banner timer is decayed on the REAL dt in update() (so it shows through the run-end freeze beat).
+    r.set('hud.banner', this.bannerTimer > 0 ? t('hud.stageCleared', { n: this.bannerStage }) : '')
+    r.set('hud.muted', this.sfx.mute) // the mute cue (the HUD shows "MUTED" while true — D8).
   }
 
   // ── bullet × terrain solids resolution (F3 §5.3, D1/D2/D3/D4, AC1/AC2/AC6/AC10) ── ONE callback over the
@@ -524,14 +569,19 @@ export class GameScene extends Phaser.Scene {
         return
       }
       this.effects.explosion(bulletRect.x, bulletRect.y, { big: true }) // a big kill burst at the eagle.
+      this.sfx.explosion({ big: true }) // F6 (D6/AC6) — the eagle-hit burst (the run-end follows via the guard).
       this.bullets.release(bulletRect)
       base.onHit() // flips destroyed ONCE → onDestroyed → _triggerGameOver (the gameOver guard, AC6/AC10).
       return
     }
 
-    // ── BRICK / STEEL (D3/D4, AC1/AC2) ── a small impact spark + despawn the shot in BOTH cases.
+    // ── BRICK / STEEL (D3/D4, AC1/AC2) ── a small impact spark + despawn the shot in BOTH cases. F6 (D6/AC6) — a
+    // dry crunch on a brick chip, a bright metallic clink off (indestructible) steel; the throttle collapses a
+    // multi-brick frame into one transient.
     this.effects.explosion(bulletRect.x, bulletRect.y)
     this.bullets.release(bulletRect)
+    if (kind === TILE.STEEL) this.sfx.steelClink()
+    else this.sfx.brickHit()
 
     if (kind === TILE.BRICK) {
       // DEFER the body removal out of world.step (the footgun — D1/AC10). delayedCall(0) runs next tick, after
@@ -571,6 +621,7 @@ export class GameScene extends Phaser.Scene {
     if (!bx.active || !tank || !tank.isHittable()) return // re-guard (the filter can race a same-frame release).
     if (bx.ownerSide === tank.side && !FRIENDLY_FIRE) return
     this.effects.explosion(bulletRect.x, bulletRect.y)
+    this.sfx.explosion() // F6 (D6/AC6) — the bullet-on-tank impact spark (a small burst; the kill burst is big).
     this.bullets.release(bulletRect)
     tank.onHit(BULLET_DAMAGE) // the hit funnel (D7) — the death path runs once at ≤ 0 HP → onDeath.
   }
@@ -581,6 +632,7 @@ export class GameScene extends Phaser.Scene {
   // death OR EVERY PRESENT player out of lives ends the run — D11). ──
   private _onPlayerDeath(slot: number, tank: Tank): void {
     this.effects.explosion(tank.collider.x, tank.collider.y, { big: true }) // the kill burst at the tank center.
+    this.sfx.explosion({ big: true }) // F6 (D6/AC6) — a big burst on a player death.
     // F4 (D10): lives live on RunState now (carried across a stage rebuild). Spend one + floor at 0.
     const remaining = (this.runState.lives[slot] ?? 0) - 1
     this.runState.lives[slot] = Math.max(0, remaining)
@@ -614,6 +666,8 @@ export class GameScene extends Phaser.Scene {
   private _triggerGameOver(): void {
     if (this.gameOver) return // one-shot guard — the SECOND edge of a same-frame double-trigger early-returns.
     this.gameOver = true
+
+    this.sfx.gameOver() // F6 (D6/AC6) — the run-end knell (the single owner, under the one-shot guard).
 
     // Bank the run ONCE (F5 §5.3, D8/AC5) — the single writer under the gameOver guard. `stage` is the human
     // stage number reached (stageIndex + 1). bankRun returns the banked amount (the GameOver summary displays it).
@@ -702,7 +756,10 @@ export class GameScene extends Phaser.Scene {
       }
       enemy.updateAI(gdt, { eagle, players }) // build the wander/seek intent (AC3).
       enemy.update(gdt, enemy.aiIntent) // drive it through the SAME spine (DRY — D3).
-      if (enemy.aiIntent.firePressed) enemy.tryFire(this.bullets) // fire on the beat (the F1 fire path, D3).
+      // F6 (D6/AC6) — enemy fire audio routes through the scene like the players' (every tank's shot plays fire();
+      // the boss's telegraphed volley fires here too — tryFire's boolean gates the blip). The throttle collapses a
+      // same-frame multi-shot pile-up into one transient so a busy frame doesn't machine-gun the blip.
+      if (enemy.aiIntent.firePressed && enemy.tryFire(this.bullets)) this.sfx.fire()
     }
   }
 
@@ -713,22 +770,72 @@ export class GameScene extends Phaser.Scene {
   // hid + disabled the corpse; we remove it from the live list (its body is torn down on the stage teardown).
   private _onEnemyKilled(enemy: Tank): void {
     this.effects.explosion(enemy.collider.x, enemy.collider.y, { big: true }) // the kill burst at the tank center.
+    this.sfx.explosion({ big: true }) // F6 (D6/AC6) — a big burst on an enemy/boss kill (the boss routes here too).
     this.runState.score += enemy.spec.scoreValue // bank the score (D10 — the HUD/Hub features render/spend it).
     this.runState.enemiesAlive = Math.max(0, this.runState.enemiesAlive - 1)
     this.runState.enemiesRemaining = this.runState.enemiesQueued + this.runState.enemiesAlive
     // A carrier drops a power-up: fire the hook ONCE with the death center (the F5 pickup seam — AC7). F4 marks
-    // the drop point; no power-up entity is constructed here (YAGNI).
+    // the drop point; no power-up entity is constructed here (YAGNI). The boss is a NON-carrier (D11), so this is
+    // never taken for the boss — no power-up spawns on its death-center mid-transition (a clean boss fight).
     if (enemy.carrier && enemy.onDropFlag) {
       enemy.onDropFlag(enemy.collider.x, enemy.collider.y)
       enemy.onDropFlag = null // one-shot (a same-frame double-hit can't re-fire — mirrors onDeath's discipline).
     }
 
-    // The stage-clear predicate (AC5): no more queued AND none alive → every enemy is dead. Defer the rebuild
-    // out of this callback under the one-shot guard (a multi-frame final-kill advances exactly once — AC10).
+    // The stage-clear predicate (AC5): no more queued AND none alive → every enemy is dead. F6 (D4/AC1/AC3/AC4):
+    // on a BOSS stage the boss is the stage CAPSTONE — when the last NORMAL enemy clears (this predicate, with the
+    // boss not yet spawned) we SPAWN the boss INSTEAD of advancing (and `return` BEFORE the transitioning guard, so
+    // the stage does NOT advance — the boss is now the one alive enemy). The boss's OWN onDeath re-reaches this
+    // predicate (now bossSpawned), falls through to the banner + advance. Because the spawn branch sits INSIDE the
+    // predicate + BEFORE the guard, the boss never advances on its spawn frame, and the advance fires exactly once
+    // on its death. The decrement (above) + recompute have ALREADY run, so the predicate reflects the boss's kill.
     if (this.runState.enemiesQueued <= 0 && this.runState.enemiesAlive <= 0 && !this.transitioning && !this.gameOver) {
+      if (this.runState.isBossStage() && !this.bossSpawned) {
+        this._spawnBoss() // the capstone — spawn the boss INSTEAD of advancing (D4); sets enemiesAlive/Remaining=1.
+        return // return WITHOUT touching `transitioning` — the stage does NOT advance (the boss is now alive).
+      }
+      if (this.runState.isBossStage()) {
+        // The boss's own kill re-reached the predicate (bossSpawned already true): show the STAGE-N-CLEARED banner
+        // (a registry value the HUD renders timed — D5) + the win flourish, then fall through to the advance (AC3).
+        this.bannerStage = this.runState.stageIndex + 1 // the human stage number just cleared.
+        this.bannerTimer = STAGE_CLEARED_BANNER_SEC
+        this.sfx.stageCleared()
+      }
       this.transitioning = true
       this.time.delayedCall(0, () => this._advanceStage())
     }
+  }
+
+  // ── _spawnBoss() (F6 §5.4, D4/D11, AC1/AC4) ── the capstone boss spawn, factored DRY with _spawnStep's
+  // construction. Build the boss `Tank` from bossSpecForStage(stageIndex) at a TOP enemy spawn, collide it against
+  // terrain + register the SAME bullet×tank overlap + wire its onDeath to the SAME _onEnemyKilled funnel (so a
+  // normal bullet OR a co-op grenade kills it identically — AC4), pin it a NON-carrier (D11 — no power-up drop on
+  // its death), and arm a spawn-blink (the classic telegraph; the AI/telegraph can't arm during the blink, so the
+  // boss always gets its blink before it can be hit — §5.4 issue (b)). NOTE (issue #2 consistency): UNLIKE _spawnStep,
+  // _spawnBoss does NOT apply bulletSpeedScale — the boss's bulletSpeed is the RAW, verifier-asserted spec value
+  // (the fold leaves it unscaled), so the heavier-fire profile stays the fixed BOSS.bulletSpeed ≥ POWER quantity at
+  // every depth. THE LEDGER WRITE (issue #1): set enemiesAlive=1 + enemiesRemaining=1 (NOT enemiesQueued, which
+  // stays 0 — the boss is EXTRA, never a queued-roster member), so the HUD reads ENEMIES 1 while the boss is alive
+  // and ENEMIES 0 only after it dies. Reached ONLY from the capstone edge (enemiesAlive already 0), so `=1` is safe.
+  private _spawnBoss(): void {
+    const topSpawns: SpawnPoint[] = this.desc.enemySpawns
+    const point = topSpawns[1 % topSpawns.length] // the CENTER top spawn (the classic boss entrance, deterministic).
+    const enemy = new Tank(this, point.x, point.y, 'enemy', bossSpecForStage(this.runState.stageIndex))
+    ;(enemy.collider as TankCollider).tankRef = enemy
+    this._collideTankWithTerrain(enemy) // the boss stops at terrain too (DRY).
+    enemy.carrier = false // D11 — a NON-carrier: no power-up drop, a clean boss fight.
+    enemy.onDropFlag = null
+    enemy.spawnIframe = SPAWN_BLINK_TIME // the spawn-blink telegraph (inert + un-hittable during it — AC1).
+    enemy.onDeath = () => this._onEnemyKilled(enemy) // the SAME kill/score/advance funnel (DRY — it's a Tank).
+    this._registerTankOverlap(enemy) // the SAME bullet×tank overlap as every tank (the F3 seam, D9).
+    this.enemies.push(enemy)
+    this.boss = enemy
+    this.bossSpawned = true
+    // The ledger: the boss is the ONE alive enemy now (extra over the cleared roster). enemiesRemaining=1 here (at
+    // spawn) is what makes the HUD read ENEMIES 1 while the boss lives (issue #1) — enemiesQueued stays 0.
+    this.runState.enemiesAlive = 1
+    this.runState.enemiesRemaining = 1
+    this.sfx.bossSpawn() // F6 (D6/AC6) — the ominous capstone swell announces the boss.
   }
 
   // ── _markDrop(x,y) (F4 §5.3 → F5 §5.3, D1/D3, AC1) ── a carrier died here: ACQUIRE a power-up from the pool at
@@ -793,6 +900,11 @@ export class GameScene extends Phaser.Scene {
   update(_time: number, delta: number): void {
     const dt = Math.min(delta / 1000, MAX_DT) // REAL dt in SECONDS, clamped (AC7 — no raw delta reaches a formula).
 
+    // F6 (D5, AC3) — decay the STAGE-N-CLEARED banner on the REAL dt (NOT gdt), so it shows through both a clock
+    // freeze AND the run-end freeze beat (the same "FX run on real dt" contract). Clamped at 0. _publishHud reads
+    // bannerTimer > 0 to publish the string. Done BEFORE the gameOver early-return so the banner finishes showing.
+    this.bannerTimer = Math.max(0, this.bannerTimer - dt)
+
     // ── F5 power-up timers + the freeze boundary (F5 §5.3, D4/D5/AC3) ── decay freeze/shovel/shield on the
     // GAMEPLAY dt BEFORE the freeze is applied for the frame (so the freeze timer itself counts down in real
     // gameplay time and ends — the reference's clock-freeze does the same). THEN compute the gameplay dt:
@@ -831,13 +943,14 @@ export class GameScene extends Phaser.Scene {
     // P1 — fire off the edge (the scene owns the pool, D12), then tick movement/facing/cooldown on `gdt`. A
     // dead-but-not-yet-respawned P1 isn't driven (Tank.update early-returns while !alive — defensive).
     if (this.p1.alive) {
-      if (s.p1.firePressed) this.p1.tryFire(this.bullets)
+      // F6 (D6/AC6) — tryFire now returns whether a shot fired; play sound.fire() on success (the one audio owner).
+      if (s.p1.firePressed && this.p1.tryFire(this.bullets)) this.sfx.fire()
       this.p1.update(gdt, s.p1)
     }
 
     // P2 — gated on TWO_PLAYER (AC8). Input still returned p2 (cheap); the SCENE decides whether to drive it.
     if (TWO_PLAYER && this.p2 && this.p2.alive) {
-      if (s.p2.firePressed) this.p2.tryFire(this.bullets)
+      if (s.p2.firePressed && this.p2.tryFire(this.bullets)) this.sfx.fire() // F6 (D6/AC6) — co-op fire blip.
       this.p2.update(gdt, s.p2)
     }
 
@@ -880,8 +993,9 @@ export class GameScene extends Phaser.Scene {
         if (!b.bx.active) continue
         if (a.bx.ownerSide === b.bx.ownerSide && !FRIENDLY_FIRE) continue // same side don't cancel (D8/AC9).
         if (this._aabbOverlap(a, b)) {
-          // A small spark where they meet (the midpoint), then mutual despawn.
+          // A small spark where they meet (the midpoint), then mutual despawn. F6 (D6/AC6) — a small impact blip.
           this.effects.explosion((a.x + b.x) / 2, (a.y + b.y) / 2)
+          this.sfx.explosion()
           this.bullets.release(a)
           this.bullets.release(b)
         }

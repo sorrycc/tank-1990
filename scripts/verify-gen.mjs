@@ -38,8 +38,8 @@ import { stageConfig, hardShare, bulletSpeedScale, spawnIntervalScale, BRICK_DEN
 import { generateStage, tankFits, isFortApproachWindow, windowCenter, FOOTPRINT } from '../src/world/LevelGenerator.js'
 // F4 PURE modules (D1/D5/D11): the tank roster + the active-run owner. Importing them here under node
 // RE-PROVES their purity (a stray `import 'phaser'` throws) — the convention every pure module satisfies.
-import { ENEMY_ARCHETYPES, ENEMY_SPECS, BASIC, FAST, POWER, ARMOR, PLAYER_BASE, PLAYER_STAR_TIERS, applyStarTier, rosterPick } from '../src/config/tanks.js'
-import { ARMOR_TANK_HP, SPAWN_INTERVAL_MIN_SCALE } from '../src/config/constants.js'
+import { ENEMY_ARCHETYPES, ENEMY_SPECS, BASIC, FAST, POWER, ARMOR, BOSS, bossSpecForStage, PLAYER_BASE, PLAYER_STAR_TIERS, applyStarTier, rosterPick } from '../src/config/tanks.js'
+import { ARMOR_TANK_HP, SPAWN_INTERVAL_MIN_SCALE, CURRENCY_RATIO, FIRE_COOLDOWN } from '../src/config/constants.js'
 import { createRunState } from '../src/core/RunState.js'
 // ── F5 PURE modules (D1/D3/D5/D6/D12): the power-up roster, the permanent upgrade rows + applyUpgrades, and
 // the i18n core + the two dictionaries. Importing them here under node RE-PROVES their purity (a stray
@@ -387,7 +387,7 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
 // determinism), NOT gameplay balance (the HONEST scope — D11).
 // ════════════════════════════════════════════════════════════════════════════════════════════
 {
-  const KNOWN_BEHAVIORS = new Set(['basic', 'fast', 'power', 'armor', 'player'])
+  const KNOWN_BEHAVIORS = new Set(['basic', 'fast', 'power', 'armor', 'player', 'boss']) // F6 (D1) — + the boss tag.
 
   // ── 7a) Every TankSpec is well-formed (AC4) ── positive numbers, a known behaviour, sane caps. Swept over
   // the four enemy archetypes + the player base + every star tier's folded spec (applyStarTier(t)).
@@ -458,6 +458,74 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
     if (cur.fireCooldown > prevTier.fireCooldown + 1e-12) fail(`tanks: applyStarTier fireCooldown increased at tier ${t} (should fire no slower)`)
     prevTier = cur
   }
+
+  // ── 7g) F6 BOSS spec well-formed + heavier-than-armor + the CONCRETE heavier-fire profile + bossSpecForStage
+  // monotone/never-weaker/fire-fields-unscaled + boss ABSENT from the roster (F6 §7, D1/D2/D3/D11, AC2/AC9) ──
+  // The BOSS is a PURE TankSpec (node-imported above → re-proving purity). The verifier proves DATA properties:
+  // well-formedness, the heavier-than-armor HP, the falsifiable heavier-fire data check (issue #2), and the fold's
+  // monotone/never-weaker/unscaled-fire contract — NOT gameplay balance (the HONEST scope).
+  {
+    // Well-formedness (AC9): a valid TankSpec with the 'boss' behaviour, positive feel fields, an integer
+    // maxBullets, scoreValue ≥ 0 (re-using the same shape the 7a sweep asserts for the other specs).
+    if (BOSS.id !== 'boss') fail(`tanks: BOSS.id = ${BOSS.id}, expected 'boss'`)
+    if (BOSS.behavior !== 'boss') fail(`tanks: BOSS.behavior = ${BOSS.behavior}, expected 'boss'`)
+    for (const f of ['maxHp', 'moveSpeed', 'bulletSpeed', 'fireCooldown', 'maxBullets']) {
+      if (typeof BOSS[f] !== 'number' || !(BOSS[f] > 0)) fail(`tanks: BOSS.${f} = ${BOSS[f]} is not a positive number`)
+    }
+    if (!Number.isInteger(BOSS.maxBullets)) fail(`tanks: BOSS.maxBullets = ${BOSS.maxBullets} is not an integer`)
+    if (typeof BOSS.scoreValue !== 'number' || BOSS.scoreValue < 0) fail(`tanks: BOSS.scoreValue = ${BOSS.scoreValue} invalid`)
+    // Heavier than the armor tank (AC2) — multi-hit "for free" via the F3 HP funnel; survives many hits.
+    if (!(BOSS.maxHp >= ARMOR.maxHp)) fail(`tanks: BOSS.maxHp ${BOSS.maxHp} must be ≥ ARMOR.maxHp ${ARMOR.maxHp} (AC2)`)
+    // The telegraph window is armed (AC2/AC9) — the dodge contract; a non-boss spec leaves it 0/undefined.
+    if (!(BOSS.telegraphSec > 0)) fail(`tanks: BOSS.telegraphSec = ${BOSS.telegraphSec} must be > 0 (the dodge window, AC2)`)
+    // The CONCRETE heavier-fire data check (issue #2) — a fast bolt AND a shorter beat than a basic tank. Both
+    // are the RAW, pre-bulletSpeedScale spec numbers the verifier reads directly, so the comparison is well-defined.
+    if (!(BOSS.bulletSpeed >= POWER.bulletSpeed)) fail(`tanks: BOSS.bulletSpeed ${BOSS.bulletSpeed} must be ≥ POWER.bulletSpeed ${POWER.bulletSpeed} (heavier fire, AC2/AC9)`)
+    if (!(BOSS.fireCooldown <= BASIC.fireCooldown)) fail(`tanks: BOSS.fireCooldown ${BOSS.fireCooldown} must be ≤ BASIC.fireCooldown ${BASIC.fireCooldown} (heavier fire, AC2/AC9)`)
+    // The capstone reward (D11) — the highest single scoreValue (above the armor tank's).
+    if (!(BOSS.scoreValue > ARMOR.scoreValue)) fail(`tanks: BOSS.scoreValue ${BOSS.scoreValue} must be > ARMOR.scoreValue ${ARMOR.scoreValue} (the capstone, D11)`)
+
+    // bossSpecForStage (AC9): deterministic + returns a NEW object (no aliasing) + monotone non-decreasing in maxHp
+    // across boss stages + never weaker than BOSS at the base + leaves telegraphSec/bulletSpeed/fireCooldown UNSCALED
+    // (equal to BOSS's — readability + the heavier-fire profile preserved at depth). Sweep the boss-stage indices
+    // (BOSS_STAGE_EVERY·n − 1: 4, 9, 14, …) for several milestones.
+    const bossStages = []
+    for (let n = 1; n <= 10; n++) bossStages.push(BOSS_STAGE_EVERY * n - 1)
+    let prevBossHp = -Infinity
+    for (const s of bossStages) {
+      const a = bossSpecForStage(s)
+      const b = bossSpecForStage(s)
+      if (!deepEqual(a, b)) fail(`tanks: bossSpecForStage(${s}) is non-deterministic (two calls differ, AC9)`)
+      if (a === BOSS) fail(`tanks: bossSpecForStage(${s}) ALIASES the base BOSS (must return a NEW object, AC9)`)
+      if (a.behavior !== 'boss') fail(`tanks: bossSpecForStage(${s}).behavior = ${a.behavior}, expected 'boss'`)
+      if (!(a.maxHp >= BOSS.maxHp)) fail(`tanks: bossSpecForStage(${s}).maxHp ${a.maxHp} weaker than BOSS.maxHp ${BOSS.maxHp} (AC9)`)
+      if (a.maxHp < prevBossHp) fail(`tanks: bossSpecForStage maxHp decreased at stage ${s} (${prevBossHp} → ${a.maxHp}) — not monotone (AC9)`)
+      // The fire fields + the telegraph are UNSCALED (equal to BOSS's — the heavier-fire + dodge contract at depth).
+      if (a.telegraphSec !== BOSS.telegraphSec) fail(`tanks: bossSpecForStage(${s}).telegraphSec ${a.telegraphSec} != BOSS ${BOSS.telegraphSec} (must be UNSCALED, AC9)`)
+      if (a.bulletSpeed !== BOSS.bulletSpeed) fail(`tanks: bossSpecForStage(${s}).bulletSpeed ${a.bulletSpeed} != BOSS ${BOSS.bulletSpeed} (must be UNSCALED, AC9)`)
+      if (a.fireCooldown !== BOSS.fireCooldown) fail(`tanks: bossSpecForStage(${s}).fireCooldown ${a.fireCooldown} != BOSS ${BOSS.fireCooldown} (must be UNSCALED, AC9)`)
+      prevBossHp = a.maxHp
+    }
+
+    // The boss is ABSENT from ENEMY_ARCHETYPES/ENEMY_SPECS (D3) — it is spawned EXPLICITLY by the scene as the
+    // stage capstone, never weighted into rosterPick. So rosterPick still ONLY ever returns the four normal ids
+    // (the F4 7c/7d distinctness + known-id checks stay green — the boss never enters the roster).
+    if (ENEMY_SPECS.boss) fail(`tanks: the BOSS must NOT be in ENEMY_SPECS (it is spawned explicitly, not weighted — D3)`)
+    for (const spec of ENEMY_ARCHETYPES) {
+      if (spec.behavior === 'boss' || spec.id === 'boss') fail(`tanks: the BOSS must NOT be in ENEMY_ARCHETYPES (D3)`)
+    }
+    if (ENEMY_ARCHETYPES.length !== 4) fail(`tanks: ENEMY_ARCHETYPES has ${ENEMY_ARCHETYPES.length} specs, expected 4 (the boss is not weighted in — D3)`)
+  }
+
+  // ── 7h) F6 balance-scalar guards (F6 §7, D10/issue #3, AC8) ── the constants.ts SCALARS the existing sweeps do
+  // NOT read get explicit guards so the balance retune is HONESTLY gated, not green-by-handwave. CURRENCY_RATIO
+  // MUST stay in (0,1) (the meta economy: ≥1 banks the whole/over score, ≤0 banks nothing — both break it).
+  // FIRE_COOLDOWN > 0 keeps the player base spec well-formed (PLAYER_BASE.fireCooldown = FIRE_COOLDOWN, so 7a
+  // proves it transitively; this is the belt-and-braces direct guard). TANK_SPEED/BULLET_SPEED/SPAWN_STAGGER_BASE
+  // are covered TRANSITIVELY via their derived specs' positivity/distinctness (documented OUT-OF-GATE as standalone
+  // scalars — §7 AC8), so no dedicated assertion is added for them (they have no standalone invariant beyond positive).
+  if (!(CURRENCY_RATIO > 0 && CURRENCY_RATIO < 1)) fail(`constants: CURRENCY_RATIO = ${CURRENCY_RATIO} must be in (0,1) (the meta economy, AC8)`)
+  if (!(FIRE_COOLDOWN > 0)) fail(`constants: FIRE_COOLDOWN = ${FIRE_COOLDOWN} must be > 0 (the player base spec, AC8)`)
 
   // ── 7f) RunState.advance() is deterministic + stageIndex strictly increases (AC8); the per-slot seed map +
   // the timed power-up decay/reset (F5 D5b/D5c/AC3/AC6) ── RE-PINNED to the F5 createRunState signature: the F4
@@ -687,6 +755,9 @@ console.log(
     `stage sweep ${SWEEP_SEEDS} seeds × ${SWEEP_STAGES.length} stages — determinism + bounds (≤scatterCells, D14) + ` +
     `eagle enclosed&reachable (footprint BFS, D15) + spawn validity & window-center pin (D13); regression pin (D10); ` +
     `F4 roster well-formed + 4 types distinct + rosterPick known/deterministic + applyStarTier monotone + ` +
+    `F6 BOSS well-formed (heavier-than-armor HP + telegraph>0 + heavier-fire bulletSpeed≥POWER/fireCooldown≤BASIC) + ` +
+    `bossSpecForStage monotone/never-weaker/fire-unscaled + boss absent from roster (D3) + balance guards ` +
+    `(0<CURRENCY_RATIO<1, FIRE_COOLDOWN>0) (F6 AC2/AC8/AC9); ` +
     `RunState.advance() deterministic & stageIndex strictly increasing & economy carried + per-slot seed fold + ` +
     `tickTimers decay/clamp + advance-reset (F5 D5b/D5c/AC3/AC6); ` +
     `F5 power-ups well-formed (6 kinds, durations, pickPowerUpKind deterministic) + upgrade rows cost-monotone + ` +

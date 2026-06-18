@@ -24,11 +24,17 @@ import {
   MAX_PLAYER_BULLETS,
   TANK_MAX_HP,
   ARMOR_TANK_HP,
+  BOSS_TANK_HP,
+  BOSS_TELEGRAPH_SEC,
+  BOSS_HP_PER_BOSS_STAGE,
+  BOSS_HP_MAX,
+  BOSS_STAGE_EVERY,
 } from './constants.js'
 
-// ── TankBehavior (D2) ── the behaviour TAG that selects the AI branch (the four enemy types + the player).
-// The boss adds 'boss' here (a later feature) — the same entity/FSM, one more tag (the locked decision).
-export type TankBehavior = 'basic' | 'fast' | 'power' | 'armor' | 'player'
+// ── TankBehavior (D2 → F6 D1) ── the behaviour TAG that selects the AI branch (the four enemy types + the
+// player). F6 fills the slot the F4 header reserved: the BOSS is a 5th spec + a 'boss' tag on this SAME
+// entity/FSM (the LOCKED decision) — NOT a new entity/scene. One more tag, no new movement/AI/combat path.
+export type TankBehavior = 'basic' | 'fast' | 'power' | 'armor' | 'player' | 'boss'
 
 // ── TankSpec (D1, AC4) ── the canonical per-type tuning row. PLAIN DATA (no functions) so it is trivially
 // comparable + the verifier sweeps it headlessly. The coupled Tank copies the numeric fields onto per-tank
@@ -46,6 +52,14 @@ export interface TankSpec {
   colorFlash: number // red-carrier flash fill (coupled Tank visual ONLY).
   scoreValue: number // points banked to RunState.score on this enemy's death (read in F4 — D10).
   canBreakSteel?: boolean // max-star player only — RESERVED (no bullet reads it in F4; the steel-break seam).
+
+  // ── F6 boss telegraph (F6 §5.2/§5.3, D2, AC2) — OPTIONAL, default the IDENTITY (0 = no telegraph) ── seconds
+  // of pre-fire wind-up. ONLY the BOSS sets it (BOSS_TELEGRAPH_SEC); the four archetypes + the player OMIT it →
+  // 0 → Tank.updateAI takes the EXISTING immediate-fire path BYTE-UNCHANGED (the gated new branch fires only when
+  // telegraphSec > 0 — purely additive, no behaviour change for any existing spec, so every identity-fold pin
+  // the verifier asserts holds). A spec with telegraphSec > 0 ARMS a wind-up before each shot (a visible warning
+  // blink), keeping a heavier/faster volley readable + dodgeable (the reference's telegraph idea on the ONE FSM).
+  telegraphSec?: number // s — pre-fire wind-up (default 0 = fire on the beat, the existing path; boss sets it).
 
   // ── F5 run-SETUP fields (F5 §5.2, D7) — OPTIONAL, default the IDENTITY (0) ── two Hub permanent-upgrade
   // rows are run-SETUP, not per-tank FEEL: `+1 starting life` and `+star-start`. To keep applyUpgrades a PURE
@@ -118,6 +132,57 @@ export const ARMOR: TankSpec = {
   color: 0x686de0, // blue-violet heavy.
   colorFlash: 0xa29bfe,
   scoreValue: 400,
+}
+
+// ── BOSS (F6 §5.2, D1/D2/D3/D11, AC1/AC2/AC9) ── the 5th spec: the heavy capstone tank spawned on every boss
+// stage. It is the SAME `Tank` entity (a 'boss' behaviour TAG — the LOCKED decision), distinguished by a HEAVY
+// spec + a telegraphed fire wind-up. The verifier asserts its well-formedness + the heavier-than-armor HP + the
+// CONCRETE heavier-fire profile (AC9, issue #2):
+//   • maxHp = BOSS_TANK_HP (≥ ARMOR_TANK_HP) — multi-hit "for free" via the F3 HP funnel (survives many hits, AC2).
+//   • bulletSpeed pinned ≥ POWER.bulletSpeed (a fast bolt — the verifier reads the RAW spec number, issue #2). We
+//     match POWER's exact bulletSpeed so the ≥ check is satisfied + the boss's bolt is the fastest in the game.
+//   • fireCooldown pinned ≤ BASIC.fireCooldown (a shorter beat than a basic tank — the other half of the check).
+//     Set below BASIC's 0.9 so the boss shoots more readily; the BOSS_TELEGRAPH_SEC wind-up keeps it FAIR (the
+//     heavier/faster shot is telegraphed → readable, AC2).
+//   • telegraphSec = BOSS_TELEGRAPH_SEC (> 0) — the pre-fire wind-up (the dodge contract; the verifier asserts > 0).
+//   • scoreValue the HIGHEST (> ARMOR.scoreValue) — the capstone is the biggest single reward (D11).
+// The boss is a NON-carrier (D11 — pinned at the spawn site in GameScene, not here: a spec field is data; the
+// scene sets enemy.carrier=false so the boss fight stays clean, no power-up drop mid-transition). The boss is
+// NOT added to ENEMY_ARCHETYPES/ENEMY_SPECS (D3) — it is spawned EXPLICITLY by the scene as the stage capstone,
+// never weighted into rosterPick (so the F4 "rosterPick only returns the four normal ids" check stays green).
+export const BOSS: TankSpec = {
+  id: 'boss',
+  behavior: 'boss',
+  maxHp: BOSS_TANK_HP, // ≥ ARMOR_TANK_HP — the heavy capstone wall (multi-hit via the F3 funnel — AC2).
+  moveSpeed: TANK_SPEED, // a heavy, deliberate cruise (the baseline drive — it does not out-run the player).
+  bulletSpeed: POWER.bulletSpeed, // a fast bolt — pinned ≥ POWER.bulletSpeed (the heavier-fire check, AC2/AC9).
+  fireCooldown: 0.7, // a measured beat — pinned ≤ BASIC.fireCooldown (0.9); the telegraph keeps it fair (AC2).
+  maxBullets: 2, // the boss may have two shots out (heavier volume than the classic single — still capped).
+  color: 0x2d3436, // a dark, heavy slate (programmer-art primitive — distinct from every archetype, AC1/AC11).
+  colorFlash: 0xb2bec3, // a light flash tint (unused as a carrier — the boss is a non-carrier; kept for the spec shape).
+  scoreValue: 1000, // the HIGHEST single reward (> ARMOR.scoreValue 400 — the capstone, D11/AC4).
+  telegraphSec: BOSS_TELEGRAPH_SEC, // the pre-fire wind-up (> 0 — the dodge contract, AC2/AC9).
+}
+
+// ── bossSpecForStage(stageIndex) → TankSpec (F6 §5.2, D3, AC2/AC9) ── the PURE fold the scene calls to build the
+// boss for a given boss stage. Returns a NEW BOSS clone (never mutates BOSS — the aliasing discipline) with ONLY
+// `maxHp` scaled up by the boss NUMBER (1 on the first boss stage, 2 on the second, …) so a deeper boss is tankier
+// but EQUALLY readable. `telegraphSec` AND the fire fields (`bulletSpeed`/`fireCooldown`) are left UNSCALED — so a
+// deep boss keeps the same fixed telegraph window (the dodge contract) AND the same verifier-asserted heavier-fire
+// profile (bulletSpeed ≥ POWER / fireCooldown ≤ BASIC) at every depth (issue #2). The reference's `scaleBossSpec`
+// philosophy, trimmed to Tank 1990's single maxHp scalar. The maxHp ramp is clamped to BOSS_HP_MAX so the deepest
+// boss stays winnable (the difficulty envelope stays bounded — D3). The verifier asserts the fold is deterministic,
+// returns a NEW object, is monotone non-decreasing in maxHp across boss stages, is never weaker than BOSS at the
+// base, and leaves telegraphSec/bulletSpeed/fireCooldown equal to BOSS's (AC9). PURE — verifier-imported.
+export function bossSpecForStage(stageIndex: number): TankSpec {
+  const s = Math.max(0, Math.floor(stageIndex || 0))
+  // The boss NUMBER: 1 on the first boss stage (index BOSS_STAGE_EVERY-1 = 4), 2 on the second (index 9), … The
+  // boss stages are the (BOSS_STAGE_EVERY·n − 1) indices, so floor((s+1)/BOSS_STAGE_EVERY) counts them (1,2,3,…).
+  const bossNumber = Math.max(1, Math.floor((s + 1) / BOSS_STAGE_EVERY))
+  const maxHp = Math.min(BOSS_HP_MAX, BOSS_TANK_HP + BOSS_HP_PER_BOSS_STAGE * (bossNumber - 1))
+  // A NEW spec (spread BOSS, override ONLY maxHp). telegraphSec/bulletSpeed/fireCooldown ride along unchanged from
+  // BOSS (the heavier-fire profile + the dodge window are preserved at depth — AC9). Math.round keeps maxHp integer.
+  return { ...BOSS, maxHp: Math.round(maxHp) }
 }
 
 // ── PLAYER_BASE (D1) ── the player tank base spec. Its stats EQUAL the F1 constants (TANK_SPEED/BULLET_SPEED/

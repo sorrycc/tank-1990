@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import { UI_FONT, HUD_PANEL_X, PLAYFIELD_Y, TWO_PLAYER } from '../config/constants.js'
+import { UI_FONT, HUD_PANEL_X, PLAYFIELD_X, PLAYFIELD_Y, PLAYFIELD_W, PLAYFIELD_H, TWO_PLAYER } from '../config/constants.js'
 import { t } from '../i18n/index.js'
 
 // ── HUDScene (F0 scaffold §5.3 → F5 §5.4, Decision 4/D-decoupled/D12, AC8/AC9) ──
@@ -23,6 +23,10 @@ export class HUDScene extends Phaser.Scene {
   private p1LivesLabel!: Phaser.GameObjects.Text
   private p2LivesLabel!: Phaser.GameObjects.Text
   private powerLabel!: Phaser.GameObjects.Text // the active power-up + its seconds (empty when nothing active).
+  // F6 (D5/D8, AC3/AC6): the STAGE-N-CLEARED banner (a centered, large, timed text overlay over the playfield —
+  // read from the registry; blank when no banner active) + the MUTED cue (shown in the panel while audio is muted).
+  private bannerLabel!: Phaser.GameObjects.Text
+  private mutedLabel!: Phaser.GameObjects.Text
 
   constructor() {
     super('HUD')
@@ -50,6 +54,23 @@ export class HUDScene extends Phaser.Scene {
     this.p2LivesLabel.setVisible(TWO_PLAYER) // AC8 — the P2 line is hidden in a 1-player session.
     y += LINE_H / 2 // a small gap before the active-power-up line.
     this.powerLabel = make('#feca57', '18px') // gold — the active power-up + its remaining seconds (or empty).
+
+    // F6 (D8, AC6) — the MUTED cue, in the panel band below the power line (shown only while audio is muted).
+    this.mutedLabel = make('#ff7675', '18px') // soft red — the "MUTED" indicator (or empty).
+
+    // F6 (D5, AC3) — the STAGE-N-CLEARED banner: a large CENTERED timed text overlay over the playfield (NOT in
+    // the side panel — it is the stage-clear celebration). Positioned at the playfield CENTER off the FIXED design
+    // resolution (PLAYFIELD_X/Y/W/H — the single layout owners), depth above the readouts. Blank until a clear.
+    this.bannerLabel = this.add
+      .text(PLAYFIELD_X + PLAYFIELD_W / 2, PLAYFIELD_Y + PLAYFIELD_H / 2, '', {
+        fontFamily: UI_FONT,
+        fontSize: '40px',
+        color: '#feca57',
+        fontStyle: 'bold',
+        align: 'center',
+      })
+      .setOrigin(0.5)
+      .setDepth(10)
 
     // Prime the readouts so the panel reads sanely before GameScene's first registry write (defensive).
     this._render()
@@ -91,5 +112,15 @@ export class HUDScene extends Phaser.Scene {
     } else {
       this.powerLabel.setText('')
     }
+
+    // F6 (D5, AC3) — the STAGE-N-CLEARED banner: GameScene publishes the localised "STAGE N CLEARED" string to
+    // `hud.banner` while its timer is live (and '' otherwise), so the HUD just mirrors it (the registry-decoupled
+    // pattern — like the active-power-up line; the HUD owns HOW it renders, GameScene owns WHEN). No new scene.
+    const banner = (r.get('hud.banner') as string | undefined) ?? ''
+    this.bannerLabel.setText(banner)
+
+    // F6 (D8, AC6) — the MUTED cue: shown only while audio is muted (the M toggle flips Phaser's global mute, and
+    // GameScene publishes `hud.muted` = sound.mute). KISS — one boolean read, one label.
+    this.mutedLabel.setText(r.get('hud.muted') ? t('hud.muted') : '')
   }
 }

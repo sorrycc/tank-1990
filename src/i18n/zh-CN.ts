@@ -17,6 +17,22 @@ export const ZH_CN: Dict = {
     'title.subtitle': '坦克大战 — Battle City',
     'title.start': '按 SPACE / ENTER 或点击开始',
 
+    // ── 操作说明（F6 §5.2, D9, AC7 — 标题界面的双人按键参考）── 动作名翻译，按键 TOKEN（WASD/J/Numpad0/SPACE/
+    // ENTER/M）保持原文（它们指代物理按键，按键绑定由 core/Input.ts 拥有，这里只是可读的镜像）。
+    'controls.title': '操作说明',
+    'controls.p1Move': 'P1 移动',
+    'controls.p1Move.keys': 'W A S D',
+    'controls.p1Fire': 'P1 开火',
+    'controls.p1Fire.keys': 'J',
+    'controls.p2Move': 'P2 移动',
+    'controls.p2Move.keys': '方向键',
+    'controls.p2Fire': 'P2 开火',
+    'controls.p2Fire.keys': 'Numpad0',
+    'controls.start': '开始',
+    'controls.start.keys': 'SPACE / ENTER',
+    'controls.mute': '静音',
+    'controls.mute.keys': 'M',
+
     // ── 大厅（双列共享货币升级大厅 — D9）──
     'hub.title': '大厅',
     'hub.currency': '货币 {n}',
@@ -38,6 +54,8 @@ export const ZH_CN: Dict = {
     'hud.p2Lives': 'P2 生命 {n}',
     'hud.power': '道具 {name} {secs}秒',
     'hud.powerInstant': '道具 {name}',
+    'hud.stageCleared': '关卡 {n} 通关', // F6 (D5, AC3) — Boss 关通关横幅（定时覆盖层）。
+    'hud.muted': '已静音', // F6 (D8, AC6) — 静音时的提示（M 键切换）。
 
     // ── 游戏结束（结算快照 — AC5）──
     'over.heading': '游戏结束',

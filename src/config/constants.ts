@@ -51,12 +51,17 @@ export const PLAYFIELD_X = Math.round((DESIGN_WIDTH - (PLAYFIELD_W + PLAYFIELD_G
 export const PLAYFIELD_Y = Math.round((DESIGN_HEIGHT - PLAYFIELD_H) / 2)
 export const HUD_PANEL_X = PLAYFIELD_X + PLAYFIELD_W + PLAYFIELD_GAP // px — top-left x of the side HUD panel.
 
-// ── Tank / bullet feel (Decision 7, §5.2) — placeholder values; later features tune the feel ──
+// ── Tank / bullet feel (Decision 7, §5.2 → F6 §5.2/AC8 balance) — the feel anchors, tuned in F6 ──
 // All speeds are in px/SECOND (dt is handled in seconds at the boundary — the project's dt convention);
-// cooldowns are in SECONDS. The NAMES are the DRY anchors entities + the HUD read later.
-export const TANK_SPEED = 96 // px/s — grid-aligned 4-directional tank movement (2 tiles/s).
+// cooldowns are in SECONDS. The NAMES are the DRY anchors entities + the HUD read later (and the four enemy
+// archetype specs scale around TANK_SPEED/BULLET_SPEED, so a bump here lifts the whole roster proportionally —
+// the four-types-distinct check in the verifier still holds since the multipliers are unchanged). F6 (D10/AC8):
+// the winnable-but-tense balance pass — TANK_SPEED 96→104 (a touch more agile so dodging the heavier enemy/boss
+// fire feels fair), FIRE_COOLDOWN 0.35→0.30 (a slightly snappier player beat so the player can answer the boss's
+// telegraphed volley). BULLET_SPEED held (360 reads well + anchors POWER's 1.6× faster bolt the verifier checks).
+export const TANK_SPEED = 104 // px/s — grid-aligned 4-directional tank movement (F6: 96→104, AC8).
 export const BULLET_SPEED = 360 // px/s — a bullet travels straight until it hits terrain/a tank/the wall.
-export const FIRE_COOLDOWN = 0.35 // s — minimum delay between a player's shots.
+export const FIRE_COOLDOWN = 0.3 // s — minimum delay between a player's shots (F6: 0.35→0.30, AC8).
 export const MAX_PLAYER_BULLETS = 1 // bullets a single player may have on-screen at once (classic starts at 1).
 export const START_LIVES = 3 // lives a player begins a run with.
 
@@ -136,9 +141,11 @@ export const BOSS_STAGE_EVERY = 5 // every 5th stage spawns a heavy "boss tank" 
 // new enemy can't materialise on top of a player bullet/tank (the classic spawn telegraph).
 export const SPAWN_BLINK_TIME = 1.0 // s — the spawn-blink telegraph window.
 
-// SPAWN_STAGGER_BASE (F4 §5.2, D8, AC1) — base SECONDS between staggered spawns at stage 0; scaled DOWN by
-// stages.ts `spawnIntervalScale(stageIndex)` so deeper stages stream enemies faster (never instant — clamped).
-export const SPAWN_STAGGER_BASE = 2.0 // s — base delay between consecutive enemy spawns.
+// SPAWN_STAGGER_BASE (F4 §5.2, D8, AC1 → F6 §5.2/AC8 balance) — base SECONDS between staggered spawns at stage
+// 0; scaled DOWN by stages.ts `spawnIntervalScale(stageIndex)` so deeper stages stream enemies faster (never
+// instant — clamped). F6 (D10/AC8): 2.0→1.8 (a touch faster baseline stream so an early stage isn't a slow
+// trickle — still well above the SPAWN_INTERVAL_MIN_SCALE floor, so the cadence stays bounded/non-instant).
+export const SPAWN_STAGGER_BASE = 1.8 // s — base delay between consecutive enemy spawns (F6: 2.0→1.8, AC8).
 
 // AI_REDECIDE_MIN / AI_REDECIDE_MAX (F4 §5.2, D4, AC3) — the wander re-decide window (SECONDS). Every random
 // interval in [MIN,MAX] the AI picks a new cardinal (a runtime random OFF the seeded level pin — D4). Bounds
@@ -161,9 +168,48 @@ export const CARRIER_RATE = 0.25 // 0..1 — share of enemies that flash red + d
 export const SPAWN_INTERVAL_MIN_SCALE = 0.35 // the smallest spawn-interval multiplier (the fastest stream).
 
 // ── F5 Power-ups & meta (F5 §5.2, Decisions D8, AC5) — PURE meta-economy DATA (no Phaser) ──
-// CURRENCY_RATIO (F5 §5.2, D8, AC5) — the fraction [0,1] of a run's final score banked into the SHARED
-// persistent currency on run end: `currency += floor(score · CURRENCY_RATIO)`. The SINGLE owner (DRY) —
-// MetaState.bankRun reads it. The power-up effect durations live in config/powerups.ts + the upgrade
-// costs/effects in config/tank-upgrades.ts (each beside its own concern — DRY); only this scalar is shared
-// broadly enough to sit in the constants owner. Keep it < 1 (the bank is a FRACTION of the run, not all of it).
-export const CURRENCY_RATIO = 0.1 // 10% of run score banks into the shared currency on run end (AC5).
+// CURRENCY_RATIO (F5 §5.2, D8, AC5 → F6 §5.2/AC8 balance) — the fraction (0,1) of a run's final score banked
+// into the SHARED persistent currency on run end: `currency += floor(score · CURRENCY_RATIO)`. The SINGLE
+// owner (DRY) — MetaState.bankRun reads it. The power-up effect durations live in config/powerups.ts + the
+// upgrade costs/effects in config/tank-upgrades.ts (each beside its own concern — DRY); only this scalar is
+// shared broadly enough to sit in the constants owner. Keep it in (0,1) (the bank is a FRACTION of the run,
+// not all of it). F6 (D10/AC8): retuned 0.1 → 0.12 (a slightly kinder meta drip so the Hub upgrades feel
+// reachable over a few runs — still well inside (0,1), the verifier's NEW `0 < CURRENCY_RATIO < 1` guard).
+export const CURRENCY_RATIO = 0.12 // 12% of run score banks into the shared currency on run end (AC5/AC8).
+
+// ── F6 Boss milestone & banner (F6 §5.2, Decisions D1/D2/D3/D5, AC1/AC2/AC3) — PURE boss/banner DATA (no Phaser) ──
+// All Phaser-free numbers the boss spec (config/tanks.ts `BOSS`/`bossSpecForStage`), the telegraph render cue
+// (entities/Tank.ts), and the STAGE-N-CLEARED banner (GameScene/HUDScene) read. Owned ONCE here (DRY) so the
+// pure spec, the coupled entity, and the coupled scenes share the SAME truth; the verifier node-imports the two
+// invariant-bearing ones (BOSS_TANK_HP feeds the spec it asserts; the rest feed coupled code). Times in SECONDS.
+
+// BOSS_TANK_HP (F6 §5.2, D1, AC2) — the base boss HP. Set ABOVE ARMOR_TANK_HP (4) so the boss is heavier than
+// the armor tank "for free" via the SAME F3 HP funnel (multi-hit — it survives this many bullet hits). The
+// verifier asserts BOSS.maxHp ≥ ARMOR.maxHp, so this MUST stay ≥ ARMOR_TANK_HP.
+export const BOSS_TANK_HP = 12 // HP — the boss survives twelve hits (3× the armor tank — the capstone wall, AC2).
+
+// BOSS_TELEGRAPH_SEC (F6 §5.2, D2, AC2) — the pre-fire wind-up window (SECONDS). The boss ARMS this on each
+// shot and only fires when it elapses (a visible warning blink during it), so its heavier/faster volley stays
+// readable + dodgeable (the reference's "every attack is telegraphed" idea on the ONE FSM). UNSCALED by depth
+// (bossSpecForStage leaves it fixed) so a deeper boss stays equally readable.
+export const BOSS_TELEGRAPH_SEC = 0.5 // s — the boss's visible fire wind-up (the dodge window, AC2).
+
+// BOSS_HP_PER_BOSS_STAGE (F6 §5.2, D3, AC2/AC9) — the per-boss-stage HP ramp. bossSpecForStage scales the boss's
+// maxHp up by this × the boss number (1 on the first boss stage, 2 on the second, …) so a deeper boss is tankier
+// (the reference's scaleBossSpec philosophy, trimmed to the single maxHp scalar). The verifier asserts the fold
+// is monotone non-decreasing in maxHp + never weaker than the base.
+export const BOSS_HP_PER_BOSS_STAGE = 4 // +HP per boss stage (the deeper-boss tankiness ramp, AC2/AC9).
+
+// BOSS_HP_MAX (F6 §5.2, D3, AC2) — the clamp on the scaled boss HP so a very deep boss stays beatable in a stage's
+// time budget (the difficulty envelope stays bounded — the reference/D3 "monotone but bounded" stance). The fold
+// clamps maxHp to this ceiling; the verifier's monotone check tolerates a flat (clamped) top.
+export const BOSS_HP_MAX = 40 // HP — the deepest boss's HP ceiling (bounded so the fight stays winnable, AC2).
+
+// TELEGRAPH_FILL (F6 §5.3 issue #4, AC2) — the warning fill colour the boss's body + barrel blink to during the
+// telegraph wind-up. DISTINCT from every tank's `color`/`colorFlash` (a bright warning amber) so the wind-up is
+// unmistakable. Consumed ONLY by the coupled Tank visual (a render colour — the verifier ignores it, like tiles).
+export const TELEGRAPH_FILL = 0xffeaa7 // bright warning amber — the telegraph blink fill (programmer-art, AC2).
+
+// STAGE_CLEARED_BANNER_SEC (F6 §5.2, D5, AC3) — how long the "STAGE N CLEARED" banner shows after a boss stage
+// is cleared. Decayed on the REAL dt (so it shows through the run-end freeze beat); the HUD renders it while > 0.
+export const STAGE_CLEARED_BANNER_SEC = 2.5 // s — the STAGE-N-CLEARED banner duration (AC3).
