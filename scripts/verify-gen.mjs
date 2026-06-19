@@ -39,8 +39,8 @@ import { generateStage, tankFits, isFortApproachWindow, windowCenter, FOOTPRINT,
 // F4 PURE modules (D1/D5/D11): the tank roster + the active-run owner. Importing them here under node
 // RE-PROVES their purity (a stray `import 'phaser'` throws) — the convention every pure module satisfies.
 import { ENEMY_ARCHETYPES, ENEMY_SPECS, BASIC, FAST, POWER, ARMOR, BOSS, bossSpecForStage, PLAYER_BASE, PLAYER_STAR_TIERS, applyStarTier, rosterPick } from '../src/config/tanks.js'
-import { ARMOR_TANK_HP, SPAWN_INTERVAL_MIN_SCALE, CURRENCY_RATIO, FIRE_COOLDOWN } from '../src/config/constants.js'
-import { createRunState } from '../src/core/RunState.js'
+import { ARMOR_TANK_HP, SPAWN_INTERVAL_MIN_SCALE, CURRENCY_RATIO, FIRE_COOLDOWN, EXTRA_LIFE_SCORE } from '../src/config/constants.js'
+import { createRunState, extraLivesCrossed } from '../src/core/RunState.js'
 // ── F5 PURE modules (D1/D3/D5/D6/D12): the power-up roster, the permanent upgrade rows + applyUpgrades, and
 // the i18n core + the two dictionaries. Importing them here under node RE-PROVES their purity (a stray
 // `import 'phaser'` throws) — the convention every pure module satisfies (AC9/AC11). The Phaser-coupled
@@ -593,6 +593,9 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
     const cfg0 = stageConfig(0)
     if (a.stageIndex !== 0) fail(`RunState: fresh stageIndex = ${a.stageIndex}, expected 0`)
     if (a.score !== 0) fail(`RunState: fresh score = ${a.score}, expected 0`)
+    // (extra-life, D2, AC2) — the carried 1UP threshold is SEEDED to EXTRA_LIFE_SCORE on a fresh run.
+    if (a.nextExtraLifeScore !== EXTRA_LIFE_SCORE)
+      fail(`RunState: fresh nextExtraLifeScore = ${a.nextExtraLifeScore}, expected ${EXTRA_LIFE_SCORE} (extra-life AC2)`)
     if (a.enemiesQueued !== cfg0.totalEnemies || a.enemiesRemaining !== cfg0.totalEnemies || a.enemiesAlive !== 0)
       fail(`RunState: fresh spawn ledger not seeded from stageConfig(0)`)
     for (const slot of Object.keys(FRESH)) {
@@ -618,6 +621,32 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
       if (a.enemiesQueued !== cfg.totalEnemies || a.enemiesAlive !== 0) fail(`RunState: ledger not reseeded at step ${i}`)
       if (a.score !== 4200) fail(`RunState: score NOT carried across advance() (got ${a.score}) — D10`)
       if (a.lives[1] !== 1) fail(`RunState: lives NOT carried across advance() — D10`)
+      // (extra-life, D2, AC2) — the 1UP threshold is CARRIED untouched across advance() (like score — it survives a
+      // stage advance so the milestone fires once per crossing across the whole run).
+      if (a.nextExtraLifeScore !== EXTRA_LIFE_SCORE)
+        fail(`RunState: nextExtraLifeScore NOT carried across advance() (got ${a.nextExtraLifeScore}) — extra-life AC2`)
+    }
+
+    // ── extraLivesCrossed(prevThreshold, score, step) is a PURE, tested helper (extra-life D1/D3, AC3) ── drive a
+    // case table over the ONE implementation GameScene calls: no crossing → lives 0, threshold unchanged; an exact
+    // hit → lives 1, threshold +step; a SINGLE big jump crossing TWO thresholds at once (the boss/grenade edge) →
+    // lives 2; and EVERY return's nextThreshold is strictly > score (the loop terminator invariant).
+    {
+      const S = EXTRA_LIFE_SCORE
+      const below = extraLivesCrossed(S, S - 1, S) // just under the first milestone — no crossing.
+      if (below.lives !== 0) fail(`extraLivesCrossed: (S, S-1, S) lives = ${below.lives}, expected 0 (no crossing)`)
+      if (below.nextThreshold !== S) fail(`extraLivesCrossed: no-cross must leave nextThreshold = ${S} (got ${below.nextThreshold})`)
+      const one = extraLivesCrossed(S, S, S) // exactly at the first milestone — one 1UP.
+      if (one.lives !== 1) fail(`extraLivesCrossed: (S, S, S) lives = ${one.lives}, expected 1`)
+      if (one.nextThreshold !== 2 * S) fail(`extraLivesCrossed: (S, S, S) nextThreshold = ${one.nextThreshold}, expected ${2 * S}`)
+      const two = extraLivesCrossed(S, 2 * S + 1, S) // a single jump past TWO milestones (the boss/grenade edge — D3).
+      if (two.lives !== 2) fail(`extraLivesCrossed: (S, 2S+1, S) lives = ${two.lives}, expected 2 (two-at-once)`)
+      if (two.nextThreshold !== 3 * S) fail(`extraLivesCrossed: (S, 2S+1, S) nextThreshold = ${two.nextThreshold}, expected ${3 * S}`)
+      // Every return's nextThreshold is strictly > score (the loop self-terminates since step > 0 — AC3).
+      for (const [prev, score] of [[S, S - 1], [S, S], [S, 2 * S + 1], [S, 5 * S]]) {
+        const r = extraLivesCrossed(prev, score, S)
+        if (!(r.nextThreshold > score)) fail(`extraLivesCrossed: nextThreshold (${r.nextThreshold}) not > score (${score}) — AC3`)
+      }
     }
 
     // ── The per-slot lives/tier fold reaches run start (F5 D5b, AC6) ── a seeded { lives:5, tier:2 } map yields

@@ -15,6 +15,7 @@ import {
   SPAWN_STAGGER_BASE,
   CARRIER_RATE,
   STAGE_CLEARED_BANNER_SEC,
+  EXTRA_LIFE_SCORE,
 } from '../config/constants.js'
 import { TILE } from '../config/tiles.js'
 import { Input } from '../core/Input.js'
@@ -27,7 +28,7 @@ import { stageConfig, spawnIntervalScale, bulletSpeedScale } from '../config/sta
 import { generateStage } from '../world/LevelGenerator.js'
 import type { StageDescription, SpawnPoint } from '../world/LevelGenerator.js'
 import { TileMap } from '../world/TileMap.js'
-import { createRunState } from '../core/RunState.js'
+import { createRunState, extraLivesCrossed } from '../core/RunState.js'
 import type { RunState, SlotSeed } from '../core/RunState.js'
 import { ENEMY_SPECS, rosterPick, applyStarTier, bossSpecForStage } from '../config/tanks.js'
 import { applyUpgrades } from '../config/tank-upgrades.js'
@@ -99,6 +100,11 @@ const STAGE_INTRO_SEC = 1.4 // s — how long the STAGE-N intro curtain holds be
 // muzzle spark pops (a hair past the barrel tip). A cosmetic coupled-scene tunable (not a shared pure number),
 // so it lives here, not in constants.ts — half a tile sits the flick at the gun mouth for the ~1-tile tank.
 const MUZZLE_OFFSET = 14 // px — the muzzle-spark standoff ahead of the tank center along facing.
+
+// (extra-life §5.3, D5, AC5) — how long the centered "EXTRA LIFE" 1UP cue holds after a score milestone is
+// crossed. A coupled-scene cue tunable (a single-use duration, not a shared pure number), so it lives here, not
+// in constants.ts (the SAME "local detail" rule as STAGE_INTRO_SEC/MUZZLE_OFFSET). ~2.0 s — long enough to read.
+const ONE_UP_BANNER_SEC = 2.0 // s — how long the centered 1UP "EXTRA LIFE" cue shows after a milestone crossing.
 
 // ── F9 Eagle-destroyed loss sequence (F9 §5.3, D3/D4) ── the run's most dramatic beat gets a HEAVIER blast than a
 // generic kill: 2–3 big blooms STAGGERED at the eagle center + a stronger camera flash/shake, then the unchanged
@@ -186,6 +192,14 @@ export class GameScene extends Phaser.Scene {
   private bossSpawned = false
   private bannerTimer = 0
   private bannerStage = 0
+
+  // ── F-extra-life 1UP cue (extra-life §5.3, D5, AC5) ── `oneUpTimer` is the SECONDS remaining on the brief
+  // centered "EXTRA LIFE" cue armed when a banked kill crosses a score milestone (extraLivesCrossed in
+  // _onEnemyKilled). Decayed on the REAL dt in update() (beside bannerTimer, so it shows through the run-end
+  // freeze beat); _publishHud mirrors the localised cue to the HUD via the `hud.oneUp` registry key while it is
+  // live (its OWN key, so it never clobbers the clear/intro banner). NOT reset by _buildStage (a transient cue —
+  // it decays on its own; the carried `nextExtraLifeScore` on RunState owns the once-per-crossing discipline).
+  private oneUpTimer = 0
 
   // ── STAGE-N intro curtain (D3/D4/D5, AC2/AC3) ── `curtainTimer` is the SECONDS remaining on the brief "STAGE N"
   // intro shown before each stage's enemies stream in. Armed in _buildStage (so EVERY stage — the first + each
@@ -627,6 +641,11 @@ export class GameScene extends Phaser.Scene {
     r.set('hud.banner', this.bannerTimer > 0 ? t('hud.stageCleared', { n: this.bannerStage }) : '')
     r.set('hud.muted', this.sfx.mute) // the mute cue (the HUD shows "MUTED" while true — D8).
 
+    // (extra-life §5.3, D5, AC5) — the centered 1UP "EXTRA LIFE" cue (the localised string while the timer is
+    // live, else ''), via its OWN registry key so it never clobbers the clear/intro banner. SAME registry-mirror
+    // pattern: the HUD renders it centered (GameScene owns WHEN, the HUD owns HOW). Decayed on the REAL dt in update().
+    r.set('hud.oneUp', this.oneUpTimer > 0 ? t('hud.oneUp') : '')
+
     // (D3/D5, AC2) — the STAGE-N intro-curtain label (the localised "STAGE N" while the curtain is up, else '').
     // SAME registry-mirror pattern as the clear banner: the HUD renders it centered (the intro beat). The human
     // stage number is stageIndex + 1. Its own key (NOT hud.banner) so the intro + clear render paths stay separate.
@@ -964,6 +983,30 @@ export class GameScene extends Phaser.Scene {
     this.effects.scorePopup(enemy.collider.x, enemy.collider.y, enemy.spec.scoreValue)
     this.sfx.explosion({ big: true }) // F6 (D6/AC6) — a big burst on an enemy/boss kill (the boss routes here too).
     this.runState.score += enemy.spec.scoreValue // bank the score (D10 — the HUD/Hub features render/spend it).
+
+    // ── F-extra-life 1UP milestone (extra-life §5.3, D1/D3/D4/D6, AC4/AC5) ── score is banked in EXACTLY this
+    // site, so the milestone check lives HERE (one causal path: a kill banks → maybe crosses → maybe 1UPs — D6),
+    // right after the add. The PURE extraLivesCrossed() counts how many EXTRA_LIFE_SCORE thresholds the new score
+    // reached past the carried `nextExtraLifeScore` (the `while` handles a single big jump — e.g. the boss —
+    // crossing TWO at once, D3) and returns the new (un-crossed) threshold. On a crossing: advance the carried
+    // threshold FIRST (so the SAME crossing never re-fires — once per crossing, AC4), grant +1 life PER milestone
+    // to EVERY present slot (the shared-score model — D4; in co-op both P1 and P2 gain it), play the oneUp() chime,
+    // and arm the centered HUD cue (a downed player is NOT auto-respawned — it respawns on its next death if a life
+    // remains, the SAME rule the `tank` pickup follows). lives>0 is the only branch that touches anything.
+    const { lives: extraLives, nextThreshold } = extraLivesCrossed(
+      this.runState.nextExtraLifeScore,
+      this.runState.score,
+      EXTRA_LIFE_SCORE,
+    )
+    if (extraLives > 0) {
+      this.runState.nextExtraLifeScore = nextThreshold // advance the carried threshold so the crossing fires once (AC4).
+      for (let i = 0; i < extraLives; i++) {
+        for (const slot of Object.keys(this.runState.lives)) this.runState.lives[Number(slot)] += 1 // +1 to every present slot (D4).
+      }
+      this.sfx.oneUp() // the three-note rising chime (the SAME chime the `tank` pickup uses — DRY, D5).
+      this.oneUpTimer = ONE_UP_BANNER_SEC // arm the centered "EXTRA LIFE" HUD cue (decayed on the real dt — AC5).
+    }
+
     this.runState.enemiesAlive = Math.max(0, this.runState.enemiesAlive - 1)
     this.runState.enemiesRemaining = this.runState.enemiesQueued + this.runState.enemiesAlive
     // A carrier drops a power-up: fire the hook ONCE with the death center (the F5 pickup seam — AC7). F4 marks
@@ -1104,6 +1147,12 @@ export class GameScene extends Phaser.Scene {
     // freeze AND the run-end freeze beat (the same "FX run on real dt" contract). Clamped at 0. _publishHud reads
     // bannerTimer > 0 to publish the string. Done BEFORE the gameOver early-return so the banner finishes showing.
     this.bannerTimer = Math.max(0, this.bannerTimer - dt)
+
+    // (extra-life §5.3, D5, AC5) — decay the 1UP "EXTRA LIFE" cue on the REAL dt (NOT gdt — the SAME contract as
+    // the clear banner: it shows through a clock freeze AND the run-end freeze beat). Clamped at 0. Done BEFORE
+    // the gameOver early-return so a milestone crossed on the run's last kill still finishes showing. NOT reset by
+    // _buildStage (a transient cue — it decays on its own; the carried threshold owns the once-per-crossing rule).
+    this.oneUpTimer = Math.max(0, this.oneUpTimer - dt)
 
     // (D3, AC2) — decay the STAGE-N intro curtain on the REAL dt (so it ends in real time regardless of the
     // gameplay-dt freeze). Clamped at 0. While curtainTimer > 0 the spawn loop + enemy tick are gated below, and

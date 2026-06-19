@@ -220,3 +220,11 @@ export const TELEGRAPH_FILL = 0xffeaa7 // bright warning amber — the telegraph
 // STAGE_CLEARED_BANNER_SEC (F6 §5.2, D5, AC3) — how long the "STAGE N CLEARED" banner shows after a boss stage
 // is cleared. Decayed on the REAL dt (so it shows through the run-end freeze beat); the HUD renders it while > 0.
 export const STAGE_CLEARED_BANNER_SEC = 2.5 // s — the STAGE-N-CLEARED banner duration (AC3).
+
+// ── F-extra-life 1UP milestones (extra-life §5.2, D1, AC1) — PURE shared milestone DATA (no Phaser) ──
+// EXTRA_LIFE_SCORE (D1, AC1) — the points-per-1UP step (the classic Battle City "extra tank every 20000"). The
+// SINGLE shared owner (DRY): RunState seeds its carried `nextExtraLifeScore` threshold from it, GameScene passes
+// it as the `step` to the pure extraLivesCrossed() helper, and the verifier reads it — one number, no inlined
+// duplicate. A run that earns this many points awards +1 life to every present player slot (the shared-score
+// model — D4). The verifier node-imports this module (a stray Phaser import would throw — re-proving purity).
+export const EXTRA_LIFE_SCORE = 20000 // points per 1UP milestone (every 20000 earned → +1 life to all slots, AC1).

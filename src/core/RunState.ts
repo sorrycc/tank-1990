@@ -18,6 +18,7 @@
 // eagle-loss / all-lives-spent (the locked decision), so advance() is ALWAYS callable.
 
 import { stageConfig } from '../config/stages.js'
+import { EXTRA_LIFE_SCORE } from '../config/constants.js'
 
 // ── RunState (D5) ── the active-run value: run-scoped state + the pure method surface (advance()/isBossStage()).
 // A plain object (a factory, not a class, not a singleton) so it's node-constructible by the verifier + trivially
@@ -31,6 +32,10 @@ export interface RunState {
   lives: Record<number, number> // per-PRESENT-player lives (the F3 lives ledger moved here — solo {1}, co-op {1,2}).
   tier: Record<number, number> // per-player star tier (0 = the base spec; the F5 star power-up bumps it).
   score: number // the shared run score (banked on an enemy kill — D10; the HUD/Hub features render/spend it).
+  // F-extra-life (D2, AC2) — the NEXT score that awards a 1UP. Seeded to EXTRA_LIFE_SCORE in createRunState +
+  // CARRIED untouched by advance()/tickTimers (like score/lives/tier), so a milestone fires ONCE per crossing
+  // and the threshold SURVIVES a stage advance. GameScene bumps it past each crossing via extraLivesCrossed().
+  nextExtraLifeScore: number // the next score threshold that grants +1 life to all present slots (the 1UP milestone).
 
   // ── Per-stage spawn ledger (the clear predicate reads these — AC5) ── reseeded from stageConfig on advance().
   enemiesRemaining: number // enemies LEFT to clear this stage = enemiesQueued + enemiesAlive (the readout source).
@@ -64,6 +69,28 @@ export interface SlotSeed {
 // seed/stage sequence (AC8). >>> 0 keeps every seed an unsigned 32-bit int.
 const nextSeed = (s: number): number => (s * 2654435761 + 0x9e3779b9) >>> 0
 
+// ── extraLivesCrossed(prevThreshold, score, step) → { lives, nextThreshold } (F-extra-life §5.2, D1/D3, AC3) ──
+// PURE module-level helper: given the run's CURRENT 1UP threshold (`prevThreshold`), the new `score`, and the
+// per-milestone `step` (EXTRA_LIFE_SCORE), count how many milestones the score has now reached and return the
+// new (un-crossed) threshold. The `while` loop handles a SINGLE big jump crossing TWO thresholds at once (a
+// boss kill / a grenade clearing many tanks — D3); since `step > 0` the threshold strictly increases, so the
+// loop self-terminates and `nextThreshold > score` always holds on return. GameScene + the verifier both call
+// this ONE implementation (DRY — one owner of "how many 1UPs did this score earn"). No Phaser, no mutation of
+// the args — the verifier drives it over a case table headlessly (AC3).
+export function extraLivesCrossed(
+  prevThreshold: number,
+  score: number,
+  step: number,
+): { lives: number; nextThreshold: number } {
+  let lives = 0
+  let nextThreshold = prevThreshold
+  while (score >= nextThreshold) {
+    lives += 1
+    nextThreshold += step
+  }
+  return { lives, nextThreshold }
+}
+
 // ── createRunState(startSeed, seeds) → RunState (D5/D5b/D11) ── the factory. Seeds lives/tier for the PRESENT
 // players ONLY (the F3 D11 present-players scoping) — but now from a PER-SLOT `{ [slot]: {lives, tier} }` seed
 // map (F5 D5b — the reviewer's blocking issue: the F4 scalar `startLives` shared across slots can't express two
@@ -93,6 +120,9 @@ export function createRunState(startSeed: number, seeds: Record<number, SlotSeed
     lives,
     tier,
     score: 0,
+    // F-extra-life (D2, AC2) — the first 1UP fires at EXTRA_LIFE_SCORE; CARRIED across advance() (untouched, like
+    // score) so the milestone survives a stage advance + fires once per crossing. GameScene bumps it past crossings.
+    nextExtraLifeScore: EXTRA_LIFE_SCORE,
     enemiesRemaining: cfg0.totalEnemies,
     enemiesQueued: cfg0.totalEnemies,
     enemiesAlive: 0,

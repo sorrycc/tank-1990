@@ -56,6 +56,12 @@ export class HUDScene extends Phaser.Scene {
   // `hud.stageIntro` while the curtain is up ('' otherwise), so the HUD just mirrors it (the SAME registry-
   // decoupled pattern as the STAGE-N-CLEARED banner above — GameScene owns WHEN, the HUD owns HOW).
   private introLabel!: Phaser.GameObjects.Text
+  // (extra-life §5.4, D5, AC5): the centered 1UP "EXTRA LIFE" cue — GameScene publishes the localised string to
+  // `hud.oneUp` while its timer is live ('' otherwise), so the HUD just mirrors it (the SAME registry-decoupled
+  // pattern as the clear/intro banner — GameScene owns WHEN, the HUD owns HOW). A distinct GOLD celebratory tint
+  // + its OWN geometry/depth, placed CLEAR of the clear/intro banner (offset below center) so a same-frame
+  // overlap stays legible. Blank otherwise (never a stray render).
+  private oneUpLabel!: Phaser.GameObjects.Text
 
   constructor() {
     super('HUD')
@@ -145,6 +151,21 @@ export class HUDScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(10)
 
+    // (extra-life §5.4, D5, AC5) — the centered 1UP "EXTRA LIFE" cue: a CENTERED timed text overlay over the
+    // playfield, mirrored from `hud.oneUp`. A distinct GOLD celebratory tint (the 1UP juice); placed BELOW the
+    // playfield center (offset by ~1/5 the height) so it sits CLEAR of the clear/intro banner (which centers) and
+    // a same-frame overlap stays legible. Its own depth (above the readouts). Blank until GameScene arms a crossing.
+    this.oneUpLabel = this.add
+      .text(PLAYFIELD_X + PLAYFIELD_W / 2, PLAYFIELD_Y + PLAYFIELD_H * 0.7, '', {
+        fontFamily: UI_FONT,
+        fontSize: '36px',
+        color: '#ffd700', // gold — the celebratory 1UP tint (distinct from the gold clear banner's geometry).
+        fontStyle: 'bold',
+        align: 'center',
+      })
+      .setOrigin(0.5)
+      .setDepth(10)
+
     // Prime the readouts so the panel reads sanely before GameScene's first registry write (defensive).
     this._render()
   }
@@ -216,6 +237,11 @@ export class HUDScene extends Phaser.Scene {
     // `hud.stageIntro` while the curtain is up (and '' otherwise), so the HUD just mirrors it (the SAME
     // registry-decoupled pattern as the clear banner above — GameScene owns WHEN, the HUD owns HOW).
     this.introLabel.setText((r.get('hud.stageIntro') as string | undefined) ?? '')
+
+    // (extra-life §5.4, D5, AC5) — the centered 1UP "EXTRA LIFE" cue: GameScene publishes the localised string to
+    // `hud.oneUp` while its timer is live (and '' otherwise), so the HUD just mirrors it (the SAME registry-
+    // decoupled pattern as the clear/intro banner — its OWN key so the cues never clobber one another).
+    this.oneUpLabel.setText((r.get('hud.oneUp') as string | undefined) ?? '')
 
     // F6 (D8, AC6) — the MUTED cue: shown only while audio is muted (the M toggle flips Phaser's global mute, and
     // GameScene publishes `hud.muted` = sound.mute). KISS — one boolean read, one label.

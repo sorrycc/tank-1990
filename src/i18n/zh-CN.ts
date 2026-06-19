@@ -64,6 +64,7 @@ export const ZH_CN: Dict = {
     'hud.stageCleared': '关卡 {n} 通关', // F6 (D5, AC3) — Boss 关通关横幅（定时覆盖层）。
     'hud.stageIntro': '关卡 {n}', // (D3/D5, AC2) — 每关开始前居中显示的 STAGE-N 开场幕布。
     'hud.muted': '已静音', // F6 (D8, AC6) — 静音时的提示（M 键切换）。
+    'hud.oneUp': '额外生命', // (extra-life, D5, AC5/AC6) — 跨越分数里程碑时居中显示的 1UP 提示。
 
     // ── 游戏结束（结算快照 — AC5）──
     'over.heading': '游戏结束',

@@ -64,6 +64,7 @@ export const EN: Dict = {
     'hud.stageCleared': 'STAGE {n} CLEARED', // F6 (D5, AC3) — the boss-stage clear banner (a timed overlay).
     'hud.stageIntro': 'STAGE {n}', // (D3/D5, AC2) — the centered STAGE-N intro curtain shown before each stage.
     'hud.muted': 'MUTED', // F6 (D8, AC6) — the mute cue shown while audio is muted (M toggle).
+    'hud.oneUp': 'EXTRA LIFE', // (extra-life, D5, AC5/AC6) — the centered 1UP cue shown on a score-milestone crossing.
 
     // ── GameOver (the run-summary snapshot — AC5) ──
     'over.heading': 'GAME OVER',
