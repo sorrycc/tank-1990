@@ -15,6 +15,7 @@ import {
   SPAWN_BLINK_TIME,
   SPAWN_STAGGER_BASE,
   CARRIER_RATE,
+  AI_EAGLE_RUSH_RATE,
   STAGE_CLEARED_BANNER_SEC,
   EXTRA_LIFE_SCORE,
   STAGE_BONUS_SEC,
@@ -984,6 +985,11 @@ export class GameScene extends Phaser.Scene {
     ;(enemy.collider as TankCollider).tankRef = enemy
     this._collideTankWithTerrain(enemy) // enemies stop at terrain too (F2 colliders — DRY).
     enemy.carrier = this.stageRng() < CARRIER_RATE // red-flash power-up carrier (AC7).
+    // F-smart-ai (smart-ai §2, D2) — the EAGLE-RUSH cohort coin flip: a fraction (AI_EAGLE_RUSH_RATE) of enemies
+    // hard-commit to rushing the eagle base (real base pressure). Rides the EXISTING stageRng stream the spawn loop
+    // already advances (the SAME `< RATE` pattern as carrier one line above — DRY), so cohort membership is a
+    // stage-seed fact while the in-tick wander/seek/aim rolls stay on runtime Math.random() (determinism pin intact).
+    enemy.aiRushEagle = this.stageRng() < AI_EAGLE_RUSH_RATE
     enemy.spawnIframe = SPAWN_BLINK_TIME // blink before active/lethal (AC2 — inert during the blink).
     enemy.onDeath = () => this._onEnemyKilled(enemy)
     // The drop-flag hook fires ONCE at death for a carrier (the F5 pickup seam — F4 marks the drop point only).

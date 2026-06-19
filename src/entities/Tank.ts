@@ -10,6 +10,8 @@ import {
   AI_REDECIDE_MIN,
   AI_REDECIDE_MAX,
   AI_SEEK_BIAS,
+  AI_SEEK_BIAS_RUSH,
+  AI_AIM_TOLERANCE,
   TELEGRAPH_FILL,
   ICE_FRICTION,
   ICE_GLIDE_CUTOFF,
@@ -146,6 +148,18 @@ export class Tank {
   private aiRedecideTimer: number // s — decays by dt; at ≤ 0 (or when blocked) the AI re-decides a cardinal (D4).
   aiIntent: PlayerIntent // the PlayerIntent-shaped snapshot updateAI emits; the scene drives update(gdt, this.aiIntent).
 
+  // ── F-smart-ai per-tank AI profile (smart-ai §2, D1/D2/D3) ── additive over the F4 AI spine. The profile is
+  // resolved ONCE in the ctor (NOT per frame — KISS/DRY) so the per-tick re-decide stays branch-light and there is
+  // ONE place type flavor is decided. `aiRushEagle` (the eagle-rush cohort flag) defaults false in the ctor; the
+  // SCENE flips it on a spawn-time coin flip (`stageRng() < AI_EAGLE_RUSH_RATE`) — the same pattern as `carrier`
+  // — so a player/boss leaves it false (byte-unchanged). A rusher targets the eagle UNCONDITIONALLY + seeks it at
+  // AI_SEEK_BIAS_RUSH (real base pressure — D3). `aiSeekBias`/`aiAimTolerance` are the EFFECTIVE per-type knobs
+  // (the light type flavor — D1/D5): derived in the ctor off the AI_SEEK_BIAS/AI_AIM_TOLERANCE anchors via a small
+  // switch on spec.behavior (fast wanders more, armor pushes straighter, power holds lanes + shoots aligned).
+  aiRushEagle: boolean // the cohort flag (default false; the scene flips it per spawn). True → always target the eagle.
+  private aiSeekBias: number // 0..1 — this tank's effective seek probability (the per-type flavor; AI_SEEK_BIAS_RUSH overrides for a rusher).
+  private aiAimTolerance: number // px — this tank's cross-axis "aligned enough to fire" band (the per-type flavor).
+
   // ── F6 boss telegraph (F6 §5.3, D2, AC2) ── additive over the F4 AI spine. `telegraphSec` (copied from the
   // spec in the ctor; 0 = no telegraph, the IDENTITY for every non-boss spec) is the pre-fire wind-up window.
   // `telegraphTimer`/`telegraphing` are the runtime wind-up state: when a boss's fire beat elapses it ARMS the
@@ -195,6 +209,40 @@ export class Tank {
     this.onDropFlag = null
     this.aiRedecideTimer = 0 // re-decide immediately on the first AI tick.
     this.aiIntent = { up: false, down: false, left: false, right: false, dirX: 0, dirY: 0, firePressed: false }
+
+    // ── F-smart-ai per-tank AI profile (smart-ai §2, D1/D5) ── resolve the type flavor ONCE here (KISS/DRY).
+    // `aiRushEagle` defaults false (the scene flips it on a spawn coin flip — D2; the player/boss leave it false).
+    // The per-type seek bias / aim tolerance derive off the AI_SEEK_BIAS / AI_AIM_TOLERANCE anchors via this small
+    // switch on the behaviour tag — the SINGLE place type flavor is decided, so the per-tick re-decide stays
+    // branch-light (D1). NO new spec field (the flavor is AI feel keyed off the existing tag, not a swept tunable —
+    // YAGNI/SOLID). The multipliers are inline + intent-commented (the anchor stays the single owner — DRY/D5).
+    this.aiRushEagle = false
+    switch (spec.behavior) {
+      case 'fast':
+        // FAST flanks/wanders MORE — a lower seek bias (×0.8) so the scout darts around the lanes instead of
+        // committing, and a TIGHTER aim band (×0.8) so its erratic darting doesn't spray (it shoots only when truly lined up).
+        this.aiSeekBias = AI_SEEK_BIAS * 0.8
+        this.aiAimTolerance = AI_AIM_TOLERANCE * 0.8
+        break
+      case 'power':
+        // POWER holds lanes + shoots aligned — the baseline seek bias with a WIDER aim band (×1.2) so the gunner
+        // fires its fast bolt the moment a target enters its lane (it punishes alignment harder than the rest).
+        this.aiSeekBias = AI_SEEK_BIAS
+        this.aiAimTolerance = AI_AIM_TOLERANCE * 1.2
+        break
+      case 'armor':
+        // ARMOR pushes STRAIGHTER toward the base — a higher seek bias (×1.15) so the heavy grinds toward the fort,
+        // with the baseline aim band (it is a wall, not a sharpshooter).
+        this.aiSeekBias = AI_SEEK_BIAS * 1.15
+        this.aiAimTolerance = AI_AIM_TOLERANCE
+        break
+      default:
+        // basic / boss / player — the baseline anchors (no flavor tweak). The player/boss never run updateAI's seek
+        // roll meaningfully (the player is Input-driven; the boss commits via its own telegraph AI), so the anchors are inert for them.
+        this.aiSeekBias = AI_SEEK_BIAS
+        this.aiAimTolerance = AI_AIM_TOLERANCE
+        break
+    }
 
     // F6 boss telegraph (D2) — copy the spec's pre-fire wind-up window (default 0 = no telegraph, the identity
     // for every non-boss spec → the gated branch in updateAI is skipped). The runtime wind-up state starts clear.
@@ -530,25 +578,32 @@ export class Tank {
       : this.body.blocked.up || this.body.blocked.down
 
     if (this.aiRedecideTimer <= 0 || blocked) {
-      // Choose the target: the eagle base, OR the nearest live player if it is Manhattan-closer (AC3). A live
-      // player is one present in ctx.players (the scene passes only present + alive players).
+      // Choose the target. F-smart-ai (D3): an EAGLE-RUSH cohort member (aiRushEagle) HARD-COMMITS to the eagle —
+      // it targets the fort UNCONDITIONALLY (skip the closer-player retarget) so there is real base pressure. A
+      // non-rush enemy keeps the EXISTING pick BYTE-UNCHANGED: the eagle base, OR the nearest live player if it is
+      // Manhattan-closer (AC3 — a live player is one present in ctx.players, only present + alive players passed).
       const cx = this.body.center.x
       const cy = this.body.center.y
       let target = ctx.eagle
-      let best = Math.abs(ctx.eagle.x - cx) + Math.abs(ctx.eagle.y - cy)
-      for (const p of ctx.players) {
-        const d = Math.abs(p.x - cx) + Math.abs(p.y - cy)
-        if (d < best) {
-          best = d
-          target = p
+      if (!this.aiRushEagle) {
+        let best = Math.abs(ctx.eagle.x - cx) + Math.abs(ctx.eagle.y - cy)
+        for (const p of ctx.players) {
+          const d = Math.abs(p.x - cx) + Math.abs(p.y - cy)
+          if (d < best) {
+            best = d
+            target = p
+          }
         }
       }
 
-      // Seek-bias (AI_SEEK_BIAS) the greedy cardinal toward the target, else wander a random cardinal. The
-      // greedy cardinal picks the axis with the LARGER Manhattan gap (KISS — no pathfinding, D4).
+      // Seek-bias the greedy cardinal toward the target, else wander a random cardinal. F-smart-ai (D1/D3): a rusher
+      // uses the raised AI_SEEK_BIAS_RUSH (it commits to the fort + wanders far less); every other enemy uses its
+      // per-type aiSeekBias (the type flavor — fast wanders more, armor pushes straighter). The greedy cardinal
+      // picks the axis with the LARGER Manhattan gap (KISS — no pathfinding, D4).
+      const seekBias = this.aiRushEagle ? AI_SEEK_BIAS_RUSH : this.aiSeekBias
       let dirX = 0
       let dirY = 0
-      if (Math.random() < AI_SEEK_BIAS) {
+      if (Math.random() < seekBias) {
         const gx = target.x - cx
         const gy = target.y - cy
         if (Math.abs(gx) >= Math.abs(gy)) dirX = gx >= 0 ? 1 : -1
@@ -585,22 +640,61 @@ export class Tank {
     //     frame + clear telegraphing (the cooldown then re-arms on the successful tryFire in the scene's tick).
     // The timer decays on the GAMEPLAY dt the scene passes (so a clock freeze pauses the wind-up too — the SAME
     // "freeze pauses every gameplay timer" contract every enemy obeys; §5.4 issue (a)).
+    //
+    // F-smart-ai (D4) — AIMED FIRING: every fire decision is now ANDed with `_aimedAtTarget(ctx)`, so an enemy
+    // only commits a shot when SOME target (the eagle or a live player) is roughly axis-aligned in FRONT of its
+    // barrel (within aiAimTolerance on the cross axis). This wraps BOTH the immediate path (the four archetypes)
+    // AND the boss telegraph ARM (a boss only winds up a shot when it has a line — its timing is otherwise
+    // byte-unchanged), so shots read as intentional rather than sprayed on the bare cooldown beat (one helper,
+    // both paths — DRY). Compute the aim gate once here.
+    const aimed = this._aimedAtTarget(ctx)
     if (this.telegraphSec > 0) {
       if (this.telegraphing) {
         this.telegraphTimer = Math.max(0, this.telegraphTimer - dt)
         this.aiIntent.firePressed = this.telegraphTimer <= 0
         if (this.telegraphTimer <= 0) this.telegraphing = false // fire this frame; the wind-up is done.
-      } else if (this.cooldownTimer <= 0) {
-        this.telegraphing = true // ARM the wind-up (the warning blink begins); hold fire until it elapses.
+      } else if (this.cooldownTimer <= 0 && aimed) {
+        this.telegraphing = true // ARM the wind-up (the warning blink begins); hold fire until it elapses (D4: only with a line).
         this.telegraphTimer = this.telegraphSec
         this.aiIntent.firePressed = false
       } else {
-        this.aiIntent.firePressed = false // still on cooldown — nothing to telegraph yet.
+        this.aiIntent.firePressed = false // still on cooldown, or no line on a target yet — nothing to telegraph.
       }
     } else {
-      // The existing immediate-fire path (telegraphSec === 0) — byte-unchanged for the four archetypes + player.
-      this.aiIntent.firePressed = this.cooldownTimer <= 0
+      // The immediate-fire path (telegraphSec === 0). F-smart-ai (D4): gated on the aim test, so the four archetypes
+      // fire only when lined up on a target down their lane (the player path never reaches here — it is Input-driven).
+      this.aiIntent.firePressed = this.cooldownTimer <= 0 && aimed
     }
+  }
+
+  // ── _aimedAtTarget(ctx) (F-smart-ai §2, D4) ── the aimed-firing gate: true iff SOME target (the eagle, or any
+  // live player passed in ctx) lies within `aiAimTolerance` px on the CROSS axis of this tank's current facing AND
+  // is in FRONT of the barrel (the correct side along the facing). So a shot only commits when the tank is roughly
+  // lined up down a lane at a real target — no more firing at walls/empty lanes on the bare cooldown beat (D4).
+  // KISS: a tiny per-target cross/forward test, no raycast/no terrain check (the bullet's own collision resolves
+  // any wall in the way — the gate only asks "am I pointed at something?"). Reuses ctx.eagle/ctx.players already
+  // passed to updateAI — NO new ctx field. The per-type aiAimTolerance (the type flavor — D5) sets the band width.
+  private _aimedAtTarget(ctx: { eagle: { x: number; y: number }; players: { x: number; y: number }[] }): boolean {
+    const cx = this.body.center.x
+    const cy = this.body.center.y
+    const tol = this.aiAimTolerance
+    // A closure testing one target point against the current facing: the CROSS-axis offset must be within tol AND
+    // the target must sit on the correct side along the facing (in front of the barrel, not behind the tank).
+    const aimedAt = (tx: number, ty: number): boolean => {
+      switch (this.facing) {
+        case 'up':
+          return Math.abs(tx - cx) <= tol && ty <= cy // same column (±tol) AND above (in front of an up-facing barrel).
+        case 'down':
+          return Math.abs(tx - cx) <= tol && ty >= cy // same column (±tol) AND below.
+        case 'left':
+          return Math.abs(ty - cy) <= tol && tx <= cx // same row (±tol) AND to the left.
+        case 'right':
+          return Math.abs(ty - cy) <= tol && tx >= cx // same row (±tol) AND to the right.
+      }
+    }
+    if (aimedAt(ctx.eagle.x, ctx.eagle.y)) return true
+    for (const p of ctx.players) if (aimedAt(p.x, p.y)) return true
+    return false
   }
 
   // ── isHittable() (F3 §5.2, D7, AC5/AC8 — the victim filter) ── a bullet only damages a tank that is ALIVE

@@ -186,6 +186,34 @@ export const AI_REDECIDE_MAX = 1.6 // s — longest wander commitment.
 // harder. 0.6 keeps them mostly purposeful but still wandering (the classic Battle City feel).
 export const AI_SEEK_BIAS = 0.6 // 0..1 — chance a re-decide seeks the target instead of wandering.
 
+// ── F-smart-ai (smart-ai §2/§5, D1/D2/D5) — deeper enemy AI feel scalars, beside the AI_SEEK_BIAS/AI_REDECIDE_*
+// anchors above. PURE DATA (no Phaser) read ONLY by the coupled enemy AI (entities/Tank.updateAI + the per-tank
+// AI-profile derived in its ctor) + the spawn-time cohort flip (scenes/GameScene._spawnStep). Owned ONCE here
+// (DRY) so any later tuning is a single edit; the verifier ignores them (plain feel scalars, like the AI_*/LANE_*
+// numbers — no invariant references them). They keep AI randomness OFF the seeded determinism pin: the in-tick
+// wander/seek/aim rolls stay runtime Math.random(); the ONLY seeded draw is the cohort coin flip, which rides the
+// EXISTING stageRng stream the spawn loop already advances (so the procedural-stage gate is byte-unaffected — §5).
+
+// AI_EAGLE_RUSH_RATE (D2) — fraction [0,1] of spawned enemies flagged into the EAGLE-RUSH cohort: a rusher
+// HARD-COMMITS to the eagle base (it targets the eagle regardless of a closer player + seeks it at the raised
+// AI_SEEK_BIAS_RUSH below), so there is real, visible base pressure instead of every enemy treating the eagle and
+// the players symmetrically. The scene flips it per spawn with `enemy.aiRushEagle = stageRng() < AI_EAGLE_RUSH_RATE`
+// — exactly the `enemy.carrier = stageRng() < CARRIER_RATE` pattern two lines away (DRY). The boss never sets it.
+export const AI_EAGLE_RUSH_RATE = 0.35 // 0..1 — share of enemies that hard-commit to rushing the eagle base.
+
+// AI_SEEK_BIAS_RUSH (D1/D3) — the RAISED seek probability [0,1] a rusher uses in place of its per-type aiSeekBias:
+// it both COMMITS to the eagle (Decision 3) and wanders far less (this high bias), so it pushes the fort hard
+// without any pathfinding (the carved corridor to the fort already guarantees reachability). Set well above
+// AI_SEEK_BIAS so a rusher reads as purposeful pressure, but < 1 so it still re-decides at obstacles (no grinding).
+export const AI_SEEK_BIAS_RUSH = 0.9 // 0..1 — the eagle-rush cohort's high seek bias (purposeful base pressure).
+
+// AI_AIM_TOLERANCE (D4) — the px half-width of the "aligned enough to fire" band. An enemy only sets firePressed
+// when SOME target (the eagle or a live player) lies within this many px of its facing axis AND in front of its
+// barrel — so shots read as INTENTIONAL (aimed down a lane at a real target) rather than sprayed on the bare
+// cooldown beat. ~half a tile keeps the gate forgiving enough that a roughly-lined-up enemy still fires, while a
+// tank pointed at a wall/empty lane holds fire. The per-type aiAimTolerance derives off this anchor in the ctor.
+export const AI_AIM_TOLERANCE = TILE_SIZE * 0.6 // px — the cross-axis alignment band a target must sit within to fire.
+
 // CARRIER_RATE (F4 §5.2, AC7) — fraction [0,1] of spawned enemies flagged red-flash power-up CARRIERS. On a
 // carrier's death its onDropFlag(x,y) fires once (the F5 pickup seam); F4 only flags + marks the drop point.
 export const CARRIER_RATE = 0.25 // 0..1 — share of enemies that flash red + drop a power-up on death (F5 spawns it).
