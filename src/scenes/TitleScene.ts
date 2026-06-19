@@ -14,7 +14,7 @@ import type { Difficulty } from '../config/stages.js'
 // window.innerWidth — so it stays centered under Scale.FIT regardless of viewport size. F5 (D12/AC9):
 // the F0 inline literals were SWAPPED to t('...') against the same UI_FONT. F6 (D9/AC7): a both-players
 // CONTROLS reference (the reference's CONTROLS_ROWS pattern — two fixed-x columns per row) so a first-time
-// player discovers every binding (P1 = WASD + J · P2 = arrows + Numpad0 · SPACE/ENTER start · M mute), and a
+// player discovers every binding (P1 = WASD + J · P2 = arrows + Numpad0/Shift · SPACE/ENTER start · M mute), and a
 // menu Sound for the start blip (a no-op under NoAudio — AC6). The live locale is set ONCE at boot in main.ts.
 export class TitleScene extends Phaser.Scene {
   constructor() {

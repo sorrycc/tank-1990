@@ -5,7 +5,7 @@
 //
 // The verifier asserts (AC9): every key in ZH_CN.ui exists in EN.ui (no orphan chrome key without an EN
 // fallback source); every `upgrade` id here exists in TANK_UPGRADES_BY_ID (no orphan content override); each
-// `upgrade` Entry's name/desc (when present) is a string. Keyboard tokens (WASD, SPACE, ENTER, J, Numpad0)
+// `upgrade` Entry's name/desc (when present) is a string. Keyboard tokens (WASD, SPACE, ENTER, J, Numpad0, Shift)
 // stay literal — they name physical keys, not translatable words.
 
 import type { Dict } from './index.js'
@@ -43,7 +43,7 @@ export const ZH_CN: Dict = {
     'hi.row': '{rank}. {score} · 关卡 {stage}',
     'hi.empty': '暂无战绩 — 来争第一吧！',
 
-    // ── 操作说明（F6 §5.2, D9, AC7 — 标题界面的双人按键参考）── 动作名翻译，按键 TOKEN（WASD/J/Numpad0/SPACE/
+    // ── 操作说明（F6 §5.2, D9, AC7 — 标题界面的双人按键参考）── 动作名翻译，按键 TOKEN（WASD/J/Numpad0/Shift/SPACE/
     // ENTER/M）保持原文（它们指代物理按键，按键绑定由 core/Input.ts 拥有，这里只是可读的镜像）。
     'controls.title': '操作说明',
     'controls.p1Move': 'P1 移动',
@@ -53,7 +53,7 @@ export const ZH_CN: Dict = {
     'controls.p2Move': 'P2 移动',
     'controls.p2Move.keys': '方向键',
     'controls.p2Fire': 'P2 开火',
-    'controls.p2Fire.keys': 'Numpad0',
+    'controls.p2Fire.keys': 'Shift / Numpad0',
     'controls.start': '开始',
     'controls.start.keys': 'SPACE / ENTER',
     'controls.mute': '静音',
@@ -69,7 +69,7 @@ export const ZH_CN: Dict = {
     'hub.cost': '{cost}',
     'hub.start': '开始游戏',
     'hub.best': '最高分数 {score} · 最高关卡 {stage}', // F7 (D6/AC6) — 货币标题旁的最佳成绩行。
-    'hub.footerCoop': 'P1：WASD 移动 · J 购买  |  P2：方向键移动 · 小键盘0 购买  |  SPACE/ENTER：开始游戏',
+    'hub.footerCoop': 'P1：WASD 移动 · J 购买  |  P2：方向键移动 · Shift / 小键盘0 购买  |  SPACE/ENTER：开始游戏',
     'hub.footerSolo': 'WASD / 方向键：选择 · J / SPACE：购买  |  SPACE / ENTER：开始游戏',
 
     // ── HUD（并行覆盖层 — D8）──
