@@ -35,8 +35,8 @@ import type Phaser from 'phaser'
 const MASTER_GAIN = 0.32 // base master level (× scene.sound.volume per sound).
 const THROTTLE_GAP = 0.03 // s — per-key min interval on the WebAudio clock (the pile-up guard).
 
-// ── Music tunables ([music] design D4/D5) ── synthesized background MUSIC (a stage-start jingle, a game-over
-// sting) — a *sustained* sound, but still ZERO assets: each note is one `_tone` square wave on
+// ── Music tunables ([music] design D4/D5) ── synthesized background MUSIC (a game-over sting) — a
+// *sustained* sound, but still ZERO assets: each note is one `_tone` square wave on
 // the WebAudio clock, exactly like the SFX. These are AUDIO-ONLY knobs (a synth tempo/level have no meaning outside
 // this file), so per D4 they live HERE beside MASTER_GAIN/THROTTLE_GAP — NOT in config/constants.ts (which stays the
 // Phaser-free DATA shared across modules; these are not shared). Kept QUIET (well under the SFX peak — D5) so shots/
@@ -54,19 +54,10 @@ interface Note {
 }
 type Melody = Note[]
 
-// ── Module-local melody tables (programmer-art chiptune, [music] §4) ── square-wave note arrays, built once. The
-// JINGLE/STING are one-shots. Frequencies are the standard equal-tempered pitches (A4=440) — written as literals
-// (an audio-local table, not a shared constant — D4). Tasteful + short (D5): ~4 / ~3 notes. (The Title screen's
-// start sound is the real Battle City jingle — a bundled MP3 played by TitleScene, not synthesized here.)
-
-// Stage jingle — a short rising 4-note "here we go" flourish layered over the curtain (a richer cue than the tiny
-// stageStart() two-note SFX it plays beside — D7). G4 → C5 → E5 → G5, an ascending C-major arpeggio.
-const STAGE_JINGLE: Melody = [
-  { freq: 392, beats: 0.5 }, // G4
-  { freq: 523, beats: 0.5 }, // C5
-  { freq: 659, beats: 0.5 }, // E5
-  { freq: 784, beats: 0.75 }, // G5 (held a touch longer to land the flourish).
-]
+// ── Module-local melody table (programmer-art chiptune, [music] §4) ── a square-wave note array, built once. The
+// STING is a one-shot. Frequencies are the standard equal-tempered pitches (A4=440) — written as literals (an
+// audio-local table, not a shared constant — D4). Tasteful + short (D5): ~3 notes. (The real Battle City "Game
+// Start" jingle is a bundled MP3 played by GameScene at each stage start, not synthesized here.)
 
 // Game-over sting — three descending notes under the existing gameOver() knell (a melodic tail, D5). E5 → C5 → G4.
 const GAME_OVER_STING: Melody = [
@@ -274,21 +265,10 @@ export class Sound {
     this._tone({ freq: 660, type: 'square', dur: 0.08, gain: 0.24, sweepTo: 990 })
   }
 
-  // stageStart — a short two-note "get-ready / go" fanfare for the STAGE-N intro curtain (the scene plays it as
-  // each stage's curtain is armed — the run's "start the game" beat). Deliberately DISTINCT from stageCleared's
-  // three-note A-major win arpeggio (a rising G4 → C5+lift, not A4/E5/A5). Throttled like the other jingles so a
-  // same-frame double-build can't stack it; its own key, so the boss-stage clear flourish (stageCleared) tailing
-  // into the next stage's stageStart never mutually throttles (two distinct timbres overlapping briefly — fine).
-  stageStart(): void {
-    if (!this._gateOk('stageStart', 0.2)) return
-    this._tone({ freq: 392, type: 'square', dur: 0.14, gain: 0.28 }) // G4
-    this._tone({ freq: 523, type: 'square', dur: 0.2, gain: 0.28, delay: 0.13, sweepTo: 587 }) // C5 → D5 lift.
-  }
-
   // respawn — a soft ascending "materialize" blip when a player respawns after a death (the audio twin of the
   // spawn-shield visual). A TRIANGLE sweep (softer + a different waveform/range than the square powerUp), so a
   // respawn never sounds like a pickup. Wired at the death→respawn path only (the initial per-stage spawn beat is
-  // already covered by stageStart — D5).
+  // already covered by the stage-start jingle — D5).
   respawn(): void {
     if (!this._gateOk('respawn', 0.1)) return
     this._tone({ freq: 300, type: 'triangle', dur: 0.18, gain: 0.2, sweepTo: 760 })
@@ -317,9 +297,9 @@ export class Sound {
     this._noise({ dur: 0.04, gain: 0.1, type: 'highpass', freq: 3000 })
   }
 
-  // ── Music ([music] §4) ── synthesized one-shot stage/game-over melodies, built ONLY from the `_tone` square wave
-  // (zero assets, no `load.*`). The SAME sequencer (`_playSequence`) drives both (DRY — D2). (The Title screen's
-  // start sound is the real Battle City jingle — a bundled MP3 played by TitleScene, not synthesized here.)
+  // ── Music ([music] §4) ── the synthesized one-shot game-over melody, built ONLY from the `_tone` square wave
+  // (zero assets, no `load.*`) and driven by the `_playSequence` sequencer (D2). (The real Battle City "Game Start"
+  // jingle is a bundled MP3 played by GameScene at each stage start, not synthesized here.)
 
   // ── _playSequence(mel, gain) ── schedule one `_tone({type:'square'})` per non-rest note on the WebAudio clock,
   // walking a running `delay` accumulator (beats × MUSIC_BEAT) so the notes play back-to-back; returns the melody's
@@ -339,14 +319,6 @@ export class Sound {
       delay += dur
     }
     return delay // total melody length (s).
-  }
-
-  // ── stageJingle() ── a one-shot rising flourish over the stage curtain (D7). Throttled on its OWN key (a same-frame
-  // double-build can't stack it) — distinct from the tiny stageStart() SFX it plays beside, so neither throttles the
-  // other. Does NOT re-arm (one-shot — the sequencer just plays it through).
-  stageJingle(): void {
-    if (!this._gateOk('stageJingle', 0.3)) return
-    this._playSequence(STAGE_JINGLE, MUSIC_GAIN)
   }
 
   // ── gameOverSting() ── a one-shot descending melodic tail layered over the existing gameOver() knell (D5). Its own

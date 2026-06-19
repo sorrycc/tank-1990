@@ -496,8 +496,14 @@ export class GameScene extends Phaser.Scene {
     // SHARED builder, DRY): update() gates the spawn loop + enemy tick while curtainTimer > 0, and _publishHud
     // mirrors the centered "STAGE N" label to the HUD. The world is built + visible underneath (the player can move).
     this.curtainTimer = STAGE_INTRO_SEC
-    this.sfx.stageStart() // the "start the game" fanfare — plays on the first build AND every advance (the scene owns audio, D6).
-    this.sfx.stageJingle() // [music] (D7) — the richer melodic stage flourish layered over the curtain, beside the SFX.
+    // [stage-start-jingle] — play the real Battle City "Game Start" jingle ONCE at every stage start (the
+    // first build AND every advance, since both go through this one SHARED builder — DRY). It's the bundled
+    // MP3 asset (loaded once in BootScene), so it plays through Phaser's GAME-level sound manager
+    // (this.sound), NOT the synth `sfx` façade — exactly like the Title gesture used to. Fire-and-forget:
+    // Phaser auto-destroys the one-shot on complete, and it honors global mute (M) + the Settings volume.
+    // It REPLACES the old synth stageStart()/stageJingle() cues (the real fanfare stands alone). The clip
+    // (~5s) rides past the 1.4s curtain into the opening frames — by design, the run's "start" beat.
+    this.sound.play('startJingle')
   }
 
   // ── _buildPlayer(slot,x,y) (F4 §5.4, D10/D11) ── build a present player FRESH for this stage. Construct it

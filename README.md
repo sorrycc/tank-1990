@@ -8,8 +8,8 @@ and your last run's seed persist too, so you can dial in a run or replay an exac
 
 Built with **Phaser 3 + Vite + TypeScript**, **programmer-art primitives** (colored rectangles /
 Phaser `Graphics` + generated textures, synthesized WebAudio SFX) — the only bundled asset is the
-Title screen's real Battle City **"Game Start" jingle** (`public/audio/start.mp3`). Runs fully
-offline and from `file://`.
+real Battle City **"Game Start" jingle** (`public/audio/start.mp3`), played at the start of every
+stage. Runs fully offline and from `file://`.
 
 ## The game
 
@@ -43,10 +43,9 @@ offline and from `file://`.
   **start stage**, plus a **seed challenge** — every run is deterministic from a 32-bit seed shown as
   8 hex on the Title; copy it or type one in to replay an identical run.
 - **Settings + accessibility.** A dedicated **Settings** screen (master **volume**, default
-  **difficulty**, **language** EN / 简体中文 — persisted), audio (synthesized WebAudio SFX, a
-  stage-start jingle + a game-over sting, and the real Battle City **"Game Start" jingle** on the
-  Title's start gesture), and on-screen **touch controls** (a D-pad + fire button) that appear only
-  on touch devices.
+  **difficulty**, **language** EN / 简体中文 — persisted), audio (synthesized WebAudio SFX + a
+  game-over sting, and the real Battle City **"Game Start" jingle** at the start of every stage),
+  and on-screen **touch controls** (a D-pad + fire button) that appear only on touch devices.
 - **Construction mode.** A built-in **level editor** (open with `T` from the Title): paint the 17×17
   grid with all six terrain types + the base, save it to local storage, and **play** your hand-authored
   stage through the same combat spine.
