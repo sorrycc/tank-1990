@@ -145,6 +145,11 @@ export class Tank {
   // seek state); `updateAI` rebuilds the intent each tick + the scene feeds it through the SAME update() spine.
   carrier: boolean
   onDropFlag: ((x: number, y: number) => void) | null
+  // ── boat-drill (DRILL) ── the LIVE drill flag the SCENE sets each frame on a PLAYER tank from
+  // RunState.drillTimer > 0; BulletPool.acquire snapshots it onto the fired bullet's `bx.drill` (the same
+  // stance as the `ownerSide`/`canBreakSteel` snapshot — the bullet carries a plain flag, never reaches back
+  // into the Tank). Defaults false so an enemy/boss tank never drills (the scene only sets it on players).
+  drill: boolean
   private aiRedecideTimer: number // s — decays by dt; at ≤ 0 (or when blocked) the AI re-decides a cardinal (D4).
   aiIntent: PlayerIntent // the PlayerIntent-shaped snapshot updateAI emits; the scene drives update(gdt, this.aiIntent).
 
@@ -207,6 +212,7 @@ export class Tank {
     // F4 enemy-AI + carrier defaults — a player never carries / never AI-decides (the scene drives it).
     this.carrier = false
     this.onDropFlag = null
+    this.drill = false // boat-drill — no drill until the scene sets it from an active drill window (enemies stay false).
     this.aiRedecideTimer = 0 // re-decide immediately on the first AI tick.
     this.aiIntent = { up: false, down: false, left: false, right: false, dirX: 0, dirY: 0, firePressed: false }
 

@@ -108,5 +108,7 @@ export const EN: Dict = {
     'power.star': 'STAR',
     'power.grenade': 'GRENADE',
     'power.tank': 'EXTRA LIFE',
+    'power.boat': 'BOAT', // boat-drill — amphibious (drive over water).
+    'power.drill': 'DRILL', // boat-drill — the bullet pierces one brick layer.
   },
 }

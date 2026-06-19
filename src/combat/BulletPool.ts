@@ -55,6 +55,12 @@ export interface BulletContext {
   // reaches back into the firing Tank (which may already be dead by the time the deferred destroy runs).
   // false for every enemy/boss/sub-tier-player shot; only a tier-3 player folds the flag → true.
   canBreakSteel: boolean
+  // boat-drill — DRILL pierce: a SNAPSHOT of the firer's live `owner.drill` flag taken at fire time (exactly like
+  // `canBreakSteel`), so the hit site reads a plain bullet flag — it never re-derives the drill timer nor reaches
+  // back into the firing Tank. true only while a player's drill window is active (the scene sets owner.drill each
+  // frame from RunState.drillTimer > 0); on a BRICK hit a drill bullet chips the brick + CONTINUES (the scene
+  // clears this flag so the SECOND brick stops it — it pierces exactly ONE layer). false for every enemy shot.
+  drill: boolean
 }
 
 // A pooled rectangle member carries its context on a `bx` property. EXPORTED so the F3 scene's overlap
@@ -84,7 +90,7 @@ export class BulletPool {
       const body = rect.body as Phaser.Physics.Arcade.Body
       body.setAllowGravity(false)
       // The per-bullet context, mutated on acquire (never re-allocated → no per-shot GC, AC9).
-      rect.bx = { active: false, ownerSide: 'player', owner: null, vx: 0, vy: 0, canBreakSteel: false }
+      rect.bx = { active: false, ownerSide: 'player', owner: null, vx: 0, vy: 0, canBreakSteel: false, drill: false }
       this._disable(rect)
       this._items.push(rect)
     }
@@ -150,6 +156,10 @@ export class BulletPool {
     // Steel-break: snapshot the firer's reserved spec flag (the single source — config/tanks.ts). Only a
     // max-star (tier 3) player folds `canBreakSteel: true`; every enemy/boss/sub-tier spec omits it → false.
     bx.canBreakSteel = owner.spec.canBreakSteel === true
+    // boat-drill — snapshot the firer's LIVE drill flag (the scene sets owner.drill from RunState.drillTimer > 0
+    // on each player tank in update()). true only for a player firing during an active drill window; the hit site
+    // chips one brick then clears it (pierces ONE layer). false for every enemy/boss shot (they leave owner.drill false).
+    bx.drill = owner.drill === true
     return rect
   }
 
@@ -211,6 +221,7 @@ export class BulletPool {
     bx.vx = 0
     bx.vy = 0
     bx.canBreakSteel = false // park clean — a reused rect re-snapshots its firer's flag on the next acquire.
+    bx.drill = false // boat-drill — park clean (a reused rect re-snapshots the firer's live drill flag next acquire).
     const body = rect.body as Phaser.Physics.Arcade.Body
     body.setVelocity(0, 0)
     body.enable = false

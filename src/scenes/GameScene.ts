@@ -50,6 +50,8 @@ import {
   HELMET_SHIELD_SEC,
   CLOCK_FREEZE_SEC,
   SHOVEL_FORTIFY_SEC,
+  BOAT_SAIL_SEC,
+  DRILL_PIERCE_SEC,
 } from '../config/powerups.js'
 import type { PowerUpKind } from '../config/powerups.js'
 // ── F6 Boss & co-op polish (F6 §5.4/§5.5) ── the WebAudio SFX façade (the one audio owner — D6) + the i18n
@@ -431,7 +433,7 @@ export class GameScene extends Phaser.Scene {
     // null (no glide — their crisp grid-AI would fight a coast, out of scope). The closure does the SCREEN→GRID
     // inverse via the one helper (the scene owns the tilemap; Tank.ts stays off TileMap — SOLID, keeps purity).
     tank.onSampleTile = (px, py) => this._tileKindAt(px, py)
-    this._collideTankWithTerrain(tank) // AC10 (F2) — the tank stops at brick/steel/water/the eagle.
+    this._collideTankWithTerrain(tank, slot) // AC10 (F2) — the tank stops at brick/steel/water/the eagle (boat-drill: pass the slot so the boat window can skip the water block).
     this._registerTankOverlap(tank) // the bullet×tank damage funnel (F3 seam, side-generic — D9/AC9).
     this._registerPowerUpOverlap(slot, tank) // F5 (D1) — the player×pickup collect funnel (the new seam).
     tank.onDeath = () => this._onPlayerDeath(slot, tank)
@@ -464,9 +466,23 @@ export class GameScene extends Phaser.Scene {
 
   // Collide a tank against BOTH tank-blocking body groups (F2 §5.4, D7/D11): `solidBodies` (STEEL + BASE +
   // every BRICK sub-cell — so a tank can't drive onto the eagle, AC6) AND `waterBodies` (WATER blocks tanks).
-  private _collideTankWithTerrain(tank: Tank): void {
+  //
+  // boat-drill (BOAT): the water collider takes an optional `slot` + a PROCESS callback that returns FALSE (skip
+  // the separation for that frame → the tank glides over water) while that player's boat window is active
+  // (RunState.boatTimer[slot] > 0). On expiry the timer hits 0, the callback returns true again, and water blocks
+  // anew — NO body add/remove, no terrain mutation (KISS — it can't desync). A build with NO slot (the enemy /
+  // boss tanks below) gets no process callback → water ALWAYS blocks (enemies are never amphibious — AC1).
+  private _collideTankWithTerrain(tank: Tank, slot?: number): void {
     this.physics.add.collider(tank.collider, this.tileMap.solidBodies)
-    this.physics.add.collider(tank.collider, this.tileMap.waterBodies)
+    this.physics.add.collider(
+      tank.collider,
+      this.tileMap.waterBodies,
+      undefined,
+      // The process callback runs BEFORE separation: returning false SKIPS the water block for this frame, so a
+      // player whose boat window is live drives over water. No slot (enemies) → no callback → always blocked.
+      slot === undefined ? undefined : () => !((this.runState.boatTimer[slot] ?? 0) > 0),
+      this,
+    )
   }
 
   // ── _registerTankOverlap(tank) (F4 §5.4, D9, AC9) ── register a tank's collider into the bullet×tank overlap
@@ -544,9 +560,9 @@ export class GameScene extends Phaser.Scene {
     if (kind) this._applyPowerUp(slot, kind)
   }
 
-  // ── _applyPowerUp(slot, kind) (F5 §5.4, D4/D10, AC2) ── the SIX effects in ONE switch. Each writes an EXISTING
-  // F4 run-economy seam (freezeTimer/shovelTimer/tier/lives/spawnIframe) + the ONE new shieldTimer field, not a
-  // new subsystem (KISS/DRY/YAGNI). DESTRUCTIVE effects (grenade kills enemies; shovel swaps the ring's bodies)
+  // ── _applyPowerUp(slot, kind) (F5 §5.4, D4/D10, AC2 + boat-drill) ── the EIGHT effects in ONE switch. Each
+  // writes an EXISTING run-economy seam (freezeTimer/shovelTimer/tier/lives/spawnIframe/shieldTimer) or one of the
+  // two boat-drill timers (boatTimer[slot]/drillTimer), not a new subsystem (KISS/DRY/YAGNI). DESTRUCTIVE effects (grenade kills enemies; shovel swaps the ring's bodies)
   // DEFER their body work out of this overlap callback via time.delayedCall(0) (the F3/F4 footgun discipline —
   // D10/AC10). The scene owns the run economy (SOLID — the pool reports a kind, the scene applies it).
   private _applyPowerUp(slot: number, kind: PowerUpKind): void {
@@ -599,6 +615,18 @@ export class GameScene extends Phaser.Scene {
         // +1 extra life for this slot (the shared per-slot life ledger — F4 D10). The HUD reads it live; a downed
         // player is NOT auto-respawned by a life gain (it respawns on its next death if a life remains — AC4).
         this.runState.lives[slot] = (this.runState.lives[slot] ?? 0) + 1
+        break
+      case 'boat':
+        // boat-drill (BOAT): arm this player's amphibious window. The tank×water collider's process callback reads
+        // boatTimer[slot] > 0 to SKIP the water block, so the tank drives over WATER for the window; tickTimers
+        // decays it + advance() resets it (no body churn — the block resumes the frame the timer hits 0 — AC1).
+        this.runState.boatTimer[slot] = BOAT_SAIL_SEC
+        break
+      case 'drill':
+        // boat-drill (DRILL): arm the shared player-fire drill window. update() sets each player tank's live
+        // `drill` flag from drillTimer > 0; BulletPool.acquire snapshots it onto the bullet, and a drill bullet
+        // PIERCES one brick layer (chips + continues, then stops on the second solid — _onBulletHitSolid — AC2).
+        this.runState.drillTimer = DRILL_PIERCE_SEC
         break
     }
   }
@@ -653,10 +681,23 @@ export class GameScene extends Phaser.Scene {
       activeKind = 'shovel'
       activeSecs = this.runState.shovelTimer
       activeMaxSecs = SHOVEL_FORTIFY_SEC
+    } else if (this.runState.drillTimer > 0) {
+      // boat-drill (DRILL) — the shared scalar drill window (mirrors freeze/shovel: read the scalar + its config max).
+      activeKind = 'drill'
+      activeSecs = this.runState.drillTimer
+      activeMaxSecs = DRILL_PIERCE_SEC
     } else {
+      // The two PER-SLOT windows (boat, shield) — surface the largest live timer across present slots (the HUD
+      // shows "this is up" + its seconds). boat takes priority over shield here (an arbitrary but stable order).
+      let maxBoat = 0
+      for (const slot of this.playerTanks.keys()) maxBoat = Math.max(maxBoat, this.runState.boatTimer[slot] ?? 0)
       let maxShield = 0
       for (const slot of this.playerTanks.keys()) maxShield = Math.max(maxShield, this.runState.shieldTimer[slot] ?? 0)
-      if (maxShield > 0) {
+      if (maxBoat > 0) {
+        activeKind = 'boat'
+        activeSecs = maxBoat
+        activeMaxSecs = BOAT_SAIL_SEC
+      } else if (maxShield > 0) {
         activeKind = 'helmet'
         activeSecs = maxShield
         activeMaxSecs = HELMET_SHIELD_SEC
@@ -750,11 +791,17 @@ export class GameScene extends Phaser.Scene {
       return
     }
 
-    // ── BRICK / STEEL (D3/D4, AC1/AC2) ── a small impact spark + despawn the shot in BOTH cases. F6 (D6/AC6) — a
-    // dry crunch on a brick chip, a bright metallic clink off (indestructible) steel; the throttle collapses a
+    // ── BRICK / STEEL (D3/D4, AC1/AC2 + boat-drill) ── a small impact spark in BOTH cases. F6 (D6/AC6) — a dry
+    // crunch on a brick chip, a bright metallic clink off (indestructible) steel; the throttle collapses a
     // multi-brick frame into one transient.
     this.effects.explosion(bulletRect.x, bulletRect.y)
-    this.bullets.release(bulletRect)
+    // boat-drill (DRILL): a drill bullet PIERCES exactly ONE brick layer — on a BRICK hit it chips the sub-cell
+    // but does NOT despawn the FIRST time, then is cleared so the SECOND brick (or any STEEL/BASE) stops it. So the
+    // shared release() below is GATED by !piercedThisHit; a STEEL/BASE hit despawns even a drill shot (drill pierces
+    // brick only — YAGNI: no drill-vs-steel). A non-drill bullet keeps the existing "a solid always stops it" path.
+    const piercedThisHit = kind === TILE.BRICK && bx.drill
+    if (!piercedThisHit) this.bullets.release(bulletRect)
+    else bx.drill = false // spent the one pierce — the NEXT brick stops it (pierces exactly one layer — AC2).
     // Steel-break: a max-star (tier 3) PLAYER bullet carries `bx.canBreakSteel` (snapshotted at fire time in
     // BulletPool.acquire). When such a bullet strikes STEEL we BREAK it — and signal the break with the brick
     // crunch (`sfx.brickHit()`) rather than the metallic clink. A non-break steel hit (enemy/boss/sub-tier shot)
@@ -1313,6 +1360,13 @@ export class GameScene extends Phaser.Scene {
 
     // F5 (D2) — pulse every live power-up's kind colour (the classic blink). Cosmetic; off the scene clock.
     this.powerups.tick()
+
+    // boat-drill (DRILL): set each PRESENT player tank's live `drill` flag from the shared drillTimer (> 0 while
+    // the drill window is active), so the NEXT shot BulletPool.acquire snapshots a true `bx.drill` (the piercing
+    // bullet). Set every frame (decays to false the frame the timer hits 0). Enemies are never touched (the flag
+    // stays false on them — they leave owner.drill false). One scalar timer drives both present players (D4).
+    const drilling = this.runState.drillTimer > 0
+    for (const tank of this.playerTanks.values()) tank.drill = drilling
 
     // P1 — fire off the edge (the scene owns the pool, D12), then tick movement/facing/cooldown on `gdt`. A
     // dead-but-not-yet-respawned P1 isn't driven (Tank.update early-returns while !alive — defensive).

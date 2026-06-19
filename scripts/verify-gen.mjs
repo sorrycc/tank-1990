@@ -45,7 +45,7 @@ import { createRunState, extraLivesCrossed } from '../src/core/RunState.js'
 // the i18n core + the two dictionaries. Importing them here under node RE-PROVES their purity (a stray
 // `import 'phaser'` throws) — the convention every pure module satisfies (AC9/AC11). The Phaser-coupled
 // entities/PowerUp.ts, world/TileMap.ts, the scenes, and MetaState's storage methods are NEVER imported.
-import { POWERUPS, POWERUP_BY_ID, POWERUP_KINDS, pickPowerUpKind, HELMET_SHIELD_SEC, CLOCK_FREEZE_SEC, SHOVEL_FORTIFY_SEC } from '../src/config/powerups.js'
+import { POWERUPS, POWERUP_BY_ID, POWERUP_KINDS, pickPowerUpKind, HELMET_SHIELD_SEC, CLOCK_FREEZE_SEC, SHOVEL_FORTIFY_SEC, BOAT_SAIL_SEC, DRILL_PIERCE_SEC } from '../src/config/powerups.js'
 import { TANK_UPGRADES, TANK_UPGRADES_BY_ID, applyUpgrades } from '../src/config/tank-upgrades.js'
 import { t, tName, tDesc, setLocale } from '../src/i18n/index.js'
 import { EN } from '../src/i18n/en.js'
@@ -732,9 +732,10 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
 // fold + pick determinism + the i18n structure), NOT gameplay balance (the HONEST scope — D11).
 // ════════════════════════════════════════════════════════════════════════════════════════════
 {
-  // ── 8a) Power-up roster well-formed (AC1/AC2) ── all six kinds present; every PowerUpDef has a numeric colour
-  // + a duration ≥ 0; the THREE timed kinds (helmet/clock/shovel) carry a duration > 0; the lookup is total.
-  const EXPECTED_KINDS = ['helmet', 'clock', 'shovel', 'star', 'grenade', 'tank']
+  // ── 8a) Power-up roster well-formed (AC1/AC2 + boat-drill) ── all EIGHT kinds present; every PowerUpDef has a
+  // numeric colour + a duration ≥ 0; the FIVE timed kinds (helmet/clock/shovel/boat/drill) carry a duration > 0;
+  // the THREE instant kinds (star/grenade/tank) carry 0; the lookup is total.
+  const EXPECTED_KINDS = ['helmet', 'clock', 'shovel', 'star', 'grenade', 'tank', 'boat', 'drill']
   for (const kind of EXPECTED_KINDS) {
     if (!POWERUP_KINDS.includes(kind)) fail(`powerups: kind '${kind}' missing from POWERUP_KINDS`)
     const def = POWERUP_BY_ID[kind]
@@ -744,7 +745,7 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
     if (typeof def.durationSec !== 'number' || def.durationSec < 0) fail(`powerups: def '${kind}'.durationSec = ${def.durationSec} invalid`)
   }
   if (POWERUPS.length !== EXPECTED_KINDS.length) fail(`powerups: POWERUPS has ${POWERUPS.length} defs, expected ${EXPECTED_KINDS.length}`)
-  for (const timed of ['helmet', 'clock', 'shovel']) {
+  for (const timed of ['helmet', 'clock', 'shovel', 'boat', 'drill']) {
     if (!(POWERUP_BY_ID[timed].durationSec > 0)) fail(`powerups: timed kind '${timed}' must have durationSec > 0`)
   }
   for (const instant of ['star', 'grenade', 'tank']) {
@@ -754,6 +755,8 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
   if (POWERUP_BY_ID.helmet.durationSec !== HELMET_SHIELD_SEC) fail(`powerups: helmet duration != HELMET_SHIELD_SEC`)
   if (POWERUP_BY_ID.clock.durationSec !== CLOCK_FREEZE_SEC) fail(`powerups: clock duration != CLOCK_FREEZE_SEC`)
   if (POWERUP_BY_ID.shovel.durationSec !== SHOVEL_FORTIFY_SEC) fail(`powerups: shovel duration != SHOVEL_FORTIFY_SEC`)
+  if (POWERUP_BY_ID.boat.durationSec !== BOAT_SAIL_SEC) fail(`powerups: boat duration != BOAT_SAIL_SEC`)
+  if (POWERUP_BY_ID.drill.durationSec !== DRILL_PIERCE_SEC) fail(`powerups: drill duration != DRILL_PIERCE_SEC`)
 
   // ── 8b) pickPowerUpKind is total + deterministic (AC1) ── over a long draw it ONLY ever returns a known kind;
   // two fresh rngs from the SAME seed → the SAME kind sequence (the seeded drop the carrier death relies on, D3).
@@ -872,7 +875,7 @@ console.log(
     `(0<CURRENCY_RATIO<1, FIRE_COOLDOWN>0) (F6 AC2/AC8/AC9); ` +
     `RunState.advance() deterministic & stageIndex strictly increasing & economy carried + per-slot seed fold + ` +
     `tickTimers decay/clamp + advance-reset (F5 D5b/D5c/AC3/AC6) + killsByStage seeds-0/tallyKill-increments/advance-resets (stage-bonus AC1); ` +
-    `F5 power-ups well-formed (6 kinds, durations, pickPowerUpKind deterministic) + upgrade rows cost-monotone + ` +
+    `F5 power-ups well-formed (8 kinds incl. boat+drill, durations, pickPowerUpKind deterministic) + upgrade rows cost-monotone + ` +
     `applyUpgrades identity/never-weaker/graceful + i18n structure (ZH⊆EN, content keyed to real rows, fallback chain) ` +
     `(pure node-import, AC1/AC2/AC6/AC9/AC11). (FOOTPRINT=${FOOTPRINT} tiles.)`,
 )

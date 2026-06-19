@@ -54,11 +54,17 @@ export interface RunState {
   freezeTimer: number // s — the clock power-up's "freeze all enemies" timer (gdt=0 while > 0; 0 = no freeze).
   shovelTimer: number // s — the shovel power-up's "fortify base ring → steel" timer (TileMap swap; 0 = off).
   shieldTimer: Record<number, number> // F5 (D5) — per-PRESENT-player helmet i-frame window (0 = no shield, identity).
+  // boat-drill — the two NEW timed power-up timers, lifecycle-identical to the ones above (seeded 0, decayed by
+  // tickTimers, RESET on advance()). boatTimer is PER-SLOT (mirrors shieldTimer — each player sails its own boat:
+  // the tank×water collider's process callback reads boatTimer[slot]); drillTimer is SCALAR (mirrors freezeTimer —
+  // a shared player-fire buff: a player bullet snapshots it at fire time, like canBreakSteel — D4).
+  boatTimer: Record<number, number> // s — per-PRESENT-player amphibious window (0 = no boat; the tank glides over WATER while > 0).
+  drillTimer: number // s — the drill power-up's "player bullet pierces one brick layer" window (0 = no drill, identity).
 
   // ── Methods ──
   advance(): RunState // next seed + stageIndex++ + reseed the spawn ledger + RESET the timed power-ups (carries lives/tier/score — D5/D6).
   isBossStage(): boolean // stageConfig(stageIndex).isBoss (the boss feature reads it; F4 spawns the normal roster).
-  tickTimers(dt: number): void // F5 (D5/AC3) — decay freezeTimer/shovelTimer/shieldTimer[*] toward 0, clamped ≥ 0.
+  tickTimers(dt: number): void // F5 (D5/AC3) — decay freezeTimer/shovelTimer/shieldTimer[*]/boatTimer[*]/drillTimer toward 0, clamped ≥ 0.
   tallyKill(id: string): void // F-stage-bonus (D1/AC1) — bump killsByStage[id] (no-ops an id outside the roster).
 }
 
@@ -110,12 +116,14 @@ export function createRunState(startSeed: number, seeds: Record<number, SlotSeed
   const lives: Record<number, number> = {}
   const tier: Record<number, number> = {}
   const shieldTimer: Record<number, number> = {}
+  const boatTimer: Record<number, number> = {}
   for (const key of Object.keys(seeds)) {
     const slot = Number(key)
     const s = seeds[slot]
     lives[slot] = s.lives // the slot's folded run-start lives (START_LIVES + the +startLife fold — D7).
     tier[slot] = s.tier // the slot's folded run-start star tier (the +starStart fold — D7; 0 = the base spec).
     shieldTimer[slot] = 0 // no helmet shield at run start (the neutral identity — the helmet power-up arms it).
+    boatTimer[slot] = 0 // boat-drill — no amphibious window at run start (the neutral identity — the boat power-up arms it).
   }
   // Seed the per-stage spawn ledger from stage 0: every enemy is QUEUED, none alive yet (the spawn loop streams
   // them); enemiesRemaining = the stage's totalEnemies (the clear predicate counts it down to 0 — AC5).
@@ -140,6 +148,8 @@ export function createRunState(startSeed: number, seeds: Record<number, SlotSeed
     freezeTimer: 0,
     shovelTimer: 0,
     shieldTimer,
+    boatTimer, // boat-drill — per-slot amphibious window, all 0 at run start (the neutral identity).
+    drillTimer: 0, // boat-drill — no brick-pierce window at run start (the neutral identity).
 
     // ── advance() (D5/D6, AC3/AC5/AC8) — next seed + stageIndex++ + reseed the spawn ledger + RESET the timed
     // power-ups ── ALWAYS: chain the next seed (deterministic), increment the run-global stageIndex (NEVER
@@ -155,10 +165,13 @@ export function createRunState(startSeed: number, seeds: Record<number, SlotSeed
       this.enemiesRemaining = cfg.totalEnemies
       this.enemiesQueued = cfg.totalEnemies
       this.enemiesAlive = 0
-      // RESET the timed power-ups (F5 D5/AC3) — a stage advance drops any active freeze/shovel/shield.
+      // RESET the timed power-ups (F5 D5/AC3 + boat-drill) — a stage advance drops any active freeze/shovel/
+      // shield/boat/drill (no power-up bleeds into the next stage — the classic; the verifier asserts the reset).
       this.freezeTimer = 0
       this.shovelTimer = 0
+      this.drillTimer = 0
       for (const slot of Object.keys(this.shieldTimer)) this.shieldTimer[Number(slot)] = 0
+      for (const slot of Object.keys(this.boatTimer)) this.boatTimer[Number(slot)] = 0
       // F-stage-bonus (D1/AC1) — RESET every per-stage kill count to 0 (the fresh stage starts at 0 kills, so the
       // NEXT clear's tally counts only its own stage). The SAME lifecycle as the spawn-ledger reseed above.
       for (const id of Object.keys(this.killsByStage)) this.killsByStage[id] = 0
@@ -180,9 +193,15 @@ export function createRunState(startSeed: number, seeds: Record<number, SlotSeed
     tickTimers(this: RunState, dt: number): void {
       this.freezeTimer = Math.max(0, this.freezeTimer - dt)
       this.shovelTimer = Math.max(0, this.shovelTimer - dt)
+      this.drillTimer = Math.max(0, this.drillTimer - dt) // boat-drill — the scalar drill window (mirrors freezeTimer).
       for (const slot of Object.keys(this.shieldTimer)) {
         const s = Number(slot)
         this.shieldTimer[s] = Math.max(0, this.shieldTimer[s] - dt)
+      }
+      // boat-drill — decay each present player's amphibious window (mirrors the shieldTimer sweep above).
+      for (const slot of Object.keys(this.boatTimer)) {
+        const s = Number(slot)
+        this.boatTimer[s] = Math.max(0, this.boatTimer[s] - dt)
       }
     },
 

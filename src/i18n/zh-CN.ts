@@ -105,6 +105,8 @@ export const ZH_CN: Dict = {
     'power.star': '升级',
     'power.grenade': '炸弹',
     'power.tank': '加命',
+    'power.boat': '船', // boat-drill — amphibious (drive over water).
+    'power.drill': '钻头', // boat-drill — the bullet pierces one brick layer.
   },
 
   // ── 升级条目内容覆盖（按 TANK_UPGRADES 行的 id 键控）── tName/tDesc('upgrade', id, en) 读取这里；缺失则回退到
