@@ -741,8 +741,9 @@ export class GameScene extends Phaser.Scene {
     const kills = this.runState.killsByStage
     const lines: string[] = [t('bonus.title')]
     let subtotalSum = 0
-    // Iterate the roster ids in a stable order (basic→fast→power→armor→boss) so the panel reads consistently.
-    for (const id of ['basic', 'fast', 'power', 'armor', 'boss']) {
+    // Iterate the roster ids in a stable order (basic→fast→power→armor→stealth→boss) so the panel reads consistently.
+    // stealth-enemy (AC5): + `stealth` so a STEALTH-tank kill renders its own localized row (t('bonus.stealth')).
+    for (const id of ['basic', 'fast', 'power', 'armor', 'stealth', 'boss']) {
       const count = kills[id] ?? 0
       if (count <= 0) continue // skip a type that wasn't fought this stage (show only what was killed — KISS).
       const points = id === 'boss' ? BOSS.scoreValue : ENEMY_SPECS[id].scoreValue
@@ -1030,6 +1031,10 @@ export class GameScene extends Phaser.Scene {
 
     const enemy = new Tank(this, point.x, point.y, 'enemy', spec) // the WHOLE spec → all per-type stats (AC4).
     ;(enemy.collider as TankCollider).tankRef = enemy
+    // stealth-enemy (§5.4, D4) — wire the SAME tile-kind probe the player gets (DRY) so the STEALTH render cue can
+    // sample TREES under it. Inert for non-stealth enemies (only the gated stealth alpha branch reads it; the
+    // ice-glide path is a no-op for enemies — they release keys instantly via the AI intent — so this is harmless).
+    enemy.onSampleTile = (px, py) => this._tileKindAt(px, py)
     this._collideTankWithTerrain(enemy) // enemies stop at terrain too (F2 colliders — DRY).
     enemy.carrier = this.stageRng() < CARRIER_RATE // red-flash power-up carrier (AC7).
     // F-smart-ai (smart-ai §2, D2) — the EAGLE-RUSH cohort coin flip: a fraction (AI_EAGLE_RUSH_RATE) of enemies

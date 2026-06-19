@@ -437,7 +437,7 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
 // determinism), NOT gameplay balance (the HONEST scope — D11).
 // ════════════════════════════════════════════════════════════════════════════════════════════
 {
-  const KNOWN_BEHAVIORS = new Set(['basic', 'fast', 'power', 'armor', 'player', 'boss']) // F6 (D1) — + the boss tag.
+  const KNOWN_BEHAVIORS = new Set(['basic', 'fast', 'power', 'armor', 'player', 'boss', 'stealth']) // F6 (D1) — + boss; stealth-enemy (D1) — + the stealth tag.
 
   // ── 7a) Every TankSpec is well-formed (AC4) ── positive numbers, a known behaviour, sane caps. Swept over
   // the four enemy archetypes + the player base + every star tier's folded spec (applyStarTier(t)).
@@ -458,10 +458,13 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
   if (ARMOR.maxHp !== ARMOR_TANK_HP) fail(`tanks: ARMOR.maxHp = ${ARMOR.maxHp} != ARMOR_TANK_HP ${ARMOR_TANK_HP}`)
   if (ARMOR_TANK_HP !== 4) fail(`tanks: ARMOR_TANK_HP = ${ARMOR_TANK_HP}, expected 4 (the four-flash armor tank, F4)`)
 
-  // ── 7c) The four enemy types DIFFER on a tunable stat (AC4) ── pairwise distinct on at least one of
+  // ── 7c) EVERY enemy archetype DIFFERS on a tunable stat (AC4) ── pairwise distinct on at least one of
   // {moveSpeed, bulletSpeed, maxHp}. A regression that makes two types identical fails loudly (AC4 is a data
   // check, not eyeballing). FAST out-moves BASIC; POWER out-shoots BASIC; ARMOR out-HPs BASIC (the spec intent).
-  const types = [BASIC, FAST, POWER, ARMOR]
+  // stealth-enemy (§5.5): the sweep is over the REAL `ENEMY_ARCHETYPES` (re-derived from the source, NOT a literal
+  // [BASIC,FAST,POWER,ARMOR]), so the 5th type (STEALTH — distinct on moveSpeed) is checked + a future 6th needs no
+  // edit here (DRY). The named-spec spot-checks below still pin the classic four's distinguishing axes by name.
+  const types = ENEMY_ARCHETYPES
   for (let i = 0; i < types.length; i++) {
     for (let j = i + 1; j < types.length; j++) {
       const a = types[i]
@@ -490,7 +493,7 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
   }
   // A degenerate all-zero roster falls back to a known id (the total fold — never undefined).
   {
-    const id = rosterPick(mulberry32(1), { basic: 0, fast: 0, power: 0, armor: 0 })
+    const id = rosterPick(mulberry32(1), { basic: 0, fast: 0, power: 0, armor: 0, stealth: 0 }) // stealth-enemy: + the 5th weight.
     if (!(id in ENEMY_SPECS)) fail(`tanks: rosterPick({all 0}) returned unknown id ${id}`)
   }
 
@@ -564,7 +567,10 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
     for (const spec of ENEMY_ARCHETYPES) {
       if (spec.behavior === 'boss' || spec.id === 'boss') fail(`tanks: the BOSS must NOT be in ENEMY_ARCHETYPES (D3)`)
     }
-    if (ENEMY_ARCHETYPES.length !== 4) fail(`tanks: ENEMY_ARCHETYPES has ${ENEMY_ARCHETYPES.length} specs, expected 4 (the boss is not weighted in — D3)`)
+    // stealth-enemy (§5.5): the count pin is RE-DERIVED — the ordered roster + the id→spec lookup must AGREE
+    // (`ENEMY_ARCHETYPES.length === Object.keys(ENEMY_SPECS).length`), NOT a magic `4`. This keeps the "boss absent
+    // from the roster" intent (the boss is in neither) while a 5th (stealth) or future Nth type needs no edit here.
+    if (ENEMY_ARCHETYPES.length !== Object.keys(ENEMY_SPECS).length) fail(`tanks: ENEMY_ARCHETYPES (${ENEMY_ARCHETYPES.length}) and ENEMY_SPECS (${Object.keys(ENEMY_SPECS).length}) disagree (the roster + the lookup must match; the boss is in neither — D3)`)
   }
 
   // ── 7h) F6 balance-scalar guards (F6 §7, D10/issue #3, AC8) ── the constants.ts SCALARS the existing sweeps do
@@ -869,7 +875,7 @@ console.log(
     `eagle enclosed&reachable (footprint BFS, D15) + spawn validity & window-center pin (D13); ` +
     `F7 motifs known/deterministic + selectMotif total + shape-space-used (${SWEEP_MOTIFS.size} distinct) (F7 AC1/AC2/AC3); ` +
     `regression pin (D10, F7-repinned +motif); ` +
-    `F4 roster well-formed + 4 types distinct + rosterPick known/deterministic + applyStarTier monotone + ` +
+    `F4 roster well-formed + ${ENEMY_ARCHETYPES.length} types distinct (incl. stealth-enemy) + rosterPick known/deterministic + applyStarTier monotone + ` +
     `F6 BOSS well-formed (heavier-than-armor HP + telegraph>0 + heavier-fire bulletSpeed≥POWER/fireCooldown≤BASIC) + ` +
     `bossSpecForStage monotone/never-weaker/fire-unscaled + boss absent from roster (D3) + balance guards ` +
     `(0<CURRENCY_RATIO<1, FIRE_COOLDOWN>0) (F6 AC2/AC8/AC9); ` +

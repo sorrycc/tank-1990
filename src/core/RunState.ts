@@ -142,9 +142,9 @@ export function createRunState(startSeed: number, seeds: Record<number, SlotSeed
     enemiesQueued: cfg0.totalEnemies,
     enemiesAlive: 0,
     // F-stage-bonus (D1/AC1) — seed every roster id's kill count to 0 (a fresh run/stage starts at 0 kills). The
-    // five ids match the enemy spec ids (basic/fast/power/armor + the explicitly-spawned boss). advance() resets
-    // these, so the tally on a stage clear reflects ONLY that stage's kills.
-    killsByStage: { basic: 0, fast: 0, power: 0, armor: 0, boss: 0 },
+    // ids match the enemy spec ids (basic/fast/power/armor + stealth-enemy's `stealth` + the explicitly-spawned
+    // boss). advance() resets these, so the tally on a stage clear reflects ONLY that stage's kills.
+    killsByStage: { basic: 0, fast: 0, power: 0, armor: 0, stealth: 0, boss: 0 },
     freezeTimer: 0,
     shovelTimer: 0,
     shieldTimer,

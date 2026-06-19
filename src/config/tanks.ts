@@ -34,7 +34,11 @@ import {
 // ── TankBehavior (D2 → F6 D1) ── the behaviour TAG that selects the AI branch (the four enemy types + the
 // player). F6 fills the slot the F4 header reserved: the BOSS is a 5th spec + a 'boss' tag on this SAME
 // entity/FSM (the LOCKED decision) — NOT a new entity/scene. One more tag, no new movement/AI/combat path.
-export type TankBehavior = 'basic' | 'fast' | 'power' | 'armor' | 'player' | 'boss'
+// stealth-enemy (D1): + the 'stealth' TAG — a 5th weighted enemy archetype on this SAME entity/FSM (no subclass).
+// It reuses the wander/seek/combat spine unchanged (DRY/SOLID); its ONLY new behaviour is a render-only visibility
+// cue (entities/Tank.ts) that fades it under TREES while idle. Adding the tag here keeps the verifier's
+// KNOWN_BEHAVIORS well-formedness sweep green (the tag is a real, swept behaviour).
+export type TankBehavior = 'basic' | 'fast' | 'power' | 'armor' | 'player' | 'boss' | 'stealth'
 
 // ── TankSpec (D1, AC4) ── the canonical per-type tuning row. PLAIN DATA (no functions) so it is trivially
 // comparable + the verifier sweeps it headlessly. The coupled Tank copies the numeric fields onto per-tank
@@ -132,6 +136,25 @@ export const ARMOR: TankSpec = {
   color: 0x686de0, // blue-violet heavy.
   colorFlash: 0xa29bfe,
   scoreValue: 400,
+}
+
+// ── STEALTH (stealth-enemy §5.1, D1/D7, AC1/AC2) ── the 5th WEIGHTED archetype: a slow creeper that melts into
+// the TREES canopy. Its distinguishing SWEPT stat is `moveSpeed` (a slow ambusher, strictly below BASIC — so the
+// verifier's {moveSpeed,bulletSpeed,maxHp} pairwise-distinctness loop holds, D7); it stays 1-HP (a one-hit kill,
+// so it NEVER collides with ARMOR's "the multi-hit tank" pin) and fires a normal bolt. Its concealment is PURELY
+// the render-only alpha cue in entities/Tank.ts (gated on behavior === 'stealth') — the spec data is byte-plain,
+// so it node-imports + sweeps headlessly like every other archetype.
+export const STEALTH: TankSpec = {
+  id: 'stealth',
+  behavior: 'stealth',
+  maxHp: TANK_MAX_HP, // 1 — a one-hit ambusher (NOT a multi-hit tank — its distinctness is moveSpeed, not HP, D7).
+  moveSpeed: Math.round(TANK_SPEED * 0.8), // a slow creeper — strictly below BASIC's TANK_SPEED (the distinguishing stat, D7/AC1).
+  bulletSpeed: BULLET_SPEED, // a normal bolt (it reveals itself when it fires — the concealment is the gimmick, not the shot).
+  fireCooldown: 1.0, // a measured beat — it picks its moment from cover.
+  maxBullets: 1,
+  color: 0x57606f, // a muted slate-grey (programmer-art primitive — it reads as "hides in the shadows"; verifier ignores it, D1).
+  colorFlash: 0x747d8c, // the red-carrier flash tint (a lighter slate).
+  scoreValue: 300, // an ambusher worth a touch more than a grunt (between BASIC's 100 and the hard types).
 }
 
 // ── BOSS (F6 §5.2, D1/D2/D3/D11, AC1/AC2/AC9) ── the 5th spec: the heavy capstone tank spawned on every boss
@@ -250,16 +273,19 @@ export const ENEMY_SPECS: Record<string, TankSpec> = {
   fast: FAST,
   power: POWER,
   armor: ARMOR,
+  stealth: STEALTH, // stealth-enemy (D1) — the 5th weighted archetype (the boss is still NOT here — it is spawned explicitly).
 }
-export const ENEMY_ARCHETYPES: TankSpec[] = [BASIC, FAST, POWER, ARMOR]
+export const ENEMY_ARCHETYPES: TankSpec[] = [BASIC, FAST, POWER, ARMOR, STEALTH]
 
-// ── EnemyWeights (D8) ── the per-stage raw roster weights (from stages.ts `enemyWeights`). The four ids the
-// spawn loop weights its pick over. Raw (their sum need NOT be 1 — `rosterPick` normalizes via the running total).
+// ── EnemyWeights (D8) ── the per-stage raw roster weights (from stages.ts `enemyWeights`). The ids the spawn loop
+// weights its pick over (stealth-enemy: + `stealth`). Raw (their sum need NOT be 1 — `rosterPick` normalizes via the
+// running total).
 export interface EnemyWeights {
   basic: number
   fast: number
   power: number
   armor: number
+  stealth: number
 }
 
 // ── rosterPick(rng, weights) → enemy id (D1/D8, AC4) ── a PURE weighted pick over the four enemy ids. The
@@ -269,7 +295,7 @@ export interface EnemyWeights {
 // zero / returns undefined — the live stageConfig never produces one, but the fold is total). KISS — a single
 // cumulative scan, no allocation.
 export function rosterPick(rng: RNG, weights: EnemyWeights): string {
-  const ids: (keyof EnemyWeights)[] = ['basic', 'fast', 'power', 'armor']
+  const ids: (keyof EnemyWeights)[] = ['basic', 'fast', 'power', 'armor', 'stealth']
   let total = 0
   for (const id of ids) total += Math.max(0, weights[id])
   if (total <= 0) return 'basic' // degenerate roster → the baseline (total fold; never undefined).
@@ -278,5 +304,5 @@ export function rosterPick(rng: RNG, weights: EnemyWeights): string {
     roll -= Math.max(0, weights[id])
     if (roll < 0) return id
   }
-  return 'armor' // floating-point tail guard (roll landed exactly at total) — the last id.
+  return 'stealth' // floating-point tail guard (roll landed exactly at total) — the last id in `ids`.
 }

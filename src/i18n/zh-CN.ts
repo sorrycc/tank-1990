@@ -77,6 +77,7 @@ export const ZH_CN: Dict = {
     'bonus.fast': '快速',
     'bonus.power': '火力',
     'bonus.armor': '装甲',
+    'bonus.stealth': '隐形', // stealth-enemy (AC5) — the stealth-tank kill row.
     'bonus.boss': '首领',
 
     // ── 游戏结束（结算快照 — AC5）──

@@ -78,6 +78,7 @@ export const EN: Dict = {
     'bonus.fast': 'FAST',
     'bonus.power': 'POWER',
     'bonus.armor': 'ARMOR',
+    'bonus.stealth': 'STEALTH', // stealth-enemy (AC5) — the stealth-tank kill row.
     'bonus.boss': 'BOSS',
 
     // ── GameOver (the run-summary snapshot — AC5) ──

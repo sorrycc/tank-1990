@@ -80,6 +80,11 @@ const HIT_FLASH_COLOR = 0xffffff // the white flash tint (programmer-art primiti
 // much wall is left). A LOCAL render constant (owned by this ONE file — render-only feel, not shared, so it
 // stays out of the constants.ts owner / the verifier-imported path, like the HIT_FLASH_* locals above — D6/D4).
 const DAMAGED_TINT = 0x4a3b3b // the dark, desaturated shade the hull lerps TOWARD as hp/maxHp drops (full HP = spec.color).
+// stealth-enemy (§5.3, D2/D6, AC2) — the CONTAINER alpha a 'stealth' tank fades to when it is concealed (resting
+// under the TREES canopy, idle, not firing). Nearly invisible but a faint ghost so a watchful player can still spot
+// it. A LOCAL render constant (owned by this ONE file — render-only feel, not shared, so it stays out of the
+// constants.ts owner / the verifier-imported path, exactly like the HIT_FLASH_*/DAMAGED_TINT locals above — D6).
+const STEALTH_HIDDEN_ALPHA = 0.12 // container alpha while a stealth tank is concealed under trees (a faint ghost).
 
 export class Tank {
   scene: Phaser.Scene
@@ -317,6 +322,23 @@ export class Tank {
       const blink = Math.floor(this.scene.time.now / 100) % 2 === 0 ? 0.35 : 1
       this.rect.setAlpha(this.spawnIframe > 0 ? blink : 1)
       if (this.spawnIframe === 0) this.rect.setAlpha(1)
+    }
+
+    // stealth-enemy (§5.3, D2/D3/D6, AC2) — the STEALTH visibility cue: a render-only CONTAINER-ALPHA branch (the
+    // carrier/telegraph ANALOGUE, but on the ALPHA channel — the fill-cue chain below writes setFillStyle, never
+    // alpha, so the two never fight). GATED on `behavior === 'stealth'` (no other type ever enters — byte-unchanged
+    // for them) AND `spawnIframe <= 0` (the spawn-blink above owns the alpha while it ticks, so at most one alpha
+    // writer runs per frame — the SAME discipline the fill chain documents). "Concealed" (D3) is a pure per-frame
+    // derivation of state the tank ALREADY owns: it sits UNDER the canopy (onSampleTile center === TILE.TREES), is
+    // at REST (zero body velocity — not "moving in the open"), and is not firing (not telegraphing AND no live shot
+    // out). A null probe (an un-wired tank) never conceals → fully backward-compatible. It touches ONLY setAlpha —
+    // never the body, the fill, or isHittable() (a concealed stealth tank is still a normal 1-HP target — AC2).
+    if (this.behavior === 'stealth' && this.spawnIframe <= 0) {
+      const onTrees = this.onSampleTile?.(this.body.center.x, this.body.center.y) === TILE.TREES
+      const idle = this.body.velocity.x === 0 && this.body.velocity.y === 0
+      const firing = this.telegraphing || this.liveBullets > 0
+      const concealed = onTrees && idle && !firing
+      this.rect.setAlpha(concealed ? STEALTH_HIDDEN_ALPHA : 1)
     }
 
     // 1) Cooldown decay (seconds) — a fire is allowed once this hits 0 (AC4).

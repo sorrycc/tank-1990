@@ -35,9 +35,10 @@ export interface StageConfig {
   // Enemy counts — `totalEnemies` to clear, `concurrentEnemies` the on-screen cap (≤ MAX_CONCURRENT_ENEMIES).
   totalEnemies: number
   concurrentEnemies: number
-  // The weighted enemy roster (the four classic types). RAW weights — their sum need NOT be 1; the LATER
-  // spawn feature normalizes them. D16: the monotone quantity is the NORMALIZED `hardShare`, NOT a raw weight.
-  enemyWeights: { basic: number; fast: number; power: number; armor: number }
+  // The weighted enemy roster (the four classic types + stealth-enemy's `stealth`). RAW weights — their sum need
+  // NOT be 1; the LATER spawn feature normalizes them. D16: the monotone quantity is the NORMALIZED `hardShare`,
+  // NOT a raw weight (stealth is an EASY-share type — it counts in hardShare's DENOMINATOR only, stealth-enemy D5).
+  enemyWeights: { basic: number; fast: number; power: number; armor: number; stealth: number }
   isBoss: boolean // true on every BOSS_STAGE_EVERY-th stage (the heavy boss-tank milestone).
   // ── F7 stage-MOTIF seam (F7 Rich playability §5.2, Decision D7) ── an OPTIONAL per-stage override of the
   // motif mix `selectMotif` weights its seeded pick over (the reference's biome `layoutWeights` analogue). ABSENT
@@ -92,6 +93,13 @@ const POWER_BASE = 2
 const POWER_PER_STAGE = 0.5 // hard types climb.
 const ARMOR_BASE = 1
 const ARMOR_PER_STAGE = 0.5
+// stealth-enemy (D5): STEALTH is an EASY-share type (a 1-HP, slightly-off-speed creeper — NOT a "hard" power/armor),
+// so it folds into hardShare's DENOMINATOR only. A small base (~3 — between fast's 6 and armor's 1, so it is a
+// regular-but-uncommon sight, NOT overwhelming, AC3) + a GENTLE non-positive taper (clamped ≥ 1 like basic/fast).
+// Keeping the ramp flat/tapering (k ≤ 0) on the easy side guarantees the NORMALIZED hardShare still rises
+// monotonically by construction (the hard numerator climbs while the easy denominator holds/tapers — D5).
+const STEALTH_BASE = 3
+const STEALTH_PER_STAGE = -0.05 // a gentle taper (may go down — like basic/fast; the hard share still rises, D5).
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
 
@@ -131,6 +139,9 @@ export function stageConfig(stageIndex: number): StageConfig {
       fast: clamp(FAST_BASE + FAST_PER_STAGE * s, 1, FAST_BASE),
       power: POWER_BASE + POWER_PER_STAGE * s,
       armor: ARMOR_BASE + ARMOR_PER_STAGE * s,
+      // stealth-enemy (D5): the easy-share creeper — a small base + a gentle taper, clamped ≥ 1 (so the roster
+      // never starves it). It rides hardShare's DENOMINATOR only; tapering it keeps hardShare non-decreasing (D5/AC3).
+      stealth: clamp(STEALTH_BASE + STEALTH_PER_STAGE * s, 1, STEALTH_BASE),
     },
     // Every BOSS_STAGE_EVERY-th stage is a boss milestone. Indexing is 0-based, so the cadence predicate
     // is `(s % BOSS_STAGE_EVERY) === BOSS_STAGE_EVERY - 1` — stages 4, 9, 14, … are boss stages (the 5th,
@@ -183,7 +194,9 @@ export function spawnIntervalScale(stageIndex: number): number {
 // all-zero roster with 0 (never divides by zero — the live stageConfig never produces one).
 export function hardShare(cfg: StageConfig): number {
   const w = cfg.enemyWeights
-  const total = w.basic + w.fast + w.power + w.armor
+  // stealth-enemy (D5): `stealth` counts in the DENOMINATOR as an EASY-share type (the numerator stays power+armor).
+  // Its ramp is flat/tapering, so this stays non-decreasing across stages by construction (the existing gate holds).
+  const total = w.basic + w.fast + w.power + w.armor + w.stealth
   if (total <= 0) return 0
   return (w.power + w.armor) / total
 }
