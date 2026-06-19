@@ -11,7 +11,10 @@ import {
   AI_REDECIDE_MAX,
   AI_SEEK_BIAS,
   TELEGRAPH_FILL,
+  ICE_FRICTION,
+  ICE_GLIDE_CUTOFF,
 } from '../config/constants.js'
+import { TILE } from '../config/tiles.js' // PURE (no Phaser) — the ice-slide tile-kind probe; the split is intact.
 import type { PlayerIntent } from '../core/Input.js'
 import type { BulletPool } from '../combat/BulletPool.js'
 import type { TankSpec } from '../config/tanks.js'
@@ -94,6 +97,17 @@ export class Tank {
   facing: Facing
   lastDriveAxis: 'x' | 'y' | null // the axis we drove LAST frame; a TURN = chosen ≠ this (§5.3 step 2/4).
 
+  // ── F-ice-slide (ice-slide §2, D1/D2/D3) — the low-friction "ice glide" momentum, additive over the F1 spine ──
+  // `onSampleTile` is the SCENE-injected tile-kind probe (SOLID — keeps Tank.ts off TileMap): GameScene wires it on
+  // the two PLAYER tanks only (enemies leave it null → no glide, the existing instant-stop path runs byte-identically
+  // — D2/D7). A null sampler makes update() behave EXACTLY as today, so this is additive + zero-risk. `glideVel` is the
+  // SIGNED coasting speed (px/s) carried along `glideAxis` — the ONE axis the tank was last driving — so momentum is
+  // single-axis ONLY (the no-diagonal invariant stays structural: the cross axis is never written non-zero — D1).
+  onSampleTile: ((x: number, y: number) => number) | null // null on enemies/tests → no glide (the instant-stop path).
+  private glideVel: number // px/s — the signed coasting speed carried along glideAxis while sliding on ice (0 = at rest).
+  private glideAxis: 'x' | 'y' | null // the axis glideVel rides (= the last-driven axis); null when not gliding.
+  private wasGliding: boolean // true if the PREVIOUS frame deferred the lane snap (a coast); drives the ONE re-settle.
+
   cooldownTimer: number // s — decays by dt; a fire is allowed at ≤ 0 (AC4).
   liveBullets: number // current shots out (incremented on fire, decremented on release — AC4/AC5).
   maxBullets: number // the per-tank live cap (from spec.maxBullets — the classic "N shots out" rule).
@@ -156,6 +170,11 @@ export class Tank {
     this.behavior = spec.behavior // (was the `behavior` ctor arg in F1).
     this.facing = 'up' // tanks start facing up (the classic player spawn orientation).
     this.lastDriveAxis = null
+    // F-ice-slide (D2) — no probe + no momentum on a fresh tank. The scene wires onSampleTile on PLAYER tanks only.
+    this.onSampleTile = null
+    this.glideVel = 0
+    this.glideAxis = null
+    this.wasGliding = false
     this.cooldownTimer = 0
     this.liveBullets = 0
     this.maxBullets = spec.maxBullets // (was MAX_PLAYER_BULLETS; now from the spec).
@@ -227,6 +246,10 @@ export class Tank {
     // guard here means a stray tick can't move/fire a corpse. Hold the body still + leave the visual hidden.
     if (!this.alive) {
       this.body.setVelocity(0, 0)
+      // F-ice-slide (D-defensive) — a corpse carries NO momentum (a stray tick can't coast a dead tank).
+      this.glideVel = 0
+      this.glideAxis = null
+      this.wasGliding = false
       return
     }
 
@@ -273,15 +296,46 @@ export class Tank {
     // ONLY on the frame a player switches between a horizontal and a vertical cardinal — §5.3 step 2).
     const turned = driveAxis !== null && this.lastDriveAxis !== null && driveAxis !== this.lastDriveAxis
 
+    // F-ice-slide (ice-slide §2, D3) — is the tank's CENTER sitting on a TILE.ICE cell THIS frame? Sampled ONCE
+    // via the scene-injected probe (null on enemies/tests → onIce stays false → the existing instant-stop path
+    // below runs byte-identically — D2/D7). The classic ice read: the body must be CENTERED over ice to glide.
+    const onIce = this.onSampleTile?.(this.body.center.x, this.body.center.y) === TILE.ICE
+
     // 3) Drive — exactly ONE velocity component non-zero (Decision 5/AC3). The cross component is held at
-    // EXACTLY 0, so Arcade never integrates a diagonal (the no-diagonal invariant is STRUCTURAL). Idle → 0,0.
+    // EXACTLY 0, so Arcade never integrates a diagonal (the no-diagonal invariant is STRUCTURAL). F-ice-slide
+    // (D5): the drive step is now GATED — OFF ice it is BYTE-IDENTICAL to today (held → ±moveSpeed; released →
+    // instant 0,0). ON ice a release COASTS the last-driven axis with momentum decay instead of stopping dead.
     if (driveAxis === 'x') {
-      this.body.setVelocity(this.facing === 'right' ? this.moveSpeed : -this.moveSpeed, 0)
+      // A key is held on the X axis → drive at ±moveSpeed (as today) AND seed the glide momentum (records the
+      // signed speed + axis so a later release coasts; off ice this seed is simply never read — harmless — D5).
+      const vx = this.facing === 'right' ? this.moveSpeed : -this.moveSpeed
+      this.body.setVelocity(vx, 0)
+      this.glideVel = vx
+      this.glideAxis = 'x'
     } else if (driveAxis === 'y') {
-      this.body.setVelocity(0, this.facing === 'down' ? this.moveSpeed : -this.moveSpeed)
+      const vy = this.facing === 'down' ? this.moveSpeed : -this.moveSpeed
+      this.body.setVelocity(0, vy)
+      this.glideVel = vy
+      this.glideAxis = 'y'
+    } else if (onIce && this.glideAxis !== null && Math.abs(this.glideVel) > ICE_GLIDE_CUTOFF) {
+      // No key held, but the tank is centered on ICE and still carries glide above the settle floor → KEEP moving
+      // along the glide axis (single-axis only — the cross axis stays EXACTLY 0, so no diagonal — D1/AC3), and
+      // decay the momentum framerate-independently (`*= ICE_FRICTION ** dt` — the per-second retention factor, D4).
+      if (this.glideAxis === 'x') this.body.setVelocity(this.glideVel, 0)
+      else this.body.setVelocity(0, this.glideVel)
+      this.glideVel *= ICE_FRICTION ** dt
     } else {
+      // The existing instant-stop (bare ground OR the glide has settled under the cutoff / left ice — AC2). Clear
+      // any residual momentum so a future release on ice starts fresh (no stale glide survives a full stop).
       this.body.setVelocity(0, 0)
+      this.glideVel = 0
+      this.glideAxis = null
     }
+
+    // Is the tank still carrying glide THIS frame (a post-release ice coast, or the seeded momentum on a turn
+    // frame on ice)? While it is, the lane re-center is DEFERRED (the surface is slippery — an instant lane snap
+    // would feel sticky — D6). We re-settle the lane ONCE the glide clears (the else branch below).
+    const gliding = onIce && this.glideAxis !== null && Math.abs(this.glideVel) > ICE_GLIDE_CUTOFF
 
     // 4) Turn-time re-center — a DISCRETE, collision-aware, velocity-ONLY snap (Decision 5/6, AC3), run
     // ONLY on a turn frame. On a non-turn frame do NOTHING here (steady single-axis driving already holds
@@ -289,7 +343,14 @@ export class Tank {
     // corner to its nearest 1-TILE corridor lane in ONE write to body.position[cross] (the cross VELOCITY
     // stays 0 — no diagonal). We snap the body's CORNER (not the center) to the LANE_INSET-offset TILE
     // lattice (D1) so a ~1-tile tank lands EXACTLY centered (a 2px inset) in a 1-tile corridor lane.
-    if (turned) {
+    //
+    // F-ice-slide (D6) — SLIPPERY TURNS: while `gliding` we SKIP the turn-time snap (the slippery surface lets
+    // the new heading take a beat to win). Once the glide settles to rest (cutoff reached) OR the tank leaves ice
+    // — i.e. NOT gliding — we run the SAME _recenterCross on the CURRENT heading's cross axis ONCE so the tank
+    // re-settles into its lane (no permanent lane drift — AC4), reusing the helper verbatim (DRY, no second path).
+    if (gliding) {
+      // Sliding — defer the lane discipline (do nothing; the re-settle fires when the glide clears, below).
+    } else if (turned) {
       if (driveAxis === 'x') {
         // Driving horizontally → the CROSS axis is Y; snap the body's TOP corner to the centered Y-lane.
         this._recenterCross('y', this.body.y, PLAYFIELD_Y)
@@ -297,7 +358,21 @@ export class Tank {
         // Driving vertically → the CROSS axis is X; snap the body's LEFT corner to the centered X-lane.
         this._recenterCross('x', this.body.x, PLAYFIELD_X)
       }
+    } else if (this.wasGliding && this.lastDriveAxis !== null) {
+      // Just settled OUT of an ice coast (we deferred the snap last frame; this frame the glide cleared OR a key was
+      // re-pressed/the tank left ice). Re-settle the lane ONCE on the LAST sliding heading's cross axis so a tank
+      // that slid to a stop lands cleanly back in its corridor (AC4 — no permanent lane drift). The cross-velocity
+      // stays 0 (no diagonal — D1). Gating on `wasGliding` (NOT a bare driveAxis===null) keeps OFF-ice behaviour
+      // BYTE-IDENTICAL to today (AC2): a tank that never glided never enters this re-settle. Reuses _recenterCross
+      // verbatim (DRY — no second snap path); the dead-band makes it a no-op when already lane-aligned.
+      if (this.lastDriveAxis === 'x') this._recenterCross('y', this.body.y, PLAYFIELD_Y)
+      else this._recenterCross('x', this.body.x, PLAYFIELD_X)
     }
+
+    // F-ice-slide (D6) — remember whether we deferred the snap THIS frame, so the NEXT frame can run the ONE
+    // re-settle exactly when the glide clears (the wasGliding edge above). Off ice this is always false → the
+    // re-settle branch never fires → behaviour is byte-identical to today (AC2).
+    this.wasGliding = gliding
 
     // Record the axis we drove THIS frame so the next frame can detect a turn. A null (idle) frame leaves
     // lastDriveAxis at its prior value so resuming the SAME axis after a pause is not falsely a "turn".
@@ -579,6 +654,10 @@ export class Tank {
     this.spawnIframe = SPAWN_IFRAME // arm the post-respawn invulnerability (D7/D11).
     this.facing = 'up'
     this.lastDriveAxis = null
+    // F-ice-slide (D-defensive) — a fresh spawn carries no glide momentum (no momentum survives across lives, AC6).
+    this.glideVel = 0
+    this.glideAxis = null
+    this.wasGliding = false
     this.cooldownTimer = 0
     this.telegraphing = false // F6 — a fresh spawn starts with no shot winding up (defensive; the boss never respawns).
     this.telegraphTimer = 0

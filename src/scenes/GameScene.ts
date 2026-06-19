@@ -6,6 +6,7 @@ import {
   PLAYFIELD_Y,
   PLAYFIELD_W,
   PLAYFIELD_H,
+  TILE_SIZE,
   TWO_PLAYER,
   MAX_DT,
   START_LIVES,
@@ -425,6 +426,10 @@ export class GameScene extends Phaser.Scene {
     // the star re-fold uses (DRY — _refoldPlayerSpec).
     const tank = new Tank(this, x, y, 'player', this._playerSpec(slot))
     ;(tank.collider as TankCollider).tankRef = tank // the bullet×tank overlap reads the victim off this (DRY).
+    // F-ice-slide (ice-slide §3, D2/D7) — wire the tile-kind probe so a PLAYER glides on ICE. Enemies leave this
+    // null (no glide — their crisp grid-AI would fight a coast, out of scope). The closure does the SCREEN→GRID
+    // inverse via the one helper (the scene owns the tilemap; Tank.ts stays off TileMap — SOLID, keeps purity).
+    tank.onSampleTile = (px, py) => this._tileKindAt(px, py)
     this._collideTankWithTerrain(tank) // AC10 (F2) — the tank stops at brick/steel/water/the eagle.
     this._registerTankOverlap(tank) // the bullet×tank damage funnel (F3 seam, side-generic — D9/AC9).
     this._registerPowerUpOverlap(slot, tank) // F5 (D1) — the player×pickup collect funnel (the new seam).
@@ -441,6 +446,19 @@ export class GameScene extends Phaser.Scene {
     this.playerTanks.set(slot, tank)
     this.effects.spawnShield(x, y) // F8 (D5/AC3) — the spawn-in materialize cue at the player spawn center.
     return tank
+  }
+
+  // ── _tileKindAt(x,y) (F-ice-slide §3, D2/D3) ── the SCREEN→GRID inverse the player tanks' onSampleTile probe
+  // calls: map a world pixel to its grid cell (`col = floor((x − PLAYFIELD_X)/TILE_SIZE)`, same for the row) and
+  // read this stage's `desc.tiles[row][col]` (the row-major GRID-SPACE int grid F2 emits — the SAME source the
+  // base-surround scan at create() reads). Bounds-guarded → TILE.EMPTY off-grid (an out-of-playfield sample is
+  // conservatively NON-ice, never an index crash). The scene owns the tilemap, so this keeps Tank.ts off TileMap +
+  // off the grid math (SOLID, preserves the pure/coupled split — Tank only sees a tile-kind int, never Phaser).
+  private _tileKindAt(x: number, y: number): number {
+    const col = Math.floor((x - PLAYFIELD_X) / TILE_SIZE)
+    const row = Math.floor((y - PLAYFIELD_Y) / TILE_SIZE)
+    if (col < 0 || row < 0 || col >= this.desc.cols || row >= this.desc.rows) return TILE.EMPTY
+    return this.desc.tiles[row][col]
   }
 
   // Collide a tank against BOTH tank-blocking body groups (F2 §5.4, D7/D11): `solidBodies` (STEEL + BASE +

@@ -103,6 +103,27 @@ export const LANE_INSET = (TILE_SIZE - TANK_SIZE) / 2 // px — the ~1-tile tank
 // post-turn misalignment is always corrected. The single PURE owner so any later tuning is DRY.
 export const LANE_SNAP_EPSILON = 0.5 // px.
 
+// ── F-ice-slide (ice-slide §2/§3, D4/D5/D6) — the low-friction "ice glide" feel scalars, beside the tank-feel
+// anchors above (the LANE_* / TANK_SIZE owners). PURE DATA (no Phaser) read ONLY by the coupled Tank movement
+// spine (entities/Tank.ts): when a tank's CENTER sits on a TILE.ICE cell, releasing the direction key keeps it
+// gliding ~1 tile with momentum decay instead of stopping dead (the classic slippery ice). Owned ONCE here (DRY)
+// so any later tuning is a single edit; the verifier ignores them (plain feel scalars, no invariant references
+// them — like the LANE_* numbers). Single-axis glide only (KISS/YAGNI) — only the last-driven axis ever carries
+// momentum, so the no-diagonal invariant stays STRUCTURAL (the cross axis is never written non-zero).
+
+// ICE_FRICTION (D4) — the per-SECOND multiplicative RETENTION of glide speed while coasting on ice (0 < f < 1).
+// Applied as `glideVel *= ICE_FRICTION ** dt` each frame the player holds NO key but still glides on ice, so the
+// decay is framerate-independent (the px/s convention — dt in seconds). Tuned LOW (0.09 retained per second → a fast
+// exponential die-off) so the tank coasts ~1 tile before |glideVel| drops under ICE_GLIDE_CUTOFF + settles. The
+// coast distance is ∫v dt = (moveSpeed − ICE_GLIDE_CUTOFF)/(−ln f); at f=0.09, moveSpeed≈104, cutoff=8 → ~40px ≈
+// one TILE_SIZE (the design's "~1 tile" target). Lower f = a snappier stop, higher f = a longer slide (DRY tuning).
+export const ICE_FRICTION = 0.09 // per-second glide retention on ice (0<f<1 — coasts ~1 tile then settles).
+
+// ICE_GLIDE_CUTOFF (D5) — the tiny px/s FLOOR below which the coasting glide settles to rest (velocity → 0, the
+// lane re-settle fires). Without it the exponential decay would creep forever sub-pixel; this snaps the tank to a
+// clean stop once it has effectively stopped, so it never drifts imperceptibly off its lane. The single PURE owner.
+export const ICE_GLIDE_CUTOFF = 8 // px/s — below this the ice coast settles to a dead stop (and re-settles the lane).
+
 // ── F3 Combat & terrain (F3 §5.2, Decisions D4/D7/D8, AC5/AC6/AC8/AC9) — PURE combat DATA (no Phaser) ──
 // All Phaser-free numbers/flags the F3 combat resolution reads. Owned ONCE here (DRY) so the scene's
 // overlap callbacks, Tank's hit funnel, and Base's loss guard read the SAME truth — and the verifier still
