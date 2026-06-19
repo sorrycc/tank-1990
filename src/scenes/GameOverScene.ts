@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { DESIGN_WIDTH, DESIGN_HEIGHT, UI_FONT } from '../config/constants.js'
 import { t } from '../i18n/index.js'
+import { Sound } from '../audio/Sound.js'
 
 // ── GameOverScene (F0 scaffold §5.3 → F5 §5.4, Decision 2/4/D8/D12, AC5/AC7/AC9) ──
 // The run-end screen. Tank 1990 is ENDLESS (Decision 2 — there is NO Victory scene): a run ends ONLY
@@ -33,6 +34,11 @@ export class GameOverScene extends Phaser.Scene {
     const summary: RunSummary = { ...DEFAULT_SUMMARY, ...(data || {}) }
     const cx = DESIGN_WIDTH / 2
     const cy = DESIGN_HEIGHT / 2
+
+    // The menu-blip façade (the TitleScene precedent; a no-op under NoAudio — AC6). Only the continue gesture
+    // uses it, so a local is fine (D6 — the scene owns audio). The run-end knell already played in GameScene
+    // ~700 ms ago under the freeze beat (its dramatic home), so this screen adds ONLY a continue blip (Decision 3).
+    const sfx = new Sound(this)
 
     // ── Header: red "GAME OVER" (the endless game has no win state — Decision 2). ── Anchored at cy-210
     // (the 72px heading's top), so the summary block below (blockTop = cy-110) clears it with a real gap —
@@ -108,7 +114,10 @@ export class GameOverScene extends Phaser.Scene {
 
     // GameOver → HUB (D8/AC7) so banked currency is immediately spendable — the loop closes. `once` so a held
     // key can't double-fire. 'Hub' is a registered scene (main.ts), so the transition is reachable.
-    const toHub = () => this.scene.start('Hub')
+    const toHub = () => {
+      sfx.uiSelect() // the continue blip on the key/click to the Hub (a no-op under NoAudio — AC6).
+      this.scene.start('Hub')
+    }
     this.input.keyboard!.once('keydown-SPACE', toHub)
     this.input.keyboard!.once('keydown-ENTER', toHub)
     this.input.once('pointerdown', toHub)

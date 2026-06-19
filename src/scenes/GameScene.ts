@@ -381,6 +381,7 @@ export class GameScene extends Phaser.Scene {
     // SHARED builder, DRY): update() gates the spawn loop + enemy tick while curtainTimer > 0, and _publishHud
     // mirrors the centered "STAGE N" label to the HUD. The world is built + visible underneath (the player can move).
     this.curtainTimer = STAGE_INTRO_SEC
+    this.sfx.stageStart() // the "start the game" fanfare — plays on the first build AND every advance (the scene owns audio, D6).
   }
 
   // ── _buildPlayer(slot,x,y) (F4 §5.4, D10/D11) ── build a present player FRESH for this stage. Construct it
@@ -731,7 +732,10 @@ export class GameScene extends Phaser.Scene {
     this.runState.lives[slot] = Math.max(0, remaining)
     if (remaining > 0) {
       const sp = this.spawnPos.get(slot)
-      if (sp) tank.respawnAt(sp.x, sp.y) // re-place + refill HP + arm the i-frames (D11).
+      if (sp) {
+        tank.respawnAt(sp.x, sp.y) // re-place + refill HP + arm the i-frames (D11).
+        this.sfx.respawn() // the "I'm back" materialize cue (the death→respawn path only — D5/D6).
+      }
     }
     // else: that player stays down (its rect/body stay hidden+disabled from Tank.onHit) — the run ends only
     // when the eagle dies OR every PRESENT player is out of lives (checked next).
@@ -821,6 +825,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.paused = false
     this.input2.consumePause() // swallow the pending P/ESC JustDown edge (the close→reopen race fix — D4).
+    this.sfx.uiSelect() // the RESUME blip — pause toggles share one confirm blip (_openPause already blips on OPEN; D7).
   }
 
   // ── _getRunInfo() (F7 §5.3, D3) ── assemble the read-only run snapshot the pause overlay renders (the
@@ -1019,6 +1024,7 @@ export class GameScene extends Phaser.Scene {
     const kind = pickPowerUpKind(this.stageRng) // PURE uniform pick, deterministic per stage (D3/AC1).
     this.powerups.acquire(x, y, kind) // place the static pulsing pickup at the drop window-center (D1/D2).
     this.effects.explosion(x, y, { big: true }) // keep the kill burst where the power-up dropped (cosmetic).
+    this.sfx.itemDrop() // "an item appeared" cue (descending vs. powerUp's ascending collect — drop ≠ collect, D6).
   }
 
   // ── _advanceStage() (F4 §5.3/§5.4, Decisions D5/D6/D7, AC5/AC10) ── the deferred stage→stage advance (run
