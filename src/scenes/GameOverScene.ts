@@ -34,9 +34,11 @@ export class GameOverScene extends Phaser.Scene {
     const cx = DESIGN_WIDTH / 2
     const cy = DESIGN_HEIGHT / 2
 
-    // ── Header: red "GAME OVER" (the endless game has no win state — Decision 2). ──
+    // ── Header: red "GAME OVER" (the endless game has no win state — Decision 2). ── Anchored at cy-210
+    // (the 72px heading's top), so the summary block below (blockTop = cy-110) clears it with a real gap —
+    // they previously shared cy-150 and overlapped (the heading sat on top of the first stat line).
     this.add
-      .text(cx, cy - 150, t('over.heading'), {
+      .text(cx, cy - 210, t('over.heading'), {
         fontFamily: UI_FONT,
         fontSize: '72px',
         color: '#e5484d',
@@ -54,7 +56,10 @@ export class GameOverScene extends Phaser.Scene {
       t('over.bestStage', { n: summary.bestStage }),
     ]
     const rowH = 40
-    const blockTop = cy - 150
+    // Start the stats stack 100px below the heading anchor (cy-210), i.e. ~51px clear below the heading's
+    // bottom edge. hiTop derives from this (blockTop + lines·rowH + 28); at the max 5-row high-score table the
+    // last row lands ~30px above the continue prompt (DESIGN_HEIGHT-56) — collision-free at worst-case content.
+    const blockTop = cy - 110
     lines.forEach((line, i) => {
       // The CURRENCY BANKED line (index 2) is highlighted (cyan) — it's the meta payoff the run earned.
       const color = i === 2 ? '#4dd0e1' : '#e6edf3'
