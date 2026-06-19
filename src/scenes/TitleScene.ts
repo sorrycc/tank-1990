@@ -29,12 +29,6 @@ export class TitleScene extends Phaser.Scene {
     // silent on the very first press but every later sound (the Hub/game) plays.
     const sfx = new Sound(this)
 
-    // [music] (D6/AC2) — start the looping Title theme on entry, and STOP it when the player leaves Title so it never
-    // bleeds into the Hub. The theme is the only LOOPING music (Title-only by design); it self-stops between bars if M
-    // mutes, and is a safe no-op under NoAudio. The SHUTDOWN listener fires once when the start gesture swaps scenes.
-    sfx.titleMusicStart()
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => sfx.musicStop())
-
     // Heading + subtitle near the TOP (repositioned to make room for the controls reference below — every Y is
     // off the FIXED design resolution so it stays centered under Scale.FIT, the existing Title discipline).
     this.add
@@ -324,7 +318,12 @@ export class TitleScene extends Phaser.Scene {
     const enterHub = () => {
       if (editingSeed || started) return // suppressed mid-entry / already started — no launch.
       started = true
-      sfx.uiSelect() // F6 (AC6) — the Title start blip (the first gesture also resumes the context).
+      // [start-jingle] — play the Battle City "Game Start" jingle ONCE on the start gesture. This gesture
+      // is the first user interaction, so it unlocks Phaser's audio context → the clip is reliably audible.
+      // It's a fire-and-forget one-shot on Phaser's GAME-level sound manager (this.sound), so it is not tied
+      // to the Title's lifecycle: it plays through this Title→Hub swap to its full ~5s and auto-destroys on
+      // complete (deliberately NOT stopped on SHUTDOWN). Honors global mute (M) + the Settings volume.
+      this.sound.play('startJingle')
       this.scene.start('Hub')
     }
     this.input.keyboard!.on('keydown-SPACE', enterHub)

@@ -6,9 +6,10 @@ A faithful **Battle City** (坦克大战) clone — a 2D **top-down grid** tank 
 destroyed or all lives are spent. Score and best results persist between runs. Difficulty, language,
 and your last run's seed persist too, so you can dial in a run or replay an exact one.
 
-Built with **Phaser 3 + Vite + TypeScript**, **programmer-art primitives only** (colored
-rectangles / Phaser `Graphics` + generated textures + synthesized WebAudio — no external sprite /
-font / audio assets). Runs fully offline and from `file://`.
+Built with **Phaser 3 + Vite + TypeScript**, **programmer-art primitives** (colored rectangles /
+Phaser `Graphics` + generated textures, synthesized WebAudio SFX) — the only bundled asset is the
+Title screen's real Battle City **"Game Start" jingle** (`public/audio/start.mp3`). Runs fully
+offline and from `file://`.
 
 ## The game
 
@@ -42,9 +43,10 @@ font / audio assets). Runs fully offline and from `file://`.
   **start stage**, plus a **seed challenge** — every run is deterministic from a 32-bit seed shown as
   8 hex on the Title; copy it or type one in to replay an identical run.
 - **Settings + accessibility.** A dedicated **Settings** screen (master **volume**, default
-  **difficulty**, **language** EN / 简体中文 — persisted), synthesized **music** (a looping Title
-  theme + a stage-start jingle + a game-over sting, all WebAudio, no asset files), and on-screen
-  **touch controls** (a D-pad + fire button) that appear only on touch devices.
+  **difficulty**, **language** EN / 简体中文 — persisted), audio (synthesized WebAudio SFX, a
+  stage-start jingle + a game-over sting, and the real Battle City **"Game Start" jingle** on the
+  Title's start gesture), and on-screen **touch controls** (a D-pad + fire button) that appear only
+  on touch devices.
 - **Construction mode.** A built-in **level editor** (open with `T` from the Title): paint the 17×17
   grid with all six terrain types + the base, save it to local storage, and **play** your hand-authored
   stage through the same combat spine.

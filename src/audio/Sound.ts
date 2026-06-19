@@ -35,8 +35,8 @@ import type Phaser from 'phaser'
 const MASTER_GAIN = 0.32 // base master level (× scene.sound.volume per sound).
 const THROTTLE_GAP = 0.03 // s — per-key min interval on the WebAudio clock (the pile-up guard).
 
-// ── Music tunables ([music] design D4/D5) ── synthesized background MUSIC (a looping Title theme, a stage-start
-// jingle, a game-over sting) — a *sustained* sound, but still ZERO assets: each note is one `_tone` square wave on
+// ── Music tunables ([music] design D4/D5) ── synthesized background MUSIC (a stage-start jingle, a game-over
+// sting) — a *sustained* sound, but still ZERO assets: each note is one `_tone` square wave on
 // the WebAudio clock, exactly like the SFX. These are AUDIO-ONLY knobs (a synth tempo/level have no meaning outside
 // this file), so per D4 they live HERE beside MASTER_GAIN/THROTTLE_GAP — NOT in config/constants.ts (which stays the
 // Phaser-free DATA shared across modules; these are not shared). Kept QUIET (well under the SFX peak — D5) so shots/
@@ -55,22 +55,9 @@ interface Note {
 type Melody = Note[]
 
 // ── Module-local melody tables (programmer-art chiptune, [music] §4) ── square-wave note arrays, built once. The
-// TITLE_THEME is a short loopable phrase (the loop player re-arms it bar-after-bar); the JINGLE/STING are one-shots.
-// Frequencies are the standard equal-tempered pitches (A4=440) — written as literals (an audio-local table, not a
-// shared constant — D4). Tasteful + short (D5): ~8 / ~4 / ~3 notes.
-
-// Title theme — a bright, marchy 8-step phrase in C major that loops cleanly (ends back near the tonic so the seam
-// is smooth). A4=440, C5=523, E5=659, G5=784, etc. Mixes quarter + eighth steps for a little bounce.
-const TITLE_THEME: Melody = [
-  { freq: 523, beats: 0.5 }, // C5
-  { freq: 659, beats: 0.5 }, // E5
-  { freq: 784, beats: 0.5 }, // G5
-  { freq: 659, beats: 0.5 }, // E5
-  { freq: 698, beats: 0.5 }, // F5
-  { freq: 587, beats: 0.5 }, // D5
-  { freq: 523, beats: 0.75 }, // C5
-  { freq: 0, beats: 0.5 }, // rest — a breath before the loop re-arms (keeps the seam from sounding rushed).
-]
+// JINGLE/STING are one-shots. Frequencies are the standard equal-tempered pitches (A4=440) — written as literals
+// (an audio-local table, not a shared constant — D4). Tasteful + short (D5): ~4 / ~3 notes. (The Title screen's
+// start sound is the real Battle City jingle — a bundled MP3 played by TitleScene, not synthesized here.)
 
 // Stage jingle — a short rising 4-note "here we go" flourish layered over the curtain (a richer cue than the tiny
 // stageStart() two-note SFX it plays beside — D7). G4 → C5 → E5 → G5, an ascending C-major arpeggio.
@@ -117,7 +104,6 @@ export class Sound {
   private ctx: Ctx | null
   private master: GainNode | null
   private _last: Record<string, number> // per-key throttle stamps on the ctx clock (the reference's Decision 6).
-  private _loopTimer: ReturnType<typeof setTimeout> | null = null // the Title-theme loop re-arm handle ([music] D2).
 
   // scene: any Phaser.Scene (every scene shares Phaser's ONE sound manager / context). We grab the WebAudio
   // context off the manager; if it's absent (NoAudio) the whole façade no-ops (AC6).
@@ -331,13 +317,13 @@ export class Sound {
     this._noise({ dur: 0.04, gain: 0.1, type: 'highpass', freq: 3000 })
   }
 
-  // ── Music ([music] §4) ── synthesized background MUSIC: a looping Title theme + one-shot stage/game-over melodies,
-  // all built ONLY from the `_tone` square wave (zero assets, no `load.*`). The SAME sequencer (`_playSequence`)
-  // drives all three (DRY — D2); only the Title theme re-arms itself into a loop.
+  // ── Music ([music] §4) ── synthesized one-shot stage/game-over melodies, built ONLY from the `_tone` square wave
+  // (zero assets, no `load.*`). The SAME sequencer (`_playSequence`) drives both (DRY — D2). (The Title screen's
+  // start sound is the real Battle City jingle — a bundled MP3 played by TitleScene, not synthesized here.)
 
   // ── _playSequence(mel, gain) ── schedule one `_tone({type:'square'})` per non-rest note on the WebAudio clock,
   // walking a running `delay` accumulator (beats × MUSIC_BEAT) so the notes play back-to-back; returns the melody's
-  // total duration (s) so a caller (the loop) knows when the bar ends. ONE context/mute check up front (not per-note
+  // total duration (s) for any caller that needs it. ONE context/mute check up front (not per-note
   // via _gateOk): this player OWNS the schedule — the notes are a single intentional phrase, not a multi-hit frame to
   // collapse, so the throttle would wrongly drop later notes of the SAME melody. Under NoAudio / mute it returns 0 and
   // schedules nothing (the safe no-op — D3/AC4). Per-note gain stays under the SFX peak (MUSIC_GAIN — D5) so shots sit
@@ -353,29 +339,6 @@ export class Sound {
       delay += dur
     }
     return delay // total melody length (s).
-  }
-
-  // ── titleMusicStart() ── play the looping Title theme. The LOOP is a self-rescheduling player (D2): there is no one
-  // long buffer — we play TITLE_THEME once, then a `setTimeout` re-arms THIS method when the bar ends. A `setTimeout`
-  // (NOT a scene timer) is used deliberately so the music is independent of any gameplay clock/freeze — the same
-  // stance the SFX take by scheduling on ctx.currentTime (§ SCHEDULING above). Guarded: bail (and arm NOTHING) under
-  // NoAudio or mute, so toggling M between bars self-stops the loop cheaply (the next re-arm's guard returns early →
-  // no further setTimeout) and mid-bar notes are already silent (the global mute zeroes them). Idempotent: musicStop()
-  // first clears any prior re-arm so a double-start can't run two overlapping loops (D3).
-  titleMusicStart(): void {
-    if (!this.ctx || !this.master || this.sm.mute) return // NoAudio / muted ⇒ don't even arm the timer (D3).
-    this.musicStop() // idempotent — drop any pending re-arm before (re)starting (no double loop).
-    const dur = this._playSequence(TITLE_THEME, MUSIC_GAIN)
-    if (dur <= 0) return // nothing scheduled (a race against mute) — no re-arm.
-    this._loopTimer = setTimeout(() => this.titleMusicStart(), dur * 1000) // re-arm the next bar (ms).
-  }
-
-  // ── musicStop() ── cancel the Title-theme loop re-arm. Already-scheduled notes tail out on their own (each is a
-  // short sub-second tone — a hard node kill isn't worth the bookkeeping; KISS). Safe to call when nothing is playing
-  // (the Title SHUTDOWN listener + any future caller) — clearing a null/elapsed timer is a no-op.
-  musicStop(): void {
-    if (this._loopTimer) clearTimeout(this._loopTimer)
-    this._loopTimer = null
   }
 
   // ── stageJingle() ── a one-shot rising flourish over the stage curtain (D7). Throttled on its OWN key (a same-frame

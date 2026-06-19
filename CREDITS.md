@@ -2,16 +2,18 @@
 
 ## Art & audio
 
-**Programmer-art only.** Every visual in Tank 1990 is generated in code from colored rectangles
-and simple shapes (Phaser `Graphics` + generated textures). There are **no external sprite,
-image, font, or audio assets** — nothing is downloaded or bundled from third parties. The game
-runs fully offline (and from `file://`).
+**Programmer-art only (visuals).** Every visual in Tank 1990 is generated in code from colored
+rectangles and simple shapes (Phaser `Graphics` + generated textures). There are **no external
+sprite, image, or font assets**.
 
-Likewise **all sound is synthesized in code** via WebAudio — the sound effects and the music (a
-looping Title theme, a stage-start jingle, a game-over sting) are built from oscillators and noise
-through gain envelopes in `src/audio/Sound.ts`. No audio files are loaded or bundled.
+**Sound is synthesized in code** via WebAudio — the sound effects and the music (a stage-start
+jingle and a game-over sting) are built from oscillators and noise through gain envelopes in
+`src/audio/Sound.ts` — with **one exception**: the Title screen's "Game Start" jingle, played once
+when a run begins, is a bundled audio file (`public/audio/start.mp3`, attributed under
+**Inspiration** below).
 
-This is a deliberate constraint: zero asset licensing, zero network fetches, instant boot.
+Everything (that one clip included) is bundled at build time, so the game still runs fully offline
+and from `file://` — no runtime network fetches.
 
 ## Code & libraries
 
@@ -24,7 +26,9 @@ verbatim from the sibling `dead-cell` project for cross-compatible deterministic
 ## Inspiration
 
 Tank 1990 is a faithful clone of **Battle City** (坦克大战), the 1985 Namco game. This is an
-original code re-implementation; no original assets are used.
+original code re-implementation. The one bundled audio clip — the **"Game Start" jingle**
+(`public/audio/start.mp3`) — is the original Battle City (NES) cue, sourced from a YouTube upload
+(channel: GBelair); the underlying audio is © Namco. No other original assets are used.
 
 ## License
 
