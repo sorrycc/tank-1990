@@ -27,6 +27,8 @@ export const ZH_CN: Dict = {
     'title.diffHint': '← / → 难度 · ↑ / ↓ 起始关卡',
     // F-settings（settings §5.4, AC5 — 标题界面的设置入口提示行，按 O 打开设置屏幕）。
     'title.settings': 'O 设置',
+    // F-construction-mode（construction-mode §6, D6 — 标题界面的地图编辑入口提示行，按 T 打开编辑器）。
+    'title.construction': 'T  地图编辑',
 
     // ── F-seed-challenge（seed-challenge §5.5, D1/D6, AC6 — 标题界面的种子行）── `title.seed` 以 8 位十六进制显示锁定/
     // 上一局的种子；`title.seed.random` 是未锁定种子时的暗色占位（每局随机）；`title.seedHint` 一行按键提示；
@@ -142,6 +144,20 @@ export const ZH_CN: Dict = {
 
     // ── 触摸控制（touch-controls §6 — 触摸设备上的屏幕开火按钮文字，仅在触摸设备显示；方向键画成三角形字形，无需文字）。
     'touch.fire': '开火',
+
+    // ── 地图编辑（关卡编辑器）场景（construction-mode §6, D4 — 标题、当前笔刷标签（插入笔刷的瓦片名）、笔刷循环的七种
+    // 瓦片名、一行操作提示、保存确认提示）── 全部经 t() 读取（ConstructionScene 中不内联任何面向用户的字符串）。
+    'construction.title': '地图编辑',
+    'construction.brush': '笔刷：{tile}',
+    'construction.tile.empty': '空地',
+    'construction.tile.brick': '砖墙',
+    'construction.tile.steel': '钢墙',
+    'construction.tile.water': '水域',
+    'construction.tile.trees': '树林',
+    'construction.tile.ice': '冰面',
+    'construction.tile.base': '基地',
+    'construction.controls': '方向键移动 · SPACE 绘制 · B 笔刷 · C 清空 · S 保存 · P 游玩 · ESC 返回',
+    'construction.saved': '已保存',
   },
 
   // ── 升级条目内容覆盖（按 TANK_UPGRADES 行的 id 键控）── tName/tDesc('upgrade', id, en) 读取这里；缺失则回退到

@@ -34,6 +34,13 @@ export interface Settings {
   // corrupt/old value (no locale field) degrades to the default; main.ts seeds the browser-detected locale on a
   // truly fresh save (D4) so today's auto-detect UX survives for new players, then the choice becomes sticky.
   locale: Locale
+  // ── F-construction-mode (construction-mode §2, D2) ── the run-source flag: true = play the SAVED custom map
+  // (the editor's PLAY sets it; GameScene reads it ONCE in create() and, if a valid grid exists, builds the FIRST
+  // stage from it instead of the procedural generator — then reverts to procedural on advance()). false = the
+  // IDENTITY (today's purely procedural run). Reuses the EXISTING settings key (DRY — no new save key for the SEAM;
+  // the saved GRID itself lives in its own `tank-1990:custom` key via util/customMap.ts). A Title-launched run sets
+  // it false (procedural), so the flag is only true via the editor's PLAY. Coerced to a boolean on read (defensive).
+  playCustom: boolean
 }
 
 // DEFAULT_SETTINGS is the IDENTITY: Normal difficulty (the 1.0 pressure / +0 lives identity) + a stage-0 start — so a
@@ -45,6 +52,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   seed: null, // F-seed-challenge (D3) — no pin by default → mint a fresh seed each launch (today's behaviour).
   volume: 1, // F-settings (D2) — full master volume by default → today's audio behaviour, byte-unchanged.
   locale: 'en', // F-settings (D4) — the type-level default; main.ts seeds the browser-detected locale on a fresh save.
+  playCustom: false, // F-construction-mode (D2) — default to the procedural run (the identity); the editor's PLAY flips it.
 })
 
 // The three valid difficulty levels — the on-read clamp uses this set so a corrupt/old `difficulty` (e.g. a renamed
@@ -83,7 +91,11 @@ export function loadSettings(): Settings {
   // ── F-settings (D4, AC1/AC3) ── force the locale into the two valid codes (a corrupt/old/missing value → the
   // default), the SAME defensive pattern as the difficulty field above. main.ts decides the fresh-save detect.
   const locale: Locale = LOCALES.includes(merged.locale as Locale) ? (merged.locale as Locale) : DEFAULT_SETTINGS.locale
-  return { difficulty, startStage, seed, volume, locale }
+  // ── F-construction-mode (D2) ── coerce the run-source flag to a strict boolean (a non-boolean / missing value →
+  // false, the procedural identity — the SAME defensive stance the other fields take), so a corrupt save can never
+  // force the custom path (it just falls through to procedural). The saved grid's own validity is checked separately.
+  const playCustom = merged.playCustom === true
+  return { difficulty, startStage, seed, volume, locale, playCustom }
 }
 
 // ── hasStoredSettings() → boolean (settings §5.3, D4) ── true iff a settings blob has ACTUALLY been persisted under

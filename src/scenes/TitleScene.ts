@@ -145,9 +145,15 @@ export class TitleScene extends Phaser.Scene {
       .setOrigin(0.5)
     // ── F-settings (settings §5.4, AC5) — the Settings hint line, on the same dim hint band as the seed hint. The
     // `O` key (handler below) routes to the dedicated Settings screen (volume · default difficulty · language). ──
+    // F-construction-mode (construction-mode §5.4, D6, AC1) — the Settings (`O`) + Construction (`T`) hints share
+    // ONE dim band (two centered-block halves) so the editor route is discoverable WITHOUT pushing the controls +
+    // hi-score layout below it down. Settings sits left of center, Construction right (each setOrigin centers its half).
     this.add
-      .text(cx, SEED_Y + 36, t('title.settings'), { fontFamily: UI_FONT, fontSize: '15px', color: '#5c6b7a' })
-      .setOrigin(0.5)
+      .text(cx - 16, SEED_Y + 36, t('title.settings'), { fontFamily: UI_FONT, fontSize: '15px', color: '#5c6b7a' })
+      .setOrigin(1, 0.5)
+    this.add
+      .text(cx + 16, SEED_Y + 36, t('title.construction'), { fontFamily: UI_FONT, fontSize: '15px', color: '#5c6b7a' })
+      .setOrigin(0, 0.5)
 
     // Re-render the chooser from the current `settings` (the selected level bright green, the rest dim; the
     // start-stage readout re-interpolated). Called once now + after every key change (DRY — one render path).
@@ -339,6 +345,16 @@ export class TitleScene extends Phaser.Scene {
       if (editingSeed || started) return // suppressed mid-seed-entry / after start — no navigation.
       sfx.uiSelect()
       this.scene.start('Settings')
+    })
+
+    // ── F-construction-mode (construction-mode §5.4, D6, AC1) — `T` opens the Construction (level editor) scene, a
+    // sibling route like Settings. Guarded by the SAME editingSeed / started latches as the `O` / start handlers
+    // (DRY), so it never fires mid-seed-entry or after a run has already started. No change to the difficulty/seed/
+    // start flow — Construction is reached independently, and the editor's PLAY (not the Title) sets playCustom. ──
+    this.input.keyboard!.on('keydown-T', () => {
+      if (editingSeed || started) return // suppressed mid-seed-entry / after start — no navigation.
+      sfx.uiSelect()
+      this.scene.start('Construction')
     })
   }
 }

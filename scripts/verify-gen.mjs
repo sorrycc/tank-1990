@@ -52,6 +52,12 @@ import { TANK_UPGRADES, TANK_UPGRADES_BY_ID, applyUpgrades } from '../src/config
 import { t, tName, tDesc, setLocale } from '../src/i18n/index.js'
 import { EN } from '../src/i18n/en.js'
 import { ZH_CN } from '../src/i18n/zh-CN.js'
+// ── F-construction-mode PURE modules (construction-mode §5, D1/D3) — the custom-stage seam + the saved-grid wrapper.
+// Node-importing them RE-PROVES their purity (a stray `import 'phaser'` throws under node — the convention every
+// pure module satisfies). The verifier drives buildCustomStage's round-trip + customMap's defensive degrade/reject;
+// the Phaser-coupled editor scene (scenes/ConstructionScene.ts) is NEVER imported (it would throw under node).
+import { buildCustomStage, CUSTOM_STAGE_SEED, CUSTOM_MOTIF } from '../src/config/customStage.js'
+import { loadCustomMap, saveCustomMap, hasCustomMap } from '../src/util/customMap.js'
 
 function fail(msg) {
   console.error(`verify-gen FAILED: ${msg}`)
@@ -950,6 +956,86 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// 9) F-construction-mode — the custom-stage seam + the saved-grid wrapper (construction-mode §5, D1/D3).
+// Both modules are PURE (node-imported above → re-proving purity, AC6). The verifier proves DATA properties:
+// buildCustomStage is TOTAL + returns a VALID StageDescription (the SAME shape generateStage emits — one base,
+// 3 enemy + 2 player spawns, 17×17 GRID-SPACE tiles, window-center coords) for an authored grid; and customMap's
+// loadCustomMap degrades to null under a no-DOM/disabled storage (node) + saveCustomMap REJECTS a malformed grid.
+// The PROCEDURAL generator is byte-untouched (buildCustomStage is a SEPARATE function), so §5/§6 stay green by construction.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+{
+  // A hand-authored 17×17 grid: all EMPTY with a few terrain cells + ONE painted BASE (at a NON-default cell so the
+  // base-derivation is exercised, not the bottom-center fallback). RE-derived from the SAME GRID_*/TILE owners (DRY).
+  const grid = []
+  for (let r = 0; r < GRID_ROWS; r++) grid.push(new Array(GRID_COLS).fill(TILE.EMPTY))
+  grid[5][5] = TILE.BRICK
+  grid[6][6] = TILE.STEEL
+  grid[7][7] = TILE.WATER
+  grid[8][8] = TILE.TREES
+  grid[9][9] = TILE.ICE
+  const BASE_COL = 3
+  const BASE_ROW = 10
+  grid[BASE_ROW][BASE_COL] = TILE.BASE // a NON-default base cell (not bottom-center) — exercises the base scan.
+
+  const d = buildCustomStage(grid)
+  // The description shape EXACTLY matches the procedural one (so the WHOLE downstream is reused — D1).
+  if (d.cols !== GRID_COLS || d.rows !== GRID_ROWS) fail(`custom: dims ${d.cols}x${d.rows}, expected ${GRID_COLS}x${GRID_ROWS} (D1)`)
+  if (d.tiles.length !== GRID_ROWS) fail(`custom: tiles has ${d.tiles.length} rows, expected ${GRID_ROWS}`)
+  // The tiles are the AUTHORED grid (GRID-SPACE ints) — every cell a known tile + the painted terrain preserved.
+  const validTiles = new Set(Object.values(TILE))
+  for (let r = 0; r < GRID_ROWS; r++) {
+    if (d.tiles[r].length !== GRID_COLS) fail(`custom: row ${r} has ${d.tiles[r].length} cols, expected ${GRID_COLS}`)
+    for (let c = 0; c < GRID_COLS; c++) {
+      if (!validTiles.has(d.tiles[r][c])) fail(`custom: invalid tile ${d.tiles[r][c]} at (${c},${r})`)
+    }
+  }
+  if (d.tiles[5][5] !== TILE.BRICK || d.tiles[7][7] !== TILE.WATER) fail(`custom: authored terrain not preserved in tiles (D1)`)
+  // Exactly ONE BASE tile (D5 — the editor keeps at most one) at the painted cell, with the window-center coords (D13).
+  let baseCount = 0
+  for (let r = 0; r < GRID_ROWS; r++) for (let c = 0; c < GRID_COLS; c++) if (d.tiles[r][c] === TILE.BASE) baseCount++
+  if (baseCount !== 1) fail(`custom: expected exactly 1 BASE tile, found ${baseCount} (D5)`)
+  if (d.base.col !== BASE_COL || d.base.row !== BASE_ROW) fail(`custom: base.col/row (${d.base.col},${d.base.row}) != painted (${BASE_COL},${BASE_ROW}) (D5)`)
+  {
+    const wc = windowCenter(BASE_COL, BASE_ROW)
+    if (d.base.x !== wc.x || d.base.y !== wc.y) fail(`custom: base (x,y) != window-center (D13)`)
+  }
+  // 3 enemy + 2 player spawns, each a window-center anchor (the SAME placement generateStage uses — D1).
+  if (d.enemySpawns.length !== 3) fail(`custom: expected 3 enemy spawns, got ${d.enemySpawns.length} (D1)`)
+  if (d.playerSpawns.length !== 2) fail(`custom: expected 2 player spawns, got ${d.playerSpawns.length} (D1)`)
+  for (const s of [...d.enemySpawns, ...d.playerSpawns]) {
+    const wc = windowCenter(s.col, s.row)
+    if (s.x !== wc.x || s.y !== wc.y) fail(`custom: spawn ${s.which} (x,y) != window-center (D13)`)
+    if (s.col < 0 || s.row < 0 || s.col >= GRID_COLS || s.row >= GRID_ROWS) fail(`custom: spawn ${s.which} out of bounds`)
+  }
+  // The metadata: the sentinel seed, the 'custom' motif, stage 0, not a boss (D1/D7).
+  if (d.seed !== CUSTOM_STAGE_SEED) fail(`custom: seed ${d.seed} != CUSTOM_STAGE_SEED ${CUSTOM_STAGE_SEED}`)
+  if (d.motif !== CUSTOM_MOTIF) fail(`custom: motif '${d.motif}' != CUSTOM_MOTIF '${CUSTOM_MOTIF}'`)
+  if (d.stageIndex !== 0) fail(`custom: stageIndex ${d.stageIndex}, expected 0 (stage 0 only — D7)`)
+  if (d.isBoss !== false) fail(`custom: isBoss ${d.isBoss}, expected false`)
+
+  // TOTALITY (D1): an UN-authored grid (no BASE painted) still yields a valid description — base defaults to
+  // bottom-center (the generator's `(floor(cols/2), rows-1)`), so a map without a hand-placed eagle is PLAYABLE.
+  const noBase = []
+  for (let r = 0; r < GRID_ROWS; r++) noBase.push(new Array(GRID_COLS).fill(TILE.EMPTY))
+  const dn = buildCustomStage(noBase)
+  if (dn.base.col !== Math.floor(GRID_COLS / 2) || dn.base.row !== GRID_ROWS - 1)
+    fail(`custom: no-base default not bottom-center (got ${dn.base.col},${dn.base.row}) (D5)`)
+
+  // ── customMap (D3) ── under node (no DOM/localStorage) loadCustomMap degrades to null + hasCustomMap is false
+  // (save.ts's get returns the fallback — never throws). saveCustomMap REJECTS a malformed grid (wrong dims / a bad
+  // cell value) → false, so a corrupt in-memory grid can never poison the saved slot; a valid grid's save attempt
+  // does not throw (returns true/false depending on the no-DOM storage — either is fine, the point is it never throws).
+  if (loadCustomMap() !== null) fail(`customMap: loadCustomMap() under node must degrade to null (no DOM storage, D3)`)
+  if (hasCustomMap() !== false) fail(`customMap: hasCustomMap() under node must be false (no DOM storage, D3)`)
+  if (saveCustomMap([[TILE.EMPTY]]) !== false) fail(`customMap: saveCustomMap(wrong-dims) must be rejected → false (D3)`)
+  const badCell = []
+  for (let r = 0; r < GRID_ROWS; r++) badCell.push(new Array(GRID_COLS).fill(TILE.EMPTY))
+  badCell[0][0] = 999 // an out-of-range tile int — a corrupt cell.
+  if (saveCustomMap(badCell) !== false) fail(`customMap: saveCustomMap(bad-cell) must be rejected → false (D3)`)
+  saveCustomMap(grid) // a VALID grid — must NOT throw (the no-DOM set returns false; the point is it degrades safely).
+}
+
 console.log(
   `verify-gen OK: rng deterministic + pinned; constants ${GRID_COLS}x${GRID_ROWS} (pure node-import); ` +
     `save clone-no-alias; tiles TILE_PROPS total + helpers read the table; ` +
@@ -968,6 +1054,7 @@ console.log(
     `F5 power-ups well-formed (8 kinds incl. boat+drill, durations, pickPowerUpKind deterministic) + upgrade rows cost-monotone + ` +
     `applyUpgrades identity/never-weaker/graceful + i18n structure (ZH⊆EN, content keyed to real rows, fallback chain) ` +
     `+ F-seed-challenge formatSeed/parseSeed pure round-trip+clamp+null (8-hex u32, seed-challenge AC1/AC2) ` +
+    `+ F-construction-mode buildCustomStage total/valid (1 base, 3+2 spawns, 17×17, window-center) + customMap degrade-null/reject-corrupt (construction-mode AC6); ` +
     `(pure node-import, AC1/AC2/AC6/AC9/AC11). (FOOTPRINT=${FOOTPRINT} tiles.)`,
 )
 process.exit(0)

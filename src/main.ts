@@ -7,11 +7,12 @@ import { GameScene } from './scenes/GameScene.js'
 import { HUDScene } from './scenes/HUDScene.js'
 import { GameOverScene } from './scenes/GameOverScene.js'
 import { SettingsScene } from './scenes/SettingsScene.js'
+import { ConstructionScene } from './scenes/ConstructionScene.js'
 import { setLocale, detectLocale } from './i18n/index.js'
 import { loadSettings, saveSettings, hasStoredSettings } from './util/settings.js'
 
 // ── Single boot site (F0 scaffold §5.3, Decision 1/2/3, AC4/AC5/AC6) ──
-// Builds ONE Phaser.Game config and registers all SIX scenes. The scene registration ORDER
+// Builds ONE Phaser.Game config and registers all SEVEN scenes. The scene registration ORDER
 // matters: the first entry (Boot) auto-starts (AC6); every other scene is inert until explicitly
 // started via a transition, so the world/HUD never double-runs. There is NO Victory scene
 // (Decision 2) — Tank 1990 is ENDLESS: a run ends only on eagle-death / lives spent → GameOver.
@@ -43,7 +44,7 @@ const config: Phaser.Types.Core.GameConfig = {
 
   backgroundColor: '#0b0e14', // Dark slate so primitive rectangles read clearly.
 
-  scene: [BootScene, TitleScene, HubScene, GameScene, HUDScene, GameOverScene, SettingsScene],
+  scene: [BootScene, TitleScene, HubScene, GameScene, HUDScene, GameOverScene, SettingsScene, ConstructionScene],
 }
 
 const game = new Phaser.Game(config)

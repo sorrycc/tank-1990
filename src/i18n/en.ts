@@ -25,6 +25,8 @@ export const EN: Dict = {
     'title.diffHint': '← / → difficulty · ↑ / ↓ start stage',
     // F-settings (settings §5.4, AC5) — the Title hint line for the new Settings screen (`O` opens it).
     'title.settings': 'O settings',
+    // F-construction-mode (construction-mode §6, D6) — the Title hint line for the level editor (`T` opens it).
+    'title.construction': 'T  Construction',
 
     // ── F-seed-challenge (seed-challenge §5.5, D1/D6, AC6) — the Title run-seed row. `title.seed` shows the pinned/
     // last run seed as 8-hex; `title.seed.random` is the dim placeholder when no seed is pinned (a fresh-random run);
@@ -147,5 +149,20 @@ export const EN: Dict = {
     // ── Touch controls (touch-controls §6) — the on-screen FIRE button label, shown ONLY on a touch-capable
     // device (the D-pad arrows are drawn as triangle glyphs, so they need no string — KISS). Read via t('touch.fire').
     'touch.fire': 'FIRE',
+
+    // ── Construction (level editor) scene (construction-mode §6, D4) — the heading, the current-brush label
+    // (interpolating the brush's tile name), the seven tile names the brush cycles, the one-line controls hint,
+    // and the brief save-confirm blip. All read via t() in ConstructionScene (no literal user-facing string inlined).
+    'construction.title': 'CONSTRUCTION',
+    'construction.brush': 'Brush: {tile}',
+    'construction.tile.empty': 'EMPTY',
+    'construction.tile.brick': 'BRICK',
+    'construction.tile.steel': 'STEEL',
+    'construction.tile.water': 'WATER',
+    'construction.tile.trees': 'TREES',
+    'construction.tile.ice': 'ICE',
+    'construction.tile.base': 'BASE',
+    'construction.controls': 'Arrows move · SPACE paint · B brush · C clear · S save · P play · ESC back',
+    'construction.saved': 'Saved',
   },
 }

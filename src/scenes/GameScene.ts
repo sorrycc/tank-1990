@@ -37,6 +37,13 @@ import type { Difficulty } from '../config/stages.js'
 import { loadSettings, saveSettings } from '../util/settings.js'
 import { generateStage } from '../world/LevelGenerator.js'
 import type { StageDescription, SpawnPoint } from '../world/LevelGenerator.js'
+// ── F-construction-mode (construction-mode §5.4, D1/D2/D7) ── the PURE custom-stage seam + the saved-grid wrapper.
+// buildCustomStage(grid) returns the SAME StageDescription shape generateStage does, so a hand-authored map feeds
+// the WHOLE downstream (TileMap + the combat spine) with NO new branch; loadCustomMap() reads the saved grid (null
+// on corrupt/missing). Both are PURE (the verifier node-imports + drives them — §5); GameScene only orchestrates
+// WHICH source to build the FIRST stage from (custom vs. procedural), then reverts to procedural on advance() (D7).
+import { buildCustomStage } from '../config/customStage.js'
+import { loadCustomMap } from '../util/customMap.js'
 import { TileMap } from '../world/TileMap.js'
 import { createRunState, extraLivesCrossed } from '../core/RunState.js'
 import type { RunState, SlotSeed } from '../core/RunState.js'
@@ -178,6 +185,11 @@ export class GameScene extends Phaser.Scene {
   // spawnTimer/spawnCursor: the staggered-spawn cadence + the round-robin L→C→R cursor over the three top spawns.
   private runState!: RunState
   private desc!: StageDescription
+  // ── F-construction-mode (construction-mode §5.4, D7) ── the ONE-SHOT authored grid the FIRST _buildStage() builds
+  // from instead of the procedural generator. Set in create() ONLY when settings.playCustom is true AND a valid saved
+  // grid exists; consumed (and NULLED) by the first _buildStage(); every later rebuild (advance()) falls through to
+  // generateStage (the custom grid seeds stage 0 only — D7). Null = the procedural path (the identity — today's run).
+  private _customGrid: number[][] | null = null
   private enemies: Tank[] = []
   private stageRng!: RNG
   private spawnTimer = 0
@@ -340,6 +352,17 @@ export class GameScene extends Phaser.Scene {
     this.difficulty = settings.difficulty
     const livesBonus = DIFFICULTY_LIVES_BONUS[this.difficulty] // the per-level run-start lives ADD (easy +1 … hard −1, D6).
 
+    // ── F-construction-mode (construction-mode §5.4, D2/D7, AC4/AC5) ── pick the FIRST stage's TERRAIN source ONCE.
+    // If the editor's PLAY set settings.playCustom AND a VALID saved grid exists (loadCustomMap returns null on a
+    // corrupt/missing blob), stash it as the one-shot _customGrid so the first _buildStage() builds from the AUTHORED
+    // map; else stay procedural (the identity). Then CLEAR playCustom back to false (saveSettings) so the flag is a
+    // true ONE-SHOT — the NEXT run (a Title-launched procedural run, or a retry) is procedural unless the editor sets
+    // it again (D2). A Normal/no-custom session is byte-identical to today (_customGrid stays null).
+    this._customGrid = settings.playCustom ? loadCustomMap() : null
+    // CLEAR the local flag (NOT a separate write — the seed write-back below spreads `settings`, so mutating it here
+    // makes that ONE write also persist playCustom=false; a second saveSettings would race/duplicate). One-shot consumed.
+    settings.playCustom = false
+
     // ── Construct the SINGLE RunState (F4 §5.4 + F5 §5.4 + F-difficulty §5.4, D5/D5b/D11/D5/D6) ── the run owner: a
     // minted seed, a PER-SLOT { [slot]: {lives, tier} } seed map (F5 D5b — replaces F4's scalar startLives), and the
     // optional deep start stage (F-difficulty D5). Each present slot's run-start lives/tier come from THAT slot's
@@ -385,7 +408,18 @@ export class GameScene extends Phaser.Scene {
   // PRESENT players (D11). Leaves `enemies` empty (the staggered spawn loop streams them in update — AC1).
   private _buildStage(): void {
     const cfg = stageConfig(this.runState.stageIndex)
-    this.desc = generateStage(this.runState.seed, cfg)
+    // ── F-construction-mode (construction-mode §5.4, D1/D7, AC4/AC5) ── the ONE small branch: if a one-shot custom
+    // grid is set (the editor's PLAY launched this run), build the FIRST stage's TERRAIN from the AUTHORED map via the
+    // PURE buildCustomStage seam (the SAME StageDescription shape generateStage returns — so the eagle/spawns/combat
+    // below are UNCHANGED), then NULL the field so every later rebuild (advance()) falls through to generateStage (the
+    // custom grid seeds stage 0 only — D7). The roster/difficulty for stage 0 still come from stageConfig(0) below
+    // (only the terrain/base/spawns come from the grid). A null _customGrid is the procedural identity (today's path).
+    if (this._customGrid) {
+      this.desc = buildCustomStage(this._customGrid)
+      this._customGrid = null // one-shot — consumed; the next _buildStage falls through to the procedural generator.
+    } else {
+      this.desc = generateStage(this.runState.seed, cfg)
+    }
     this.tileMap = new TileMap(this, this.desc)
     this.stageLabel.setText(`STAGE ${this.runState.stageIndex + 1}`)
 
