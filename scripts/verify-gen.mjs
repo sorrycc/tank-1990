@@ -605,6 +605,11 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
       if (a.shieldTimer[s] !== 0) fail(`RunState: fresh shieldTimer[${s}] = ${a.shieldTimer[s]}, expected 0 (the identity)`)
     }
     if (a.freezeTimer !== 0 || a.shovelTimer !== 0) fail(`RunState: fresh power-up timers not 0 (the neutral identity)`)
+    // (stage-bonus, D1, AC1) — the per-stage kills-by-type ledger seeds every roster id (basic/fast/power/armor/
+    // boss) to 0 on a fresh run (a fresh stage starts at 0 kills — the tally counts only the stage just cleared).
+    for (const id of ['basic', 'fast', 'power', 'armor', 'boss']) {
+      if (a.killsByStage[id] !== 0) fail(`RunState: fresh killsByStage['${id}'] = ${a.killsByStage[id]}, expected 0 (stage-bonus AC1)`)
+    }
     // Mutate a's carried state, then drive advance() — the carried score/lives/tier must SURVIVE advance (D10).
     a.score = 4200
     a.lives[1] = 1
@@ -685,6 +690,32 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
       r.advance()
       if (r.freezeTimer !== 0 || r.shovelTimer !== 0) fail(`RunState: advance() did NOT reset freeze/shovel timers (AC3)`)
       if (r.shieldTimer[1] !== 0) fail(`RunState: advance() did NOT reset shieldTimer (AC3)`)
+    }
+
+    // ── tallyKill(id) increments the per-stage kills-by-type ledger + advance() resets it (stage-bonus D1, AC1) ──
+    // tallyKill('basic') etc. bump the matching count; an id OUTSIDE the roster no-ops (no stray key, defensive).
+    // advance() then RESETS every count to 0 (a fresh stage starts at 0 kills — the SAME lifecycle as the spawn
+    // ledger). The carried economy (score/lives) is UNTOUCHED by either (the D10 invariant holds for the new field).
+    {
+      const r = createRunState(0xba5, { 1: { lives: 3, tier: 0 } })
+      r.score = 555
+      r.tallyKill('basic')
+      r.tallyKill('basic')
+      r.tallyKill('armor')
+      r.tallyKill('boss')
+      r.tallyKill('__nope__') // an unknown id must NO-OP (no stray key, no throw).
+      if (r.killsByStage.basic !== 2) fail(`RunState: tallyKill('basic')×2 → killsByStage.basic = ${r.killsByStage.basic}, expected 2 (AC1)`)
+      if (r.killsByStage.armor !== 1) fail(`RunState: tallyKill('armor') → killsByStage.armor = ${r.killsByStage.armor}, expected 1 (AC1)`)
+      if (r.killsByStage.boss !== 1) fail(`RunState: tallyKill('boss') → killsByStage.boss = ${r.killsByStage.boss}, expected 1 (AC1)`)
+      if (r.killsByStage.fast !== 0 || r.killsByStage.power !== 0) fail(`RunState: tallyKill bumped an untouched type (AC1)`)
+      if ('__nope__' in r.killsByStage) fail(`RunState: tallyKill('__nope__') created a stray key (must no-op an unknown id, AC1)`)
+      if (r.score !== 555) fail(`RunState: tallyKill must NOT touch the carried score (D10)`)
+      // advance() resets every count to 0 (the fresh stage starts at 0 kills — stage-bonus AC1).
+      r.advance()
+      for (const id of ['basic', 'fast', 'power', 'armor', 'boss']) {
+        if (r.killsByStage[id] !== 0) fail(`RunState: advance() did NOT reset killsByStage['${id}'] (= ${r.killsByStage[id]}, expected 0) — stage-bonus AC1`)
+      }
+      if (r.score !== 555) fail(`RunState: advance() must carry the score across (D10) — got ${r.score}`)
     }
 
     // isBossStage() tracks stageConfig.isBoss (the boss-feature seam). Drive a fresh run to a boss stage.
@@ -840,7 +871,7 @@ console.log(
     `bossSpecForStage monotone/never-weaker/fire-unscaled + boss absent from roster (D3) + balance guards ` +
     `(0<CURRENCY_RATIO<1, FIRE_COOLDOWN>0) (F6 AC2/AC8/AC9); ` +
     `RunState.advance() deterministic & stageIndex strictly increasing & economy carried + per-slot seed fold + ` +
-    `tickTimers decay/clamp + advance-reset (F5 D5b/D5c/AC3/AC6); ` +
+    `tickTimers decay/clamp + advance-reset (F5 D5b/D5c/AC3/AC6) + killsByStage seeds-0/tallyKill-increments/advance-resets (stage-bonus AC1); ` +
     `F5 power-ups well-formed (6 kinds, durations, pickPowerUpKind deterministic) + upgrade rows cost-monotone + ` +
     `applyUpgrades identity/never-weaker/graceful + i18n structure (ZH⊆EN, content keyed to real rows, fallback chain) ` +
     `(pure node-import, AC1/AC2/AC6/AC9/AC11). (FOOTPRINT=${FOOTPRINT} tiles.)`,

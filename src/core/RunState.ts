@@ -42,6 +42,12 @@ export interface RunState {
   enemiesQueued: number // not-yet-spawned enemies waiting to stream in (the spawn loop decrements it).
   enemiesAlive: number // enemies currently on-screen (≤ concurrentEnemies; the clear predicate reads it).
 
+  // ── F-stage-bonus per-stage kills-by-type ledger (stage-bonus §5.2, D1, AC1) ── one kill count per enemy spec
+  // id (basic/fast/power/armor/boss), feeding the between-stage bonus tally. Run-scoped numeric state with the
+  // EXACT lifecycle of the spawn ledger above: seeded all-0 in createRunState + RESET to 0 each advance() (a fresh
+  // stage starts at 0 kills) — so the tally counts ONLY the stage just cleared. tallyKill(id) is the sole writer.
+  killsByStage: Record<string, number> // per-stage kills keyed by enemy spec id (RESET each stage, like the ledger).
+
   // ── Power-up timers (F5 §5.2, D4/D5 — DRIVEN now: clock/shovel/helmet write them, tickTimers decays them) ──
   // Seeded 0 = inactive (the neutral identity). F4 left freezeTimer/shovelTimer as placeholders; F5 WRITES them
   // (the clock/shovel power-ups), ticks them down (tickTimers), and reads them (the scene's gdt-freeze / fortify).
@@ -53,6 +59,7 @@ export interface RunState {
   advance(): RunState // next seed + stageIndex++ + reseed the spawn ledger + RESET the timed power-ups (carries lives/tier/score — D5/D6).
   isBossStage(): boolean // stageConfig(stageIndex).isBoss (the boss feature reads it; F4 spawns the normal roster).
   tickTimers(dt: number): void // F5 (D5/AC3) — decay freezeTimer/shovelTimer/shieldTimer[*] toward 0, clamped ≥ 0.
+  tallyKill(id: string): void // F-stage-bonus (D1/AC1) — bump killsByStage[id] (no-ops an id outside the roster).
 }
 
 // ── SlotSeed (F5 §5.2, D5b) ── the per-slot run-START seed a present player launches with: its lives + its
@@ -126,6 +133,10 @@ export function createRunState(startSeed: number, seeds: Record<number, SlotSeed
     enemiesRemaining: cfg0.totalEnemies,
     enemiesQueued: cfg0.totalEnemies,
     enemiesAlive: 0,
+    // F-stage-bonus (D1/AC1) — seed every roster id's kill count to 0 (a fresh run/stage starts at 0 kills). The
+    // five ids match the enemy spec ids (basic/fast/power/armor + the explicitly-spawned boss). advance() resets
+    // these, so the tally on a stage clear reflects ONLY that stage's kills.
+    killsByStage: { basic: 0, fast: 0, power: 0, armor: 0, boss: 0 },
     freezeTimer: 0,
     shovelTimer: 0,
     shieldTimer,
@@ -148,6 +159,9 @@ export function createRunState(startSeed: number, seeds: Record<number, SlotSeed
       this.freezeTimer = 0
       this.shovelTimer = 0
       for (const slot of Object.keys(this.shieldTimer)) this.shieldTimer[Number(slot)] = 0
+      // F-stage-bonus (D1/AC1) — RESET every per-stage kill count to 0 (the fresh stage starts at 0 kills, so the
+      // NEXT clear's tally counts only its own stage). The SAME lifecycle as the spawn-ledger reseed above.
+      for (const id of Object.keys(this.killsByStage)) this.killsByStage[id] = 0
       return this
     },
 
@@ -170,6 +184,15 @@ export function createRunState(startSeed: number, seeds: Record<number, SlotSeed
         const s = Number(slot)
         this.shieldTimer[s] = Math.max(0, this.shieldTimer[s] - dt)
       }
+    },
+
+    // ── tallyKill(id) (F-stage-bonus §5.2, D1, AC1) ── the SOLE writer of the per-stage kills-by-type ledger:
+    // increment killsByStage[id] for a killed enemy's spec id. GUARDS an id outside the roster (`id in
+    // killsByStage`) so an unknown/typo id no-ops instead of creating a stray key (KISS/defensive). Called from
+    // GameScene._onEnemyKilled where the kill score is already banked (the boss routes there too, so its kill
+    // tallies for FREE). PURE — no Phaser; the verifier drives it headlessly + asserts the increment + reset.
+    tallyKill(this: RunState, id: string): void {
+      if (id in this.killsByStage) this.killsByStage[id]++
     },
   }
 }

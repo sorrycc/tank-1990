@@ -16,6 +16,8 @@ import {
   CARRIER_RATE,
   STAGE_CLEARED_BANNER_SEC,
   EXTRA_LIFE_SCORE,
+  STAGE_BONUS_SEC,
+  STAGE_CLEAR_BONUS,
 } from '../config/constants.js'
 import { TILE } from '../config/tiles.js'
 import { Input } from '../core/Input.js'
@@ -30,7 +32,7 @@ import type { StageDescription, SpawnPoint } from '../world/LevelGenerator.js'
 import { TileMap } from '../world/TileMap.js'
 import { createRunState, extraLivesCrossed } from '../core/RunState.js'
 import type { RunState, SlotSeed } from '../core/RunState.js'
-import { ENEMY_SPECS, rosterPick, applyStarTier, bossSpecForStage } from '../config/tanks.js'
+import { ENEMY_SPECS, BOSS, rosterPick, applyStarTier, bossSpecForStage } from '../config/tanks.js'
 import { applyUpgrades } from '../config/tank-upgrades.js'
 import { mulberry32 } from '../util/rng.js'
 import type { RNG } from '../util/rng.js'
@@ -207,6 +209,16 @@ export class GameScene extends Phaser.Scene {
   // (the player + bullets stay live — only the enemy pair is paused) and _publishHud mirrors a centered label to
   // the HUD via the registry (the SAME pattern as the STAGE-N-CLEARED banner — GameScene owns WHEN, the HUD HOW).
   private curtainTimer = 0
+
+  // ── F-stage-bonus between-stage tally (stage-bonus §5.3, D2/D3/D6, AC2/AC3/AC4) ── `tallyTimer` is the SECONDS
+  // remaining on the brief bonus-tally overlay armed at EVERY stage clear (boss OR non-boss). It mirrors the intro
+  // curtain VERBATIM: armed at the one-shot clear site (STAGE_BONUS_SEC from constants), decayed on the REAL dt in
+  // update() (so it ends in real time through the world freeze), gated against the enemy pair while up, and
+  // skippable on the P1 fire/start edge. The DEFERRED _advanceStage() is HELD until it elapses/skips — so the tally
+  // sits BETWEEN the clear and the next stage's curtain (D3). While tallyTimer > 0 _publishHud mirrors the formatted
+  // tally block to the HUD via `hud.tally` (the SAME registry-decoupled idiom — GameScene owns WHEN, the HUD HOW).
+  // NOT reset by _buildStage (a transient overlay tied to the clear→advance beat; the advance is what dismisses it).
+  private tallyTimer = 0
 
   // ── F7 pause state (F7 §5.3, Decisions D3/D4, AC4) ── `paused` gates update()'s gameplay block (the SAME
   // freeze idiom the gameOver branch uses — while paused the world is FULLY frozen but the FX pool still settles
@@ -650,6 +662,37 @@ export class GameScene extends Phaser.Scene {
     // SAME registry-mirror pattern as the clear banner: the HUD renders it centered (the intro beat). The human
     // stage number is stageIndex + 1. Its own key (NOT hud.banner) so the intro + clear render paths stay separate.
     r.set('hud.stageIntro', this.curtainTimer > 0 ? t('hud.stageIntro', { n: this.runState.stageIndex + 1 }) : '')
+
+    // F-stage-bonus (D5, AC2) — the between-stage bonus tally: while the window is up publish the FULLY-FORMATTED
+    // multi-line block to `hud.tally` ('' otherwise), so the HUD stays a pure mirror (it owns layout, GameScene owns
+    // the run data + formatting — SOLID). Its OWN key so it never clobbers the clear/intro banner. Built by
+    // _buildTallyString (DRY — the per-type points come from the SAME spec scoreValues banked on the kill).
+    r.set('hud.tally', this.tallyTimer > 0 ? this._buildTallyString() : '')
+  }
+
+  // ── _buildTallyString() (stage-bonus §5.3, D5, AC2) ── format the between-stage bonus block GameScene publishes
+  // to `hud.tally`. ONE newline-joined string (KISS — the HUD mirrors it into one Text): a title, one row PER enemy
+  // type KILLED this stage (`t('bonus.row', {name, count, points, sub})` — skipping a 0-count type so the panel
+  // shows only what was fought), the flat stage-clear bonus line, and the grand TOTAL. The per-type points read
+  // from ENEMY_SPECS[id].scoreValue (the boss from BOSS.scoreValue — DRY, the SAME numbers banked on the kill); the
+  // boss is the ONE id not in ENEMY_SPECS, so it is looked up separately. The displayed TOTAL = Σ(count × points)
+  // + STAGE_CLEAR_BONUS — exactly the points this clear added to runState.score (the per-kill banks + the bonus).
+  private _buildTallyString(): string {
+    const kills = this.runState.killsByStage
+    const lines: string[] = [t('bonus.title')]
+    let subtotalSum = 0
+    // Iterate the roster ids in a stable order (basic→fast→power→armor→boss) so the panel reads consistently.
+    for (const id of ['basic', 'fast', 'power', 'armor', 'boss']) {
+      const count = kills[id] ?? 0
+      if (count <= 0) continue // skip a type that wasn't fought this stage (show only what was killed — KISS).
+      const points = id === 'boss' ? BOSS.scoreValue : ENEMY_SPECS[id].scoreValue
+      const sub = count * points
+      subtotalSum += sub
+      lines.push(t('bonus.row', { name: t(`bonus.${id}`), count, points, sub }))
+    }
+    lines.push(t('bonus.clearBonus', { pts: STAGE_CLEAR_BONUS }))
+    lines.push(t('bonus.total', { pts: subtotalSum + STAGE_CLEAR_BONUS }))
+    return lines.join('\n')
   }
 
   // ── bullet × terrain solids resolution (F3 §5.3, D1/D2/D3/D4, AC1/AC2/AC6/AC10) ── ONE callback over the
@@ -983,6 +1026,10 @@ export class GameScene extends Phaser.Scene {
     this.effects.scorePopup(enemy.collider.x, enemy.collider.y, enemy.spec.scoreValue)
     this.sfx.explosion({ big: true }) // F6 (D6/AC6) — a big burst on an enemy/boss kill (the boss routes here too).
     this.runState.score += enemy.spec.scoreValue // bank the score (D10 — the HUD/Hub features render/spend it).
+    // F-stage-bonus (D1/AC1) — tally this kill by its enemy spec id into the per-stage kills-by-type ledger (the
+    // between-stage bonus screen reads it). The boss routes through THIS funnel too, so its kill tallies for FREE
+    // under the 'boss' id (DRY). One line beside the score bank — the SAME causal path that already holds the id.
+    this.runState.tallyKill(enemy.spec.id)
 
     // ── F-extra-life 1UP milestone (extra-life §5.3, D1/D3/D4/D6, AC4/AC5) ── score is banked in EXACTLY this
     // site, so the milestone check lives HERE (one causal path: a kill banks → maybe crosses → maybe 1UPs — D6),
@@ -1036,8 +1083,14 @@ export class GameScene extends Phaser.Scene {
         this.bannerTimer = STAGE_CLEARED_BANNER_SEC
         this.sfx.stageCleared()
       }
-      this.transitioning = true
-      this.time.delayedCall(0, () => this._advanceStage())
+      // F-stage-bonus (D3/D4, AC2/AC3/AC4) — KEEP the `transitioning` one-shot latch (so the clear fires EXACTLY
+      // once), but instead of advancing NOW, bank the flat stage-clear bonus ONCE and arm the bonus-tally overlay.
+      // `update()` HOLDS the deferred _advanceStage() until tallyTimer decays to 0 (or the player skips on fire),
+      // so the bonus screen sits BETWEEN the clear and the next stage's intro curtain. Banking here (under the
+      // one-shot) guarantees the bonus is added to the run score exactly once per clear (D4).
+      this.runState.score += STAGE_CLEAR_BONUS // the flat per-stage-clear bonus, banked once under the one-shot (D4).
+      this.transitioning = true // the one-shot clear latch (preserved verbatim — the advance is now HELD, not run).
+      this.tallyTimer = STAGE_BONUS_SEC // arm the bonus tally; update() fires _advanceStage when it elapses/skips (D3).
     }
   }
 
@@ -1086,11 +1139,14 @@ export class GameScene extends Phaser.Scene {
     this.sfx.itemDrop() // "an item appeared" cue (descending vs. powerUp's ascending collect — drop ≠ collect, D6).
   }
 
-  // ── _advanceStage() (F4 §5.3/§5.4, Decisions D5/D6/D7, AC5/AC10) ── the deferred stage→stage advance (run
-  // through delayedCall(0) out of the death callback — AC10). Advance the RunState (next seed + stageIndex++ +
-  // reseed the spawn ledger — D5/D6), tear down the per-stage world (leaks nothing — AC10), rebuild the next
-  // (harder) stage IN PLACE via the SHARED _buildStage (carrying lives/tier/score on the RunState — D10), and
-  // clear the one-shot guard. A guard re-check defends against a run-over racing the defer.
+  // ── _advanceStage() (F4 §5.3/§5.4 → stage-bonus §5.3, Decisions D5/D6/D7 + D3, AC5/AC10) ── the deferred stage→
+  // stage advance. F-stage-bonus (D3): it is now fired from update() when the between-stage bonus tally elapses/is
+  // skipped (NOT from a delayedCall out of the death callback) — but update() is NEVER inside a collision step, so
+  // the deferred-safety still holds (the body teardown below runs outside any overlap iteration). Advance the
+  // RunState (next seed + stageIndex++ + reseed the spawn ledger + reset the kills-by-type tally — D5/D6), tear down
+  // the per-stage world (leaks nothing — AC10), rebuild the next (harder) stage IN PLACE via the SHARED _buildStage
+  // (carrying lives/tier/score on the RunState — D10), and clear the one-shot guard. A guard re-check defends
+  // against a run-over racing the tally window (the gameOver re-check — AC4).
   private _advanceStage(): void {
     if (this.gameOver) {
       this.transitioning = false
@@ -1109,8 +1165,9 @@ export class GameScene extends Phaser.Scene {
   // duplicate overlap), destroy the tilemap (its solid/water bodies + decorations — TileMap.destroy, F2), and
   // destroy the eagle VISUAL (its blocking body rode inside the tilemap — already gone). The RUN-scoped
   // resources (Input, the bullet POOL itself, Effects, the RunState) survive; _buildStage rebuilds the rest.
-  // Runs OUTSIDE any overlap/death callback (called from _advanceStage's delayedCall(0) — AC10), so destroying
-  // bodies here is safe (no body destroyed mid-step). The run economy (lives/tier/score) is on RunState (D10).
+  // Runs OUTSIDE any overlap/death callback (called from _advanceStage, which fires from update() once the bonus
+  // tally elapses — never inside a collision step, AC10), so destroying bodies here is safe (no body destroyed
+  // mid-step). The run economy (lives/tier/score) is on RunState (D10).
   private _teardownStage(): void {
     this.bullets.releaseAll() // clear in-flight shots (F1 — no live-count decrement; a teardown is not a despawn).
     this.powerups.releaseAll() // F5 (AC10) — release any uncollected power-ups (they don't carry across stages).
@@ -1159,6 +1216,13 @@ export class GameScene extends Phaser.Scene {
     // _publishHud mirrors the "STAGE N" label to the HUD. Decayed BEFORE the gameplay block so it counts down each frame.
     this.curtainTimer = Math.max(0, this.curtainTimer - dt)
 
+    // F-stage-bonus (D2/D3, AC2/AC3) — decay the bonus-tally overlay on the REAL dt (so it ends in real time
+    // through the world freeze, the SAME contract as the curtain/banner). Clamped at 0. While tallyTimer > 0 the
+    // enemy pair is gated below + _publishHud mirrors the formatted tally block; when it crosses to 0 with the
+    // clear pending (transitioning) the HELD _advanceStage() fires ONCE (below, after the input sample so the skip
+    // edge can end it early). Decayed BEFORE the gameplay block so it counts down each frame, incl. mid-transition.
+    this.tallyTimer = Math.max(0, this.tallyTimer - dt)
+
     // ── F5 power-up timers + the freeze boundary (F5 §5.3, D4/D5/AC3) ── decay freeze/shovel/shield on the
     // GAMEPLAY dt BEFORE the freeze is applied for the frame (so the freeze timer itself counts down in real
     // gameplay time and ends — the reference's clock-freeze does the same). THEN compute the gameplay dt:
@@ -1184,6 +1248,21 @@ export class GameScene extends Phaser.Scene {
     // Sample the SINGLE Input owner ONCE this frame (AC2 — the sole JustDown owner for the fire edges + the F7
     // pause edge). Reading once keeps the JustDown flags consistent (the sole-owner invariant).
     const s = this.input2.sample()
+
+    // ── F-stage-bonus skip + held advance (stage-bonus §5.3, D3/D6, AC3/AC4) ── while the bonus tally is up
+    // (tallyTimer > 0) the P1 fire/start edge ends it EARLY (the natural "next" button — no new input owner; the
+    // edge is already in the sampled `s`, D6). When the tally window has elapsed (or was just skipped) AND the
+    // clear is pending (the `transitioning` one-shot latch is set), fire the HELD _advanceStage() ONCE — it runs
+    // from update() (never inside a collision step) so the deferred-safety holds (D3/AC4), re-checks gameOver (a
+    // run-end racing the tally cancels cleanly), and tears down + rebuilds the next stage. `return` after it so the
+    // gameplay block below does NOT run on the rebuild frame (no stray fire/tick against the half-swapped world).
+    if (!this.gameOver && this.transitioning) {
+      if (this.tallyTimer > 0 && s.p1.firePressed) this.tallyTimer = 0 // skip on the P1 fire/start edge (D6).
+      if (this.tallyTimer <= 0) {
+        this._advanceStage() // the HELD deferred advance — fires once (the `transitioning` latch is cleared inside).
+        return
+      }
+    }
 
     // ── F7 pause (F7 §5.3, D3/D4, AC4) ── on the P/ESC edge, when NOT gameOver/transitioning/already-paused,
     // OPEN the pause modal + freeze the world. Done BEFORE the gameOver early-return so pause is inert once the
@@ -1240,6 +1319,9 @@ export class GameScene extends Phaser.Scene {
     // deferred stage rebuild is queued) we skip both too — the world is mid-teardown. (D4, AC2): while the STAGE-N
     // intro curtain is up (curtainTimer > 0) we skip both as well — no enemy spawns/acts during the intro beat (the
     // player + bullets stay live; only the enemy pair is gated, per the spec's "pause enemy spawning/AI").
+    // F-stage-bonus (D4): the bonus-tally window runs UNDER the `transitioning` latch (set at the clear, cleared in
+    // _advanceStage), so this SAME guard already excludes the tally — no extra term is needed (the stage is cleared,
+    // there are no enemies left anyway). The player + bullets stay live, consistent with the curtain.
     const frozen = this.runState.freezeTimer > 0
     const curtain = this.curtainTimer > 0
     if (!this.transitioning && !frozen && !curtain) {

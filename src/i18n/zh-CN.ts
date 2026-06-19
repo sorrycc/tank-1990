@@ -66,6 +66,19 @@ export const ZH_CN: Dict = {
     'hud.muted': '已静音', // F6 (D8, AC6) — 静音时的提示（M 键切换）。
     'hud.oneUp': '额外生命', // (extra-life, D5, AC5/AC6) — 跨越分数里程碑时居中显示的 1UP 提示。
 
+    // ── 关卡间奖励结算（stage-bonus §6, D5, AC2 — 每次通关都会显示的经典奖励结算屏幕）── 标题居中；本关每种击杀过的
+    // 敌人一行（名称 · 数量 × 分值 = 小计）；clearBonus 为固定的通关奖励；total 为合计。各类型显示名（普通/快速/火力/
+    // 装甲/首领）翻译；GameScene 负责拼接整块字符串，HUD 仅镜像显示。
+    'bonus.title': '奖励结算',
+    'bonus.row': '{name}  {count} × {points} = {sub}',
+    'bonus.clearBonus': '通关奖励  {pts}',
+    'bonus.total': '合计  {pts}',
+    'bonus.basic': '普通',
+    'bonus.fast': '快速',
+    'bonus.power': '火力',
+    'bonus.armor': '装甲',
+    'bonus.boss': '首领',
+
     // ── 游戏结束（结算快照 — AC5）──
     'over.heading': '游戏结束',
     'over.score': '分数 {n}',

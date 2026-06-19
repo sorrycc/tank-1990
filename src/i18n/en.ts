@@ -66,6 +66,20 @@ export const EN: Dict = {
     'hud.muted': 'MUTED', // F6 (D8, AC6) — the mute cue shown while audio is muted (M toggle).
     'hud.oneUp': 'EXTRA LIFE', // (extra-life, D5, AC5/AC6) — the centered 1UP cue shown on a score-milestone crossing.
 
+    // ── Between-stage bonus tally (stage-bonus §6, D5, AC2) — the classic bonus screen shown on EVERY stage clear.
+    // The title heads a centered panel; one `bonus.row` per enemy type killed this stage (name · count × points =
+    // subtotal); `bonus.clearBonus` the flat stage-clear bonus; `bonus.total` the grand total. The per-type display
+    // names (BASIC/FAST/POWER/ARMOR/BOSS) localise; GameScene formats the whole block + the HUD mirrors it.
+    'bonus.title': 'BONUS',
+    'bonus.row': '{name}  {count} × {points} = {sub}',
+    'bonus.clearBonus': 'STAGE CLEAR  {pts}',
+    'bonus.total': 'TOTAL  {pts}',
+    'bonus.basic': 'BASIC',
+    'bonus.fast': 'FAST',
+    'bonus.power': 'POWER',
+    'bonus.armor': 'ARMOR',
+    'bonus.boss': 'BOSS',
+
     // ── GameOver (the run-summary snapshot — AC5) ──
     'over.heading': 'GAME OVER',
     'over.score': 'SCORE {n}',

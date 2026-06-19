@@ -228,3 +228,18 @@ export const STAGE_CLEARED_BANNER_SEC = 2.5 // s — the STAGE-N-CLEARED banner 
 // duplicate. A run that earns this many points awards +1 life to every present player slot (the shared-score
 // model — D4). The verifier node-imports this module (a stray Phaser import would throw — re-proving purity).
 export const EXTRA_LIFE_SCORE = 20000 // points per 1UP milestone (every 20000 earned → +1 life to all slots, AC1).
+
+// ── F-stage-bonus between-stage tally (stage-bonus §5.2, D2/D4, AC2/AC3) — PURE shared tally DATA (no Phaser) ──
+// The classic Battle City between-stage bonus screen: on EVERY stage clear a brief overlay lists the kills-by-type
+// (count × points) plus a flat stage-clear bonus, then the next stage's intro curtain plays. Both numerics are
+// shared (GameScene arms/banks them; the verifier could read them) so they live in the constants owner ONCE (DRY).
+
+// STAGE_BONUS_SEC (D2, AC3) — how long the bonus tally overlay holds before the deferred stage advance fires. A
+// COUPLE of seconds so it feels snappy (and it is skippable on the P1 fire/start edge — D6). GameScene arms its
+// `tallyTimer` to this; the timer is decayed on the REAL dt (so it ends in real time through the world freeze).
+export const STAGE_BONUS_SEC = 2.2 // s — the between-stage bonus-tally window (snappy + skippable, AC2/AC3).
+
+// STAGE_CLEAR_BONUS (D4, AC2) — the flat points banked to runState.score ONCE per stage clear (the classic
+// "you cleared the stage" reward on top of the per-type kill subtotals). Added at the one-shot clear site so it
+// is banked exactly once; the tally string shows it on its own line + folds it into the displayed TOTAL.
+export const STAGE_CLEAR_BONUS = 1000 // points — the flat per-stage-clear bonus (banked once per clear, AC2).
