@@ -441,6 +441,7 @@ export class GameScene extends Phaser.Scene {
     // mirrors the centered "STAGE N" label to the HUD. The world is built + visible underneath (the player can move).
     this.curtainTimer = STAGE_INTRO_SEC
     this.sfx.stageStart() // the "start the game" fanfare — plays on the first build AND every advance (the scene owns audio, D6).
+    this.sfx.stageJingle() // [music] (D7) — the richer melodic stage flourish layered over the curtain, beside the SFX.
   }
 
   // ── _buildPlayer(slot,x,y) (F4 §5.4, D10/D11) ── build a present player FRESH for this stage. Construct it
@@ -948,6 +949,7 @@ export class GameScene extends Phaser.Scene {
     this.paused = false
 
     this.sfx.gameOver() // F6 (D6/AC6) — the run-end knell (the single owner, under the one-shot guard).
+    this.sfx.gameOverSting() // [music] (D5) — the melodic descending sting layered over the knell.
 
     // Bank the run ONCE (F5 §5.3, D8/AC5) — the single writer under the gameOver guard. `stage` is the human
     // stage number reached (stageIndex + 1). bankRun returns the banked amount (the GameOver summary displays it).

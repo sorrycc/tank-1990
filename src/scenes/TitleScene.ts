@@ -29,6 +29,12 @@ export class TitleScene extends Phaser.Scene {
     // silent on the very first press but every later sound (the Hub/game) plays.
     const sfx = new Sound(this)
 
+    // [music] (D6/AC2) — start the looping Title theme on entry, and STOP it when the player leaves Title so it never
+    // bleeds into the Hub. The theme is the only LOOPING music (Title-only by design); it self-stops between bars if M
+    // mutes, and is a safe no-op under NoAudio. The SHUTDOWN listener fires once when the start gesture swaps scenes.
+    sfx.titleMusicStart()
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => sfx.musicStop())
+
     // Heading + subtitle near the TOP (repositioned to make room for the controls reference below — every Y is
     // off the FIXED design resolution so it stays centered under Scale.FIT, the existing Title discipline).
     this.add
