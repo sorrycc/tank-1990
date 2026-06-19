@@ -143,5 +143,9 @@ export const EN: Dict = {
     'power.tank': 'EXTRA LIFE',
     'power.boat': 'BOAT', // boat-drill — amphibious (drive over water).
     'power.drill': 'DRILL', // boat-drill — the bullet pierces one brick layer.
+
+    // ── Touch controls (touch-controls §6) — the on-screen FIRE button label, shown ONLY on a touch-capable
+    // device (the D-pad arrows are drawn as triangle glyphs, so they need no string — KISS). Read via t('touch.fire').
+    'touch.fire': 'FIRE',
   },
 }

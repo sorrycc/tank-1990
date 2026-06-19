@@ -139,6 +139,9 @@ export const ZH_CN: Dict = {
     'power.tank': '加命',
     'power.boat': '船', // boat-drill — amphibious (drive over water).
     'power.drill': '钻头', // boat-drill — the bullet pierces one brick layer.
+
+    // ── 触摸控制（touch-controls §6 — 触摸设备上的屏幕开火按钮文字，仅在触摸设备显示；方向键画成三角形字形，无需文字）。
+    'touch.fire': '开火',
   },
 
   // ── 升级条目内容覆盖（按 TANK_UPGRADES 行的 id 键控）── tName/tDesc('upgrade', id, en) 读取这里；缺失则回退到

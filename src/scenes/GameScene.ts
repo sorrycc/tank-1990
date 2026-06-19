@@ -69,6 +69,10 @@ import { t } from '../i18n/index.js'
 // Phaser-coupled; NEVER imported by the verifier. GameScene news it up on the P/ESC edge + tears it on resume.
 import { PauseOverlay } from '../entities/PauseOverlay.js'
 import type { RunInfo } from '../entities/PauseOverlay.js'
+// ── F-touch-controls (touch-controls §2/§3, D2/D3) ── the on-screen D-pad + FIRE button (Phaser-coupled, NEVER
+// verifier-imported). GameScene builds it ONLY on a touch-capable device and wires it as input2.touch, so Input
+// MERGES it into P1's intent (the one drive spine — no new movement path). On desktop it never exists (AC4).
+import { TouchControls } from '../entities/TouchControls.js'
 
 // ── GameScene (F0 §5.3 + F1 §5.4 + F2 §5.4 + F3 Combat & terrain §5.4, Decisions D1/D3/D6/D7/D8/D9/D10/D11,
 // AC1–AC11) ──
@@ -242,6 +246,11 @@ export class GameScene extends Phaser.Scene {
   private paused = false
   private pauseOverlay: PauseOverlay | null = null
 
+  // ── F-touch-controls (touch-controls §2/§3, D3) ── the on-screen pad — RUN-scoped chrome (it outlives a stage
+  // rebuild, like input2). NULL on a non-touch device (built only when `device.input.touch`), so the merge in
+  // Input.sample() is skipped and desktop keyboard play is byte-identical to today (AC4). Wired as input2.touch.
+  private touchControls: TouchControls | null = null
+
   constructor() {
     super('Game')
   }
@@ -291,6 +300,19 @@ export class GameScene extends Phaser.Scene {
     this.bullets = new BulletPool(this)
     this.effects = new Effects(this)
     this.powerups = new PowerUpPool(this)
+
+    // ── F-touch-controls (touch-controls §2/§3, D3/D7, AC4) ── build the on-screen pad ONLY on a touch-capable
+    // device (Phaser's standard, file://-safe device probe — no asset, no network) and wire it as input2.touch so
+    // Input MERGES it into P1's intent inside sample() (no new movement path — DRY). On desktop the probe is false,
+    // touchControls stays null, input2.touch stays null, and sample() is byte-identical to the keyboard-only path
+    // (no interference). Register the SHUTDOWN teardown beside it so a scene shutdown removes the pad's pointer
+    // handlers + destroys its rects (no leaked listener / orphan rect — D7); the pad is RUN-scoped (survives a
+    // stage rebuild, like input2), so _teardownStage() never touches it.
+    if (this.sys.game.device.input.touch) {
+      this.touchControls = new TouchControls(this)
+      this.input2.touch = this.touchControls
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.touchControls?.destroy())
+    }
 
     // ── F6 (D6/D8, AC6) — the ONE audio owner + the M mute toggle ── construct the WebAudio façade once (the
     // reference's per-scene `new Sound(this)`); every resolution site below calls a `sound.*` method (the scene
@@ -982,6 +1004,7 @@ export class GameScene extends Phaser.Scene {
   private _openPause(): void {
     if (this.paused || this.gameOver || this.transitioning) return
     this.paused = true
+    this.touchControls?.reset() // F-touch (D6) — clear held bools + the fire edge + hide the pad (no input leaks on resume).
     this.sfx.uiSelect() // a small pause blip (the one audio owner — DRY; a no-op under NoAudio).
     this.pauseOverlay = new PauseOverlay(this, {
       getInfo: () => this._getRunInfo(),
@@ -1000,6 +1023,7 @@ export class GameScene extends Phaser.Scene {
       this.pauseOverlay = null
     }
     this.paused = false
+    this.touchControls?.show() // F-touch (D6) — re-show the pad on resume (held bools already cleared by reset()).
     this.input2.consumePause() // swallow the pending P/ESC JustDown edge (the close→reopen race fix — D4).
     this.sfx.uiSelect() // the RESUME blip — pause toggles share one confirm blip (_openPause already blips on OPEN; D7).
   }

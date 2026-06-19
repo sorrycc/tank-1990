@@ -330,3 +330,29 @@ export const SEED_HEX_DIGITS = 8 // hex digits in a u32 run seed (the Title disp
 // (DRY) so the Settings scene's ←/→ edit reads the SAME step; the persisted value rides Phaser's global
 // `sound.volume`, which audio/Sound.ts already multiplies into every synthesized tone (D2 — no audio change).
 export const VOLUME_STEP = 0.1 // the Settings ±volume increment (clamped to [0,1] — the master level granularity).
+
+// ── F-touch-controls on-screen pad geometry (touch-controls §3, D2/D3) — PURE layout DATA (no Phaser) ──
+// The camera-fixed D-pad + FIRE button live in entities/TouchControls.ts (Phaser-coupled), but their px
+// geometry — like every other layout anchor in this file — is owned HERE ONCE (DRY) so the coupled UI object
+// reads a single source. NO Phaser import: the verifier still node-imports this module cleanly (programmer-art
+// rects/arcs only — the pad is synthesised from these scalars, no asset). They are plain layout scalars; no
+// verifier invariant (four-types-distinct, boss-HP, currency range) references them, so the gate is unaffected.
+
+// TOUCH_DPAD_BTN (D2) — the px side of ONE square D-pad arrow button. Four of these form the plus-shaped pad
+// (an UP/DOWN column crossing a LEFT/RIGHT row), so the whole cluster spans 3 × this each way. Sized large
+// enough for a thumb on a phone screen at the 1280×720 design resolution (FIT-letterboxed to the viewport).
+export const TOUCH_DPAD_BTN = 72 // px — one square D-pad arrow button (the plus cluster is 3× this each way).
+
+// TOUCH_DPAD_MARGIN (D2) — px from the screen's bottom-left corner to the D-pad cluster, so the pad clears the
+// letterbox edge and sits under the player's left thumb (camera-fixed, scrollFactor 0 — it does not pan).
+export const TOUCH_DPAD_MARGIN = 40 // px — inset of the D-pad cluster from the bottom-left screen edge.
+
+// TOUCH_FIRE_RADIUS (D2) — the px radius of the round FIRE button (right thumb). A large arc so a tap lands easily.
+export const TOUCH_FIRE_RADIUS = 64 // px — the round FIRE button radius (bottom-right, the right thumb).
+
+// TOUCH_FIRE_MARGIN (D2) — px from the screen's bottom-right corner to the FIRE button center's nearest edge.
+export const TOUCH_FIRE_MARGIN = 56 // px — inset of the FIRE button from the bottom-right screen edge.
+
+// TOUCH_ALPHA (D2) — the translucent fill alpha of the pad chrome so the playfield stays visible underneath
+// (the pad is overlaid above the world but below the pause modal — programmer-art, deliberately see-through).
+export const TOUCH_ALPHA = 0.35 // 0..1 — the translucent overlay alpha of the touch-pad primitives.
