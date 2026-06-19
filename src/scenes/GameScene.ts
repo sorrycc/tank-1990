@@ -32,8 +32,9 @@ import { Effects } from '../effects/Effects.js'
 import { stageConfig, spawnIntervalScale, bulletSpeedScale } from '../config/stages.js'
 import type { Difficulty } from '../config/stages.js'
 // ── F-difficulty-select (difficulty-select §5.4, D3/D4) ── the persisted Title preference: loadSettings() reads the
-// chosen difficulty + start-stage ONCE in create() (the impure save boundary, beside createMetaState()).
-import { loadSettings } from '../util/settings.js'
+// chosen difficulty + start-stage ONCE in create() (the impure save boundary, beside createMetaState()). F-seed-challenge
+// (D4/AC5) — saveSettings() writes the actually-used run seed back so the Title can display + a retry can replay it.
+import { loadSettings, saveSettings } from '../util/settings.js'
 import { generateStage } from '../world/LevelGenerator.js'
 import type { StageDescription, SpawnPoint } from '../world/LevelGenerator.js'
 import { TileMap } from '../world/TileMap.js'
@@ -331,7 +332,14 @@ export class GameScene extends Phaser.Scene {
         tier: spec.startTier ?? 0,
       }
     }
-    this.runState = createRunState(this._mintSeed(), seeds, settings.startStage)
+    // ── F-seed-challenge (seed-challenge §5.4, D3/D4, AC4/AC5) ── pick the WHOLE-run seed ONCE: a PINNED seed
+    // (settings.seed, set on the Title) seeds a reproducible board; a null pin falls back to _mintSeed() (the
+    // IDENTITY — today's fresh-random run). Then WRITE the actually-used seed back into settings (mint OR pin —
+    // D4/AC5) so the Title can DISPLAY the last run's seed and a retry replays the SAME board. The verifier's §7f
+    // already proves a fixed start seed yields a deterministic advance() chain — that IS this feature's guarantee.
+    const runSeed = settings.seed != null ? settings.seed >>> 0 : this._mintSeed()
+    this.runState = createRunState(runSeed, seeds, settings.startStage)
+    saveSettings({ ...settings, seed: runSeed }) // write back the used seed (mint or pin — D4/AC5).
     this.shovelWasActive = false // F5 (D4a) — the shovel falling-edge latch starts clear.
 
     // ── Build the first stage via the SHARED builder (F4 §5.4, D7 — extracted so create() + every rebuild run

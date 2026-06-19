@@ -315,3 +315,11 @@ export const DIFFICULTY_LIVES_BONUS = { easy: 1, normal: 0, hard: -1 } as const
 // option). The Title clamps the picker to [0, MAX_START_STAGE]; createRunState seeds a non-zero start stage from it.
 // Owned here so the Title's clamp + any later consumer read the SAME ceiling (DRY). 0 = the default (start at stage 0).
 export const MAX_START_STAGE = 20 // the deepest stage the Title's starting-stage picker can seed (a practice cap, AC4).
+
+// ── F-seed-challenge run-seed display/input width (seed-challenge §5.2, D1, AC1) — PURE shared DATA (no Phaser) ──
+// SEED_HEX_DIGITS (D1, AC1) — the width (in hex digits) of the run seed shown on the Title + typed into the seed
+// entry. The whole-run seed is ALREADY a `>>> 0` unsigned-32-bit int everywhere (_mintSeed / nextSeed / generateStage),
+// and a u32 is EXACTLY 8 hex digits — the most compact lossless copy-paste text form (KISS/DRY). Owned here ONCE so
+// config/seed.ts (formatSeed's padStart + parseSeed's length cap) and the Title's entry cap read the SAME width (no
+// inlined `8` — DRY). The verifier node-imports config/seed.ts and asserts the 8-hex round-trip against this owner.
+export const SEED_HEX_DIGITS = 8 // hex digits in a u32 run seed (the Title display/input width — DRY owner, AC1).

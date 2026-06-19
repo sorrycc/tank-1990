@@ -26,6 +26,14 @@ export const ZH_CN: Dict = {
     'title.startStage': '起始关卡 {n}',
     'title.diffHint': '← / → 难度 · ↑ / ↓ 起始关卡',
 
+    // ── F-seed-challenge（seed-challenge §5.5, D1/D6, AC6 — 标题界面的种子行）── `title.seed` 以 8 位十六进制显示锁定/
+    // 上一局的种子；`title.seed.random` 是未锁定种子时的暗色占位（每局随机）；`title.seedHint` 一行按键提示；
+    // `title.seedEntry` 输入种子时的内联提示。
+    'title.seed': '种子 {seed}',
+    'title.seed.random': '随机',
+    'title.seedHint': 'S 编辑种子 · R 随机',
+    'title.seedEntry': '种子：{buffer}_  （ENTER 确定 · ESC 取消）',
+
     // ── 高分榜（持久化的前 5 名战绩 — 标题界面 + 游戏结束，D6）── 标题、行模板（名次 · 分数 · 关卡）、空状态行。
     'hi.title': '高分榜',
     'hi.row': '{rank}. {score} · 关卡 {stage}',

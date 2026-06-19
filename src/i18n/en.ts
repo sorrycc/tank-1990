@@ -24,6 +24,14 @@ export const EN: Dict = {
     'title.startStage': 'START STAGE {n}',
     'title.diffHint': '← / → difficulty · ↑ / ↓ start stage',
 
+    // ── F-seed-challenge (seed-challenge §5.5, D1/D6, AC6) — the Title run-seed row. `title.seed` shows the pinned/
+    // last run seed as 8-hex; `title.seed.random` is the dim placeholder when no seed is pinned (a fresh-random run);
+    // `title.seedHint` the one-line key hint; `title.seedEntry` the inline entry prompt shown while typing a seed.
+    'title.seed': 'SEED {seed}',
+    'title.seed.random': 'RANDOM',
+    'title.seedHint': 'S edit seed · R random',
+    'title.seedEntry': 'SEED: {buffer}_  (ENTER ok · ESC cancel)',
+
     // ── High-score table (the persistent top-5 finished runs — Title + GameOver, D6) — a heading, a row
     // template (rank · score · stage), and an empty-state line for a fresh save. Rendered via t() at both sites.
     'hi.title': 'HIGH SCORES',

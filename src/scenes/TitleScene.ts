@@ -4,6 +4,8 @@ import { t, CONTROLS_ROWS } from '../i18n/index.js'
 import { Sound } from '../audio/Sound.js'
 import { createMetaState } from '../core/MetaState.js'
 import { loadSettings, saveSettings } from '../util/settings.js'
+import { formatSeed, parseSeed } from '../config/seed.js'
+import { SEED_HEX_DIGITS } from '../config/constants.js'
 import type { Difficulty } from '../config/stages.js'
 
 // ── TitleScene (F0 scaffold §5.3 → F5 §5.4 → F6 §5.4, Decision 2/4/D12/D9, AC7/AC9) ──
@@ -104,6 +106,38 @@ export class TitleScene extends Phaser.Scene {
       .text(cx, DIFF_Y + 50, t('title.diffHint'), { fontFamily: UI_FONT, fontSize: '15px', color: '#5c6b7a' })
       .setOrigin(0.5)
 
+    // ── F-seed-challenge seed row (seed-challenge §5.5, D1/D6, AC6) ── a single compact line in the gap under the
+    // diffHint (off the FIXED design resolution so it centers under Scale.FIT — the Title's discipline). It shows the
+    // pinned/last run seed as 8-hex (t('title.seed', { seed }) — bright) OR a dim t('title.seed.random') placeholder
+    // when no seed is pinned (a fresh-random run each launch). While the inline hex entry is OPEN it instead shows
+    // t('title.seedEntry', { buffer }) (the typed-so-far digits + a caret). One Text object, re-textured/tinted in
+    // place by renderSeed() (no scene rebuild — the renderChooser pattern, DRY).
+    const SEED_Y = DIFF_Y + 64
+    const seedText = this.add
+      .text(cx, SEED_Y, '', { fontFamily: UI_FONT, fontSize: '15px', color: '#c9d1d9' }).setOrigin(0.5)
+
+    // ── The editingSeed latch (D6) ── while OPEN the difficulty/start-stage cursor keys + the SPACE/ENTER start are
+    // SUPPRESSED (one boolean, no modal scene — KISS) so typing a hex seed never also cycles difficulty or launches
+    // the run; `seedBuffer` accumulates the typed digits (capped at SEED_HEX_DIGITS — D1).
+    let editingSeed = false
+    let seedBuffer = ''
+
+    // Re-render the seed line from the current state (one render path — DRY): the entry prompt while editing, else the
+    // pinned hex (bright) or the dim "random" placeholder. Called once now + after every seed change / entry keystroke.
+    const renderSeed = (): void => {
+      if (editingSeed) {
+        seedText.setText(t('title.seedEntry', { buffer: seedBuffer })).setColor('#feca57') // amber while typing.
+      } else if (settings.seed != null) {
+        seedText.setText(t('title.seed', { seed: formatSeed(settings.seed) })).setColor('#c9d1d9')
+      } else {
+        seedText.setText(t('title.seed', { seed: t('title.seed.random') })).setColor('#5c6b7a') // dim "random".
+      }
+    }
+    renderSeed()
+    this.add
+      .text(cx, SEED_Y + 20, t('title.seedHint'), { fontFamily: UI_FONT, fontSize: '15px', color: '#5c6b7a' })
+      .setOrigin(0.5)
+
     // Re-render the chooser from the current `settings` (the selected level bright green, the rest dim; the
     // start-stage readout re-interpolated). Called once now + after every key change (DRY — one render path).
     const renderChooser = (): void => {
@@ -116,7 +150,10 @@ export class TitleScene extends Phaser.Scene {
 
     // ←/→ cycle the difficulty (wrapping over the three levels); ↑/↓ adjust the start stage within [0, MAX_START_STAGE].
     // Each change persists (saveSettings) + re-renders + blips (uiMove — the quiet nav tick; a no-op under NoAudio).
+    // F-seed-challenge (D6) — the cursor handlers NO-OP while a seed is being typed (the editingSeed latch), so a
+    // stray arrow during hex entry never also cycles difficulty / start stage.
     const cycleDiff = (dir: number): void => {
+      if (editingSeed) return
       const idx = LEVELS.indexOf(settings.difficulty)
       settings.difficulty = LEVELS[(idx + dir + LEVELS.length) % LEVELS.length]
       saveSettings(settings)
@@ -124,6 +161,7 @@ export class TitleScene extends Phaser.Scene {
       sfx.uiMove()
     }
     const adjustStage = (delta: number): void => {
+      if (editingSeed) return
       const next = Math.max(0, Math.min(MAX_START_STAGE, settings.startStage + delta))
       if (next === settings.startStage) return // already at a bound — no save / blip (the Hub's "no-op on a clamp" feel).
       settings.startStage = next
@@ -136,6 +174,65 @@ export class TitleScene extends Phaser.Scene {
     this.input.keyboard!.on('keydown-UP', () => adjustStage(1))
     this.input.keyboard!.on('keydown-DOWN', () => adjustStage(-1))
 
+    // ── F-seed-challenge inline hex entry + clear (seed-challenge §5.5, D1/D5/D6, AC6) ── `S` toggles the entry
+    // OPEN (or commits an open buffer): while open, hex keystrokes (0-9 A-F) APPEND to seedBuffer capped at
+    // SEED_HEX_DIGITS, BACKSPACE deletes the last digit, ENTER COMMITS via parseSeed (null → clear the pin = random,
+    // a valid value → pin it), ESC CANCELS (discard the buffer). `R` clears the pin straight to random (settings.seed
+    // = null). Every commit/clear saveSettings()s + re-renders the row + plays the uiMove blip (a no-op under
+    // NoAudio). All keystrokes are guarded by editingSeed so they only act while entry is open (KISS — one latch).
+    const HEX = /^[0-9A-F]$/ // a single hex digit (key.toUpperCase()) — the only chars the buffer accepts.
+    const commitSeed = (): void => {
+      const parsed = parseSeed(seedBuffer) // null on empty/invalid → clear the pin (random); else the pinned u32.
+      settings.seed = parsed
+      saveSettings(settings)
+      editingSeed = false
+      seedBuffer = ''
+      renderSeed()
+      sfx.uiMove()
+    }
+    this.input.keyboard!.on('keydown-S', () => {
+      if (editingSeed) {
+        commitSeed() // a second S commits the open buffer (a quick toggle-to-confirm).
+        return
+      }
+      editingSeed = true
+      seedBuffer = settings.seed != null ? formatSeed(settings.seed) : '' // pre-fill the current pin so an edit tweaks it.
+      renderSeed()
+      sfx.uiMove()
+    })
+    this.input.keyboard!.on('keydown-R', () => {
+      if (editingSeed) return // R is also a hex digit-adjacent key; while editing the digit handler owns it (no clear).
+      settings.seed = null // clear the pin → a fresh-random seed each launch.
+      saveSettings(settings)
+      renderSeed()
+      sfx.uiMove()
+    })
+    this.input.keyboard!.on('keydown-BACKSPACE', () => {
+      if (!editingSeed) return
+      seedBuffer = seedBuffer.slice(0, -1)
+      renderSeed()
+      sfx.uiMove()
+    })
+    this.input.keyboard!.on('keydown-ESC', () => {
+      if (!editingSeed) return
+      editingSeed = false // cancel — discard the buffer, leave the existing pin untouched.
+      seedBuffer = ''
+      renderSeed()
+      sfx.uiMove()
+    })
+    // The catch-all hex digit handler: while editing, a 0-9/A-F key APPENDS (capped at SEED_HEX_DIGITS). Bound on the
+    // generic `keydown` so every alphanumeric key routes here (the named S/R/BACKSPACE/ESC handlers above run first
+    // for their keys; S/R short-circuit while editing so they don't double as a digit — S commits, R is inert).
+    this.input.keyboard!.on('keydown', (ev: KeyboardEvent) => {
+      if (!editingSeed) return
+      const ch = ev.key.toUpperCase()
+      if (ch === 'S') return // S commits (handled above) — never an appended digit.
+      if (!HEX.test(ch) || seedBuffer.length >= SEED_HEX_DIGITS) return
+      seedBuffer += ch
+      renderSeed()
+      sfx.uiMove()
+    })
+
     // ── Controls reference (F6 §5.4, D9, AC7) — the shared CONTROLS_ROWS so a first-time player discovers BOTH
     // schemes. Two fixed-x columns per row (action label | keys), the CJK-safe alignment discipline (D9 — never
     // padEnd, which only aligns under monospace). Six rows in ONE centered column block; the key TOKENS stay
@@ -143,12 +240,14 @@ export class TitleScene extends Phaser.Scene {
     // window.innerWidth) so it centers under Scale.FIT — the existing Title layout discipline.
     // (F-difficulty-select §5.4) — the controls block is pushed DOWN below the new chooser row above (it occupies the
     // 258–308 band); ROW_H tightened 34→30 so the controls + the hi-score table below still clear the start prompt.
+    // (F-seed-challenge §5.5) — the controls block is pushed DOWN below the new seed row above (it now occupies the
+    // 322–362 band); ROW_H tightened 30→28 so the controls + the hi-score table below still clear the start prompt.
     this.add
-      .text(cx, 336, t('controls.title'), { fontFamily: UI_FONT, fontSize: '22px', color: '#5c6b7a', fontStyle: 'bold' })
+      .text(cx, 376, t('controls.title'), { fontFamily: UI_FONT, fontSize: '22px', color: '#5c6b7a', fontStyle: 'bold' })
       .setOrigin(0.5)
 
-    const ROW_H = 30
-    const rowsTop = 372
+    const ROW_H = 28
+    const rowsTop = 408
     const LABEL_X = cx - 140 // the action-label column (left-anchored, fixed x — CJK-safe).
     const KEYS_X = cx + 30 // the keys column (left-anchored, fixed x — never derived from the label's width).
     for (let i = 0; i < CONTROLS_ROWS.length; i++) {
@@ -200,12 +299,25 @@ export class TitleScene extends Phaser.Scene {
     // Enter the HUB on key OR pointer. `once` so a held key / double-tap can't fire the transition
     // twice (AC6). Pointer is bound on the scene input so a click anywhere counts. Each target ('Hub')
     // is a registered scene (main.ts), so the flow is reachable. F6 (D6/AC6) — a start blip on the gesture.
+    // F-seed-challenge (D6) — while the seed buffer is OPEN, SPACE/ENTER do NOT start: ENTER COMMITS the typed seed
+    // (the natural "confirm" key), SPACE is swallowed (so a stray space during entry never launches). The latch is
+    // checked INSIDE the handler (not `once`-gated) so a suppressed press doesn't consume the one-shot binding — the
+    // start gesture still fires on the FIRST press made while NOT editing.
+    let started = false // guards the one-shot start across the now-conditional SPACE/ENTER/pointer paths.
     const enterHub = () => {
+      if (editingSeed || started) return // suppressed mid-entry / already started — no launch.
+      started = true
       sfx.uiSelect() // F6 (AC6) — the Title start blip (the first gesture also resumes the context).
       this.scene.start('Hub')
     }
-    this.input.keyboard!.once('keydown-SPACE', enterHub)
-    this.input.keyboard!.once('keydown-ENTER', enterHub)
+    this.input.keyboard!.on('keydown-SPACE', enterHub)
+    this.input.keyboard!.on('keydown-ENTER', () => {
+      if (editingSeed) {
+        commitSeed() // ENTER commits the open seed buffer (parseSeed; null → random) instead of starting.
+        return
+      }
+      enterHub()
+    })
     this.input.once('pointerdown', enterHub)
   }
 }

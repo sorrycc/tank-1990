@@ -39,8 +39,10 @@ import { generateStage, tankFits, isFortApproachWindow, windowCenter, FOOTPRINT,
 // F4 PURE modules (D1/D5/D11): the tank roster + the active-run owner. Importing them here under node
 // RE-PROVES their purity (a stray `import 'phaser'` throws) — the convention every pure module satisfies.
 import { ENEMY_ARCHETYPES, ENEMY_SPECS, BASIC, FAST, POWER, ARMOR, BOSS, bossSpecForStage, PLAYER_BASE, PLAYER_STAR_TIERS, applyStarTier, rosterPick } from '../src/config/tanks.js'
-import { ARMOR_TANK_HP, SPAWN_INTERVAL_MIN_SCALE, CURRENCY_RATIO, FIRE_COOLDOWN, EXTRA_LIFE_SCORE } from '../src/config/constants.js'
+import { ARMOR_TANK_HP, SPAWN_INTERVAL_MIN_SCALE, CURRENCY_RATIO, FIRE_COOLDOWN, EXTRA_LIFE_SCORE, SEED_HEX_DIGITS } from '../src/config/constants.js'
 import { createRunState, extraLivesCrossed } from '../src/core/RunState.js'
+// F-seed-challenge — the PURE hex run-seed round-trip (node-imported → re-proving purity; a stray Phaser import throws).
+import { formatSeed, parseSeed } from '../src/config/seed.js'
 // ── F5 PURE modules (D1/D3/D5/D6/D12): the power-up roster, the permanent upgrade rows + applyUpgrades, and
 // the i18n core + the two dictionaries. Importing them here under node RE-PROVES their purity (a stray
 // `import 'phaser'` throws) — the convention every pure module satisfies (AC9/AC11). The Phaser-coupled
@@ -780,6 +782,36 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
     while (c.stageIndex < BOSS_STAGE_EVERY - 1) c.advance()
     if (!c.isBossStage()) fail(`RunState: isBossStage() false at the first boss stage (index ${c.stageIndex})`)
   }
+
+  // ── 7i) F-seed-challenge — the PURE hex run-seed round-trip (seed-challenge §5.6, D1/D5, AC1/AC2) ── formatSeed/
+  // parseSeed are PURE (node-imported above → re-proving purity). The verifier proves the TOTAL/round-trip contract:
+  // parseSeed reads ≤ SEED_HEX_DIGITS hex (0x/#/whitespace-stripped) → a u32, returns null on empty/invalid/over-long
+  // (never throws); formatSeed is an 8-char zero-padded UPPER hex of `seed >>> 0`; the two round-trip on any valid
+  // 8-hex string. §7f already proves the seed CHAIN from a fixed seed — this only nails the text codec (the new bit).
+  {
+    if (SEED_HEX_DIGITS !== 8) fail(`seed: SEED_HEX_DIGITS = ${SEED_HEX_DIGITS}, expected 8 (a u32 is 8 hex digits, AC1)`)
+    // parseSeed — a valid value parses to the right u32; the 0x prefix is stripped; casing is irrelevant.
+    if ((parseSeed('1A2B3C4D') >>> 0) !== 0x1a2b3c4d) fail(`seed: parseSeed('1A2B3C4D') !== 0x1A2B3C4D (AC2)`)
+    if ((parseSeed('0xFF') >>> 0) !== 255) fail(`seed: parseSeed('0xFF') !== 255 (0x prefix not stripped, AC2)`)
+    if ((parseSeed('  deadbeef  ') >>> 0) !== 0xdeadbeef) fail(`seed: parseSeed(' deadbeef ') !== 0xDEADBEEF (trim/case, AC2)`)
+    // parseSeed — empty / non-hex / over-long (> 8 digits, overflows a u32) → null (never throws — AC2/AC3).
+    if (parseSeed('') !== null) fail(`seed: parseSeed('') must be null (empty input, AC2)`)
+    if (parseSeed('xyz') !== null) fail(`seed: parseSeed('xyz') must be null (non-hex, AC2)`)
+    if (parseSeed('123456789') !== null) fail(`seed: parseSeed('123456789') must be null (> 8 digits, AC2)`)
+    // formatSeed — 8-char zero-padded UPPER hex of `seed >>> 0`.
+    if (formatSeed(0) !== '00000000') fail(`seed: formatSeed(0) = '${formatSeed(0)}', expected '00000000' (AC2)`)
+    if (formatSeed(0xdeadbeef) !== 'DEADBEEF') fail(`seed: formatSeed(0xDEADBEEF) = '${formatSeed(0xdeadbeef)}', expected 'DEADBEEF' (AC2)`)
+    if (formatSeed(15) !== '0000000F') fail(`seed: formatSeed(15) = '${formatSeed(15)}', expected '0000000F' (pad, AC2)`)
+    // Round-trip — formatSeed(parseSeed(s)) === s.toUpperCase() for any valid 8-hex string (the codec is lossless).
+    for (const s of ['00000000', 'DEADBEEF', '0000000F', '1a2b3c4d', 'FFFFFFFF']) {
+      const round = formatSeed(parseSeed(s))
+      if (round !== s.toUpperCase()) fail(`seed: round-trip formatSeed(parseSeed('${s}')) = '${round}', expected '${s.toUpperCase()}' (AC2)`)
+    }
+    // Belt-and-suspenders (D5) — a parsed seed seeds the run verbatim (the GameScene seam: createRunState(parseSeed(s))).
+    const cafe = parseSeed('CAFEBABE')
+    if (createRunState(cafe, { 1: { lives: 3, tier: 0 } }).seed !== (cafe >>> 0))
+      fail(`seed: createRunState(parseSeed('CAFEBABE')).seed did not equal the parsed seed (the GameScene seam, AC4)`)
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════
@@ -935,6 +967,7 @@ console.log(
     `tickTimers decay/clamp + advance-reset (F5 D5b/D5c/AC3/AC6) + killsByStage seeds-0/tallyKill-increments/advance-resets (stage-bonus AC1); ` +
     `F5 power-ups well-formed (8 kinds incl. boat+drill, durations, pickPowerUpKind deterministic) + upgrade rows cost-monotone + ` +
     `applyUpgrades identity/never-weaker/graceful + i18n structure (ZH⊆EN, content keyed to real rows, fallback chain) ` +
+    `+ F-seed-challenge formatSeed/parseSeed pure round-trip+clamp+null (8-hex u32, seed-challenge AC1/AC2) ` +
     `(pure node-import, AC1/AC2/AC6/AC9/AC11). (FOOTPRINT=${FOOTPRINT} tiles.)`,
 )
 process.exit(0)
