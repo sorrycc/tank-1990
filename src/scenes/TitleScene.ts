@@ -143,6 +143,11 @@ export class TitleScene extends Phaser.Scene {
     this.add
       .text(cx, SEED_Y + 20, t('title.seedHint'), { fontFamily: UI_FONT, fontSize: '15px', color: '#5c6b7a' })
       .setOrigin(0.5)
+    // ── F-settings (settings §5.4, AC5) — the Settings hint line, on the same dim hint band as the seed hint. The
+    // `O` key (handler below) routes to the dedicated Settings screen (volume · default difficulty · language). ──
+    this.add
+      .text(cx, SEED_Y + 36, t('title.settings'), { fontFamily: UI_FONT, fontSize: '15px', color: '#5c6b7a' })
+      .setOrigin(0.5)
 
     // Re-render the chooser from the current `settings` (the selected level bright green, the rest dim; the
     // start-stage readout re-interpolated). Called once now + after every key change (DRY — one render path).
@@ -325,5 +330,15 @@ export class TitleScene extends Phaser.Scene {
       enterHub()
     })
     this.input.once('pointerdown', enterHub)
+
+    // ── F-settings (settings §5.4, D5, AC5) — `O` (Options) opens the dedicated Settings screen. Guarded by the
+    // SAME editingSeed / started latches as the start gesture, so it never fires mid-seed-entry or after the run has
+    // already started. Settings BACK/ESC routes back to 'Title', which re-reads loadSettings() on re-entry, so a
+    // difficulty/locale change made over there shows here (D3/AC3/AC4). A nav blip on the gesture (a no-op under NoAudio).
+    this.input.keyboard!.on('keydown-O', () => {
+      if (editingSeed || started) return // suppressed mid-seed-entry / after start — no navigation.
+      sfx.uiSelect()
+      this.scene.start('Settings')
+    })
   }
 }

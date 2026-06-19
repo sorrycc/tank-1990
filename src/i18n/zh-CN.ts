@@ -25,6 +25,8 @@ export const ZH_CN: Dict = {
     'title.diff.hard': '困难',
     'title.startStage': '起始关卡 {n}',
     'title.diffHint': '← / → 难度 · ↑ / ↓ 起始关卡',
+    // F-settings（settings §5.4, AC5 — 标题界面的设置入口提示行，按 O 打开设置屏幕）。
+    'title.settings': 'O 设置',
 
     // ── F-seed-challenge（seed-challenge §5.5, D1/D6, AC6 — 标题界面的种子行）── `title.seed` 以 8 位十六进制显示锁定/
     // 上一局的种子；`title.seed.random` 是未锁定种子时的暗色占位（每局随机）；`title.seedHint` 一行按键提示；
@@ -114,6 +116,19 @@ export const ZH_CN: Dict = {
     'pause.p1Lives': 'P1 生命',
     'pause.p2Lives': 'P2 生命',
     'pause.help': '按 P / ESC 恢复游戏',
+
+    // ── 设置屏幕（F-settings §5.4, D5, AC6 — 标题界面可进入的设置菜单）── 标题、三个可编辑行（音量 · 难度 · 语言）
+    // 以及返回行，外加一行按键提示。音量显示百分比（settings.volumeValue）；难度值复用现有的 title.diff.*（DRY，无新串）；
+    // 语言在两个 settings.lang.* 名称间切换。语言名（English/简体中文）刻意保留各自的母语写法。
+    'settings.title': '设置',
+    'settings.volume': '音量',
+    'settings.volumeValue': '{pct}%',
+    'settings.difficulty': '难度',
+    'settings.language': '语言',
+    'settings.back': '返回',
+    'settings.hint': '↑ / ↓ 选择 · ← / → 调整 · ENTER / ESC 返回',
+    'settings.lang.en': 'English',
+    'settings.lang.zh': '简体中文',
 
     // ── 道具名称（HUD 当前道具 — AC2/AC8）──
     'power.helmet': '护盾',

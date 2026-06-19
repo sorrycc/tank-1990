@@ -9,6 +9,7 @@
 
 import { get, set } from './save.js'
 import type { Difficulty } from '../config/stages.js'
+import type { Locale } from '../i18n/index.js' // TYPE-only — i18n/index.ts is Phaser-free, so purity is preserved.
 import { MAX_START_STAGE } from '../config/constants.js'
 
 // The dedicated preference key — SEPARATE from save.ts's `tank-1990:meta` (D3 — the preference vs. the run economy).
@@ -24,6 +25,15 @@ export interface Settings {
   // D3). When non-null GameScene seeds the run from it (a reproducible board); after every run GameScene writes the
   // actually-used seed back (mint or pin — D4/AC5) so the Title can display + a retry can replay the last board.
   seed: number | null
+  // ── F-settings (settings §5.2, D1/D2/D6, AC1/AC2) ── the master sound level 0..1, pushed into Phaser's GLOBAL
+  // `sound.volume` (which audio/Sound.ts already multiplies into every synthesized tone — D2, no audio change).
+  // 1 = full, 0 = silent. Clamped to [0,1] on read (a corrupt/NaN value → the 1.0 default — never an invalid volume).
+  volume: number
+  // ── F-settings (settings §5.2, D1/D4, AC1/AC3) ── the persisted active locale ('en' | 'zh-CN'), making the
+  // language switchable at runtime + sticky across launches (replacing the boot-only browser auto-detect). A
+  // corrupt/old value (no locale field) degrades to the default; main.ts seeds the browser-detected locale on a
+  // truly fresh save (D4) so today's auto-detect UX survives for new players, then the choice becomes sticky.
+  locale: Locale
 }
 
 // DEFAULT_SETTINGS is the IDENTITY: Normal difficulty (the 1.0 pressure / +0 lives identity) + a stage-0 start — so a
@@ -33,11 +43,18 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   difficulty: 'normal',
   startStage: 0,
   seed: null, // F-seed-challenge (D3) — no pin by default → mint a fresh seed each launch (today's behaviour).
+  volume: 1, // F-settings (D2) — full master volume by default → today's audio behaviour, byte-unchanged.
+  locale: 'en', // F-settings (D4) — the type-level default; main.ts seeds the browser-detected locale on a fresh save.
 })
 
 // The three valid difficulty levels — the on-read clamp uses this set so a corrupt/old `difficulty` (e.g. a renamed
 // level from a future build, or garbage) degrades to `normal` rather than feeding an unknown level to the ramps.
 const DIFFICULTIES: readonly Difficulty[] = ['easy', 'normal', 'hard']
+
+// The two valid locales — the on-read clamp uses this set (mirroring the DIFFICULTIES guard) so a corrupt/old
+// `locale` (an unknown code from a future build, or garbage) degrades to the default rather than persisting an
+// invalid locale that i18n's setLocale would silently coerce to 'en' anyway (keeping the PERSISTED value clean).
+const LOCALES: readonly Locale[] = ['en', 'zh-CN']
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
 
@@ -59,7 +76,22 @@ export function loadSettings(): Settings {
   // (a corrupt value / an old build with no seed field / undefined / NaN) to null = "mint fresh" — never throws, the
   // run-setup path is unaffected by a missing pin (D3 — the absence of a pin IS "random").
   const seed = typeof merged.seed === 'number' && Number.isFinite(merged.seed) ? merged.seed >>> 0 : null
-  return { difficulty, startStage, seed }
+  // ── F-settings (D2/D6, AC1) ── clamp the master volume to [0,1] (a NaN/out-of-range/missing value → the 1.0
+  // default via the SAME Number-coerce + clamp guard the startStage field uses), so the persisted value is always
+  // a valid Phaser global volume — a malformed save can never feed an invalid level into game.sound.volume.
+  const volume = clamp(Number.isFinite(Number(merged.volume)) ? Number(merged.volume) : DEFAULT_SETTINGS.volume, 0, 1)
+  // ── F-settings (D4, AC1/AC3) ── force the locale into the two valid codes (a corrupt/old/missing value → the
+  // default), the SAME defensive pattern as the difficulty field above. main.ts decides the fresh-save detect.
+  const locale: Locale = LOCALES.includes(merged.locale as Locale) ? (merged.locale as Locale) : DEFAULT_SETTINGS.locale
+  return { difficulty, startStage, seed, volume, locale }
+}
+
+// ── hasStoredSettings() → boolean (settings §5.3, D4) ── true iff a settings blob has ACTUALLY been persisted under
+// the key (vs. a truly fresh save). main.ts uses it to honor today's browser auto-detect on a first-ever launch
+// (no stored locale yet) without persisting a wrong choice: a fresh save → detectLocale() seeds the default, an
+// existing save → the stored locale. Kept PURE (over save.ts's get — never throws) so settings.ts stays node-safe.
+export function hasStoredSettings(): boolean {
+  return get<unknown>(SETTINGS_KEY, null) != null
 }
 
 // ── saveSettings(s) → boolean (D3, AC6) ── write the preference under the dedicated key (over save.ts's set, which

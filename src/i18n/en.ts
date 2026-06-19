@@ -23,6 +23,8 @@ export const EN: Dict = {
     'title.diff.hard': 'HARD',
     'title.startStage': 'START STAGE {n}',
     'title.diffHint': '← / → difficulty · ↑ / ↓ start stage',
+    // F-settings (settings §5.4, AC5) — the Title hint line for the new Settings screen (`O` opens it).
+    'title.settings': 'O settings',
 
     // ── F-seed-challenge (seed-challenge §5.5, D1/D6, AC6) — the Title run-seed row. `title.seed` shows the pinned/
     // last run seed as 8-hex; `title.seed.random` is the dim placeholder when no seed is pinned (a fresh-random run);
@@ -117,6 +119,20 @@ export const EN: Dict = {
     'pause.p1Lives': 'P1 LIVES',
     'pause.p2Lives': 'P2 LIVES',
     'pause.help': 'Press P / ESC to resume',
+
+    // ── Settings screen (F-settings §5.4, D5, AC6) — the dedicated options menu reachable from the Title.
+    // A title, the three editable rows (VOLUME · DIFFICULTY · LANGUAGE) + a BACK row, and a one-line key hint.
+    // VOLUME shows a percent (`settings.volumeValue`); the DIFFICULTY value reuses the existing `title.diff.*`
+    // labels (DRY — no new difficulty strings); LANGUAGE toggles between the two `settings.lang.*` names. ──
+    'settings.title': 'SETTINGS',
+    'settings.volume': 'VOLUME',
+    'settings.volumeValue': '{pct}%',
+    'settings.difficulty': 'DIFFICULTY',
+    'settings.language': 'LANGUAGE',
+    'settings.back': 'BACK',
+    'settings.hint': '↑ / ↓ select · ← / → change · ENTER / ESC back',
+    'settings.lang.en': 'English',
+    'settings.lang.zh': '简体中文',
 
     // ── Power-up names (the HUD active-power-up + any in-world label key off the kind id — AC2/AC8) ──
     'power.helmet': 'SHIELD',

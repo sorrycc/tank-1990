@@ -323,3 +323,10 @@ export const MAX_START_STAGE = 20 // the deepest stage the Title's starting-stag
 // config/seed.ts (formatSeed's padStart + parseSeed's length cap) and the Title's entry cap read the SAME width (no
 // inlined `8` — DRY). The verifier node-imports config/seed.ts and asserts the 8-hex round-trip against this owner.
 export const SEED_HEX_DIGITS = 8 // hex digits in a u32 run seed (the Title display/input width — DRY owner, AC1).
+
+// ── F-settings master-volume step (settings §5/D6, AC2) — PURE shared DATA (no Phaser) ──
+// VOLUME_STEP (D6) — the ±increment the Settings VOLUME row nudges the persisted master level by (and clamps back
+// to the literal [0,1] Phaser-volume bounds, so the 0/1 limits need no constant of their own). Owned here ONCE
+// (DRY) so the Settings scene's ←/→ edit reads the SAME step; the persisted value rides Phaser's global
+// `sound.volume`, which audio/Sound.ts already multiplies into every synthesized tone (D2 — no audio change).
+export const VOLUME_STEP = 0.1 // the Settings ±volume increment (clamped to [0,1] — the master level granularity).
