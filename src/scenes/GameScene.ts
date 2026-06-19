@@ -20,6 +20,7 @@ import {
   EXTRA_LIFE_SCORE,
   STAGE_BONUS_SEC,
   STAGE_CLEAR_BONUS,
+  DIFFICULTY_LIVES_BONUS,
 } from '../config/constants.js'
 import { TILE } from '../config/tiles.js'
 import { Input } from '../core/Input.js'
@@ -29,6 +30,10 @@ import { BulletPool } from '../combat/BulletPool.js'
 import type { BulletRect } from '../combat/BulletPool.js'
 import { Effects } from '../effects/Effects.js'
 import { stageConfig, spawnIntervalScale, bulletSpeedScale } from '../config/stages.js'
+import type { Difficulty } from '../config/stages.js'
+// ── F-difficulty-select (difficulty-select §5.4, D3/D4) ── the persisted Title preference: loadSettings() reads the
+// chosen difficulty + start-stage ONCE in create() (the impure save boundary, beside createMetaState()).
+import { loadSettings } from '../util/settings.js'
 import { generateStage } from '../world/LevelGenerator.js'
 import type { StageDescription, SpawnPoint } from '../world/LevelGenerator.js'
 import { TileMap } from '../world/TileMap.js'
@@ -182,6 +187,10 @@ export class GameScene extends Phaser.Scene {
   // shovelWasActive: the shovel-timer FALLING-edge latch so the revert fires exactly once when the timer hits 0.
   private powerups!: PowerUpPool
   private meta!: MetaStateInstance
+  // F-difficulty-select (D4) — the run's chosen difficulty, read ONCE from loadSettings() in create() (the impure save
+  // boundary). Cached here (NOT on RunState — it is a spawn/ramp INPUT, not run economy — D4/SOLID) + passed to the two
+  // _spawnStep ramp reads (bulletSpeedScale/spawnIntervalScale). Defaulted 'normal' (the identity) until create() reads it.
+  private difficulty: Difficulty = 'normal'
   private upgrades: Record<number, Record<string, number>> = {} // cached per-slot Hub tree (read once — D4b).
   private ringCells: Array<{ col: number; row: number }> = [] // the fort-ring tile coords (D4a).
   private shovelWasActive = false // the shovel-timer falling-edge latch (revert fires once — D4a/D10).
@@ -300,17 +309,29 @@ export class GameScene extends Phaser.Scene {
     const presentSlots = TWO_PLAYER ? [1, 2] : [1]
     for (const slot of presentSlots) this.upgrades[slot] = this.meta.getUpgrades(slot as 1 | 2)
 
-    // ── Construct the SINGLE RunState (F4 §5.4 + F5 §5.4, D5/D5b/D11) ── the run owner: a minted seed, and a
-    // PER-SLOT { [slot]: {lives, tier} } seed map (F5 D5b — replaces F4's scalar startLives). Each present slot's
-    // run-start lives/tier come from THAT slot's folded Hub spec (MetaState.startSpec): lives = START_LIVES +
-    // spec.startLivesBonus, tier = spec.startTier (the +startLife/+starStart upgrades land at run start — D7). A
-    // fresh meta yields {lives: START_LIVES, tier: 0} (the F4 behaviour, per-slot). The scene is its ONLY writer (D5).
+    // ── F-difficulty-select (difficulty-select §5.4, D3/D4, AC5/AC6) ── read the persisted Title preference ONCE,
+    // beside createMetaState() (the impure save boundary; loadSettings() degrades to DEFAULT_SETTINGS on a corrupt/
+    // disabled storage — never throws). Cache `this.difficulty` (passed to the two ramp reads — D4) + capture the
+    // start stage (threaded into createRunState — D5). A Normal / stage-0 preference is the IDENTITY (today's run).
+    const settings = loadSettings()
+    this.difficulty = settings.difficulty
+    const livesBonus = DIFFICULTY_LIVES_BONUS[this.difficulty] // the per-level run-start lives ADD (easy +1 … hard −1, D6).
+
+    // ── Construct the SINGLE RunState (F4 §5.4 + F5 §5.4 + F-difficulty §5.4, D5/D5b/D11/D5/D6) ── the run owner: a
+    // minted seed, a PER-SLOT { [slot]: {lives, tier} } seed map (F5 D5b — replaces F4's scalar startLives), and the
+    // optional deep start stage (F-difficulty D5). Each present slot's run-start lives/tier come from THAT slot's
+    // folded Hub spec (MetaState.startSpec): lives = START_LIVES + spec.startLivesBonus + the difficulty bonus,
+    // CLAMPED ≥ 1 (D6 — Hard's −1 never zeroes a run), tier = spec.startTier (the +startLife/+starStart upgrades land
+    // at run start — D7). A fresh meta + Normal yields {lives: START_LIVES, tier: 0} (the F4 behaviour, per-slot).
     const seeds: Record<number, SlotSeed> = {}
     for (const slot of presentSlots) {
       const spec = this.meta.startSpec(slot as 1 | 2)
-      seeds[slot] = { lives: START_LIVES + (spec.startLivesBonus ?? 0), tier: spec.startTier ?? 0 }
+      seeds[slot] = {
+        lives: Math.max(1, START_LIVES + (spec.startLivesBonus ?? 0) + livesBonus),
+        tier: spec.startTier ?? 0,
+      }
     }
-    this.runState = createRunState(this._mintSeed(), seeds)
+    this.runState = createRunState(this._mintSeed(), seeds, settings.startStage)
     this.shovelWasActive = false // F5 (D4a) — the shovel falling-edge latch starts clear.
 
     // ── Build the first stage via the SHARED builder (F4 §5.4, D7 — extracted so create() + every rebuild run
@@ -1027,7 +1048,7 @@ export class GameScene extends Phaser.Scene {
     // scale the spec's bullet speed by the stage's monotone bulletSpeedScale (the enemy fire pressure, AC6).
     const id = rosterPick(this.stageRng, cfg.enemyWeights)
     const base = ENEMY_SPECS[id]
-    const spec = { ...base, bulletSpeed: Math.round(base.bulletSpeed * bulletSpeedScale(this.runState.stageIndex)) }
+    const spec = { ...base, bulletSpeed: Math.round(base.bulletSpeed * bulletSpeedScale(this.runState.stageIndex, this.difficulty)) }
 
     const enemy = new Tank(this, point.x, point.y, 'enemy', spec) // the WHOLE spec → all per-type stats (AC4).
     ;(enemy.collider as TankCollider).tankRef = enemy
@@ -1056,7 +1077,7 @@ export class GameScene extends Phaser.Scene {
     this.runState.enemiesAlive++
 
     // Re-arm the spawn timer at the stage-scaled cadence (deeper stages stream faster, never instant — D8/AC6).
-    this.spawnTimer = SPAWN_STAGGER_BASE * spawnIntervalScale(this.runState.stageIndex)
+    this.spawnTimer = SPAWN_STAGGER_BASE * spawnIntervalScale(this.runState.stageIndex, this.difficulty)
   }
 
   // ── _tickEnemies(gdt) (F4 §5.3, Decisions D2/D3, AC2/AC3) ── drive every LIVE enemy. A spawn-BLINKING enemy

@@ -17,6 +17,14 @@ export const ZH_CN: Dict = {
     'title.subtitle': '坦克大战 — Battle City',
     'title.start': '按 SPACE / ENTER 或点击开始',
     'title.best': '最高分数 {score} · 最高关卡 {stage}', // F7 (D6/AC6) — 标题界面的最佳成绩行。
+    // ── F-difficulty-select（difficulty-select §5.4, D7, AC7 — 标题界面的难度/起始关卡选择行）── 三个难度档（选中项高亮）、
+    // 起始关卡读数、一行按键提示。
+    'title.difficulty': '难度',
+    'title.diff.easy': '简单',
+    'title.diff.normal': '普通',
+    'title.diff.hard': '困难',
+    'title.startStage': '起始关卡 {n}',
+    'title.diffHint': '← / → 难度 · ↑ / ↓ 起始关卡',
 
     // ── 高分榜（持久化的前 5 名战绩 — 标题界面 + 游戏结束，D6）── 标题、行模板（名次 · 分数 · 关卡）、空状态行。
     'hi.title': '高分榜',

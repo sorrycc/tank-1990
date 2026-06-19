@@ -15,6 +15,14 @@ export const EN: Dict = {
     'title.start': 'Press SPACE / ENTER or click to start',
     // F7 (D6/AC6) — the BEST line surfaced on the Title (read from MetaState; 0/0 on a fresh save).
     'title.best': 'BEST SCORE {score} · BEST STAGE {stage}',
+    // ── F-difficulty-select (difficulty-select §5.4, D7, AC7) — the Title difficulty/start-stage chooser row. The
+    // three level labels (the selected one highlighted), the start-stage readout, and a one-line key hint. ──
+    'title.difficulty': 'DIFFICULTY',
+    'title.diff.easy': 'EASY',
+    'title.diff.normal': 'NORMAL',
+    'title.diff.hard': 'HARD',
+    'title.startStage': 'START STAGE {n}',
+    'title.diffHint': '← / → difficulty · ↑ / ↓ start stage',
 
     // ── High-score table (the persistent top-5 finished runs — Title + GameOver, D6) — a heading, a row
     // template (rank · score · stage), and an empty-state line for a fresh save. Rendered via t() at both sites.

@@ -34,7 +34,7 @@ import { DEFAULT_META, loadMeta, saveMeta } from '../src/util/save.js'
 // SHARED predicates. Importing them here under node RE-PROVES their purity (a stray `import 'phaser'`
 // throws) — the convention every pure module satisfies.
 import { TILE, TILE_PROPS, isTankPassable, isBulletPassable, isDestructible } from '../src/config/tiles.js'
-import { stageConfig, hardShare, bulletSpeedScale, spawnIntervalScale, BRICK_DENSITY_MAX, STEEL_DENSITY_MAX, WATER_DENSITY_MAX, TREES_DENSITY_MAX, ICE_DENSITY_MAX, TOTAL_ENEMIES_MAX, BULLET_SPEED_SCALE_MAX } from '../src/config/stages.js'
+import { stageConfig, hardShare, bulletSpeedScale, spawnIntervalScale, difficultyPressure, BRICK_DENSITY_MAX, STEEL_DENSITY_MAX, WATER_DENSITY_MAX, TREES_DENSITY_MAX, ICE_DENSITY_MAX, TOTAL_ENEMIES_MAX, BULLET_SPEED_SCALE_MAX } from '../src/config/stages.js'
 import { generateStage, tankFits, isFortApproachWindow, windowCenter, FOOTPRINT, STAGE_MOTIFS, selectMotif, MOTIF_PARAMS } from '../src/world/LevelGenerator.js'
 // F4 PURE modules (D1/D5/D11): the tank roster + the active-run owner. Importing them here under node
 // RE-PROVES their purity (a stray `import 'phaser'` throws) — the convention every pure module satisfies.
@@ -219,6 +219,46 @@ const STAGE_K = 30 // sweep stageConfig(0..STAGE_K) — covers multiple boss mil
       if (sis > spawnIntervalScale(prev.stageIndex) + 1e-12) fail(`stages: spawnIntervalScale increased at ${s}`)
     }
     prev = cfg
+  }
+}
+
+// ── F-difficulty-select per-level ramp sweep + no-arg IDENTITY (difficulty-select §5.6, D1/D2, AC1/AC2/AC3) ──
+// The Title difficulty is a PURE per-level SCALAR composed onto the SAME closed-form ramps then re-clamped to the
+// SAME named caps. For EACH level the ramps must STILL be bounded (∈ the caps) AND per-level monotone in the stage
+// (the scalar shifts the curve, never un-orders it); and the no-arg default MUST equal the `'normal'` path (the
+// identity — so the existing no-arg §5 sweep above is byte-unaffected). difficultyPressure is driven for ordering +
+// the unknown→1 fallback. This extends §5 WITHOUT touching the no-arg checks above (they ARE the identity case).
+{
+  // difficultyPressure: easy < normal === 1 < hard (ordered + bounded), and an unknown/garbage level → normal's 1.
+  const pe = difficultyPressure('easy')
+  const pn = difficultyPressure('normal')
+  const ph = difficultyPressure('hard')
+  if (pn !== 1) fail(`difficulty: difficultyPressure('normal') = ${pn}, expected 1 (the identity, AC1)`)
+  if (!(pe < pn)) fail(`difficulty: difficultyPressure('easy') (${pe}) not < normal (${pn}) — AC2`)
+  if (!(ph > pn)) fail(`difficulty: difficultyPressure('hard') (${ph}) not > normal (${pn}) — AC2`)
+  if (difficultyPressure('__nope__') !== pn) fail(`difficulty: an unknown level must fall back to normal's 1.0 (AC2)`)
+
+  // For each level, sweep both ramps over 0..STAGE_K: bounded ∈ the caps + per-level monotone. Each scalar is a
+  // per-level CONSTANT, so a fixed level cannot un-order the curve (bullet non-decreasing / spawn non-increasing).
+  for (const d of ['easy', 'normal', 'hard']) {
+    let prevB = null
+    let prevS = null
+    for (let s = 0; s <= STAGE_K; s++) {
+      const b = bulletSpeedScale(s, d)
+      const i = spawnIntervalScale(s, d)
+      if (b < 1 || b > BULLET_SPEED_SCALE_MAX) fail(`difficulty: bulletSpeedScale(${s}, '${d}') = ${b} out of [1,${BULLET_SPEED_SCALE_MAX}] (AC3)`)
+      if (i < SPAWN_INTERVAL_MIN_SCALE || i > 1) fail(`difficulty: spawnIntervalScale(${s}, '${d}') = ${i} out of [${SPAWN_INTERVAL_MIN_SCALE},1] (AC3)`)
+      if (prevB !== null && b < prevB - 1e-12) fail(`difficulty: bulletSpeedScale decreased at ${s} for '${d}' (AC3)`)
+      if (prevS !== null && i > prevS + 1e-12) fail(`difficulty: spawnIntervalScale increased at ${s} for '${d}' (AC3)`)
+      prevB = b
+      prevS = i
+    }
+  }
+
+  // The no-arg default IS the 'normal' identity (so the existing no-arg §5 sweep above is byte-unaffected — AC3).
+  for (let s = 0; s <= STAGE_K; s++) {
+    if (bulletSpeedScale(s) !== bulletSpeedScale(s, 'normal')) fail(`difficulty: bulletSpeedScale(${s}) != bulletSpeedScale(${s}, 'normal') — the no-arg default must be the identity (AC3)`)
+    if (spawnIntervalScale(s) !== spawnIntervalScale(s, 'normal')) fail(`difficulty: spawnIntervalScale(${s}) != spawnIntervalScale(${s}, 'normal') — the no-arg default must be the identity (AC3)`)
   }
 }
 
@@ -604,6 +644,17 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
       fail(`RunState: fresh nextExtraLifeScore = ${a.nextExtraLifeScore}, expected ${EXTRA_LIFE_SCORE} (extra-life AC2)`)
     if (a.enemiesQueued !== cfg0.totalEnemies || a.enemiesRemaining !== cfg0.totalEnemies || a.enemiesAlive !== 0)
       fail(`RunState: fresh spawn ledger not seeded from stageConfig(0)`)
+    // ── F-difficulty-select deep start (difficulty-select §5.6, D5, AC4) ── the OPTIONAL startStage arg seeds the
+    // run-global stageIndex + its ledger from stageConfig(startStage), NOT stage 0. The no-arg form above still
+    // seeds stageIndex === 0 (asserted just above — every existing call site is byte-unchanged). A non-zero start
+    // begins the run deep (a "skip to stage N" practice run); advance() then keeps climbing from there.
+    {
+      const deep = createRunState(RS_SEED, { 1: { lives: 3, tier: 0 } }, 7)
+      const cfg7 = stageConfig(7)
+      if (deep.stageIndex !== 7) fail(`RunState: createRunState(..., 7) stageIndex = ${deep.stageIndex}, expected 7 (AC4)`)
+      if (deep.enemiesQueued !== cfg7.totalEnemies || deep.enemiesRemaining !== cfg7.totalEnemies || deep.enemiesAlive !== 0)
+        fail(`RunState: createRunState(..., 7) spawn ledger not seeded from stageConfig(7) (AC4)`)
+    }
     for (const slot of Object.keys(FRESH)) {
       const s = Number(slot)
       if (a.lives[s] !== 3) fail(`RunState: fresh lives[${s}] = ${a.lives[s]}, expected 3`)
@@ -871,6 +922,7 @@ console.log(
   `verify-gen OK: rng deterministic + pinned; constants ${GRID_COLS}x${GRID_ROWS} (pure node-import); ` +
     `save clone-no-alias; tiles TILE_PROPS total + helpers read the table; ` +
     `stages monotonic over stageConfig(0..${STAGE_K}) (densities+counts+hardShare+boss cadence + F4 bulletSpeed/spawnInterval ramps, D16/F4-AC6); ` +
+    `F-difficulty per-level ramps bounded+monotone + no-arg===normal-identity + difficultyPressure ordered/unknown→1 + deep-start seeds stageIndex/ledger (difficulty-select AC1/AC2/AC3/AC4); ` +
     `stage sweep ${SWEEP_SEEDS} seeds × ${SWEEP_STAGES.length} stages — determinism + bounds (≤scatterCells, D14) + ` +
     `eagle enclosed&reachable (footprint BFS, D15) + spawn validity & window-center pin (D13); ` +
     `F7 motifs known/deterministic + selectMotif total + shape-space-used (${SWEEP_MOTIFS.size} distinct) (F7 AC1/AC2/AC3); ` +

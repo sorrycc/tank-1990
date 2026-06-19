@@ -112,7 +112,11 @@ export function extraLivesCrossed(
 // slot's folded spec (GameScene computes them from MetaState.startSpec(slot) — D7). stageIndex=0, score=0, the
 // spawn ledger from stageConfig(0), the power-up timers 0 (the neutral identity). PURE (no Phaser, no clock
 // read) so the verifier constructs + drives it headlessly (AC6/AC8).
-export function createRunState(startSeed: number, seeds: Record<number, SlotSeed>): RunState {
+export function createRunState(
+  startSeed: number,
+  seeds: Record<number, SlotSeed>,
+  startStage = 0,
+): RunState {
   const lives: Record<number, number> = {}
   const tier: Record<number, number> = {}
   const shieldTimer: Record<number, number> = {}
@@ -125,13 +129,19 @@ export function createRunState(startSeed: number, seeds: Record<number, SlotSeed
     shieldTimer[slot] = 0 // no helmet shield at run start (the neutral identity — the helmet power-up arms it).
     boatTimer[slot] = 0 // boat-drill — no amphibious window at run start (the neutral identity — the boat power-up arms it).
   }
-  // Seed the per-stage spawn ledger from stage 0: every enemy is QUEUED, none alive yet (the spawn loop streams
-  // them); enemiesRemaining = the stage's totalEnemies (the clear predicate counts it down to 0 — AC5).
-  const cfg0 = stageConfig(0)
+  // ── F-difficulty-select deep start (difficulty-select §5.2, D4/D5, AC4) ── the run-global stageIndex seeds from the
+  // OPTIONAL `startStage` (defaulted 0 — every existing caller + the verifier's no-arg path is byte-unchanged). When
+  // > 0 the Title's "skip to stage N" practice option seeds the run THERE: stageIndex = the floored/non-negative
+  // start, and the per-stage spawn ledger from stageConfig(startStage) (NOT stage 0), so the run begins deep with that
+  // stage's enemy total/cap. advance() is UNTOUCHED — it already increments from the run-global index, so the
+  // difficulty curve keeps climbing from the start stage onward (D4). Only `startStage` touches RunState (it IS the run
+  // identity — stageIndex); difficulty/lives are folded elsewhere (the ramps / the seed map — D4, SOLID).
+  const start = Math.max(0, Math.floor(startStage || 0))
+  const cfg0 = stageConfig(start)
 
   return {
     seed: startSeed >>> 0,
-    stageIndex: 0,
+    stageIndex: start,
     lives,
     tier,
     score: 0,

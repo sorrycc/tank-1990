@@ -292,3 +292,26 @@ export const STAGE_BONUS_SEC = 2.2 // s — the between-stage bonus-tally window
 // "you cleared the stage" reward on top of the per-type kill subtotals). Added at the one-shot clear site so it
 // is banked exactly once; the tally string shows it on its own line + folds it into the displayed TOTAL.
 export const STAGE_CLEAR_BONUS = 1000 // points — the flat per-stage-clear bonus (banked once per clear, AC2).
+
+// ── F-difficulty-select Title difficulty scalars (difficulty-select §5.2, D1/D2/D6, AC1) — PURE shared DATA (no Phaser) ──
+// The Title's Easy/Normal/Hard chooser scales the EXISTING closed-form pressure ramps (config/stages.ts) + the run-start
+// lives by a per-level SCALAR — NOT a ramp rewrite (D1). Owned ONCE here (DRY) so config/stages.ts folds the SAME table
+// the Title labels + GameScene reads; the verifier node-imports this module (a stray Phaser import would throw under
+// node — re-proving purity). NORMAL is the literal IDENTITY (1.0 pressure / +0 lives) so a Normal run is byte-identical
+// to today + the verifier's no-arg ramp sweep is byte-unaffected (D1/AC1/AC3).
+
+// DIFFICULTY_PRESSURE (D1/D2, AC1/AC2) — the per-level enemy-pressure multiplier. config/stages.ts COMPOSES it onto
+// the raw ramp (× bullet speed / ÷ spawn interval) then re-clamps to the SAME named caps, so a higher pressure means
+// faster bullets + a shorter spawn interval while staying BOUNDED (D2). easy < normal === 1.0 < hard (ordered) so a Hard
+// run streams harder enemies, an Easy run the reverse. normal === 1.0 is the identity (the default-arg path is unchanged).
+export const DIFFICULTY_PRESSURE = { easy: 0.85, normal: 1.0, hard: 1.2 } as const
+
+// DIFFICULTY_LIVES_BONUS (D1/D6, AC1/AC5) — the per-level ADD to each slot's run-start lives, folded into the seed map by
+// GameScene as `Math.max(1, START_LIVES + spec.startLivesBonus + bonus)` (clamped ≥ 1 — D6, so Hard's −1 never zeroes a
+// run). easy = +1 (a kinder buffer), normal = +0 (the identity — today's START_LIVES), hard = −1 (fewer lives, the wall).
+export const DIFFICULTY_LIVES_BONUS = { easy: 1, normal: 0, hard: -1 } as const
+
+// MAX_START_STAGE (D5, AC4/AC7) — the cap on the Title's optional starting-stage offset (a "skip to stage N" practice
+// option). The Title clamps the picker to [0, MAX_START_STAGE]; createRunState seeds a non-zero start stage from it.
+// Owned here so the Title's clamp + any later consumer read the SAME ceiling (DRY). 0 = the default (start at stage 0).
+export const MAX_START_STAGE = 20 // the deepest stage the Title's starting-stage picker can seed (a practice cap, AC4).

@@ -18,6 +18,7 @@ import {
   MAX_CONCURRENT_ENEMIES,
   BOSS_STAGE_EVERY,
   SPAWN_INTERVAL_MIN_SCALE,
+  DIFFICULTY_PRESSURE,
 } from './constants.js'
 
 // ── StageConfig — the params the generator reads (§5.2, AC2). ── Plain data (no functions) so it stays
@@ -170,20 +171,41 @@ export const BULLET_SPEED_SCALE_MAX = 1.6 // cap — a deep-stage enemy bullet i
 const SPAWN_INTERVAL_SCALE_BASE = 1.0 // stage-0 multiplier (the identity — the base SPAWN_STAGGER_BASE cadence).
 const SPAWN_INTERVAL_SCALE_PER_STAGE = -0.04 // −4% spawn delay per stage (non-increasing by construction, k ≤ 0).
 
-// ── bulletSpeedScale(stageIndex) → [1, BULLET_SPEED_SCALE_MAX] (D6, AC6) ── the closed-form monotone enemy
-// bullet-speed multiplier (NON-DECREASING in the stage). PURE + deterministic (no RNG). The spawn loop reads
-// it to scale the archetype's `bulletSpeed`; the verifier RE-derives + asserts it non-decreasing (AC6).
-export function bulletSpeedScale(stageIndex: number): number {
-  const s = Math.max(0, Math.floor(stageIndex || 0))
-  return clamp(BULLET_SPEED_SCALE_BASE + BULLET_SPEED_SCALE_PER_STAGE * s, BULLET_SPEED_SCALE_BASE, BULLET_SPEED_SCALE_MAX)
+// ── F-difficulty-select per-level pressure SCALAR (difficulty-select §5.2, D1/D2, AC1/AC2) ── the Title's
+// Easy/Normal/Hard chooser is a PURE per-level multiplier COMPOSED onto the closed-form ramps below — NOT a ramp
+// rewrite (D1). `Difficulty` is the three named levels; `difficultyPressure(level)` folds the shared constants.ts
+// table (DRY) and defends an unknown/garbage level → `normal`'s 1.0 (the identity), so a corrupt persisted setting
+// degrades safely. ORDERED easy < normal === 1 < hard + BOUNDED by the table; the verifier drives it (AC2).
+export type Difficulty = 'easy' | 'normal' | 'hard'
+export function difficultyPressure(level: Difficulty): number {
+  return DIFFICULTY_PRESSURE[level] ?? DIFFICULTY_PRESSURE.normal // unknown/garbage → normal's 1.0 (the identity).
 }
 
-// ── spawnIntervalScale(stageIndex) → [SPAWN_INTERVAL_MIN_SCALE, 1] (D6/D8, AC6) ── the closed-form monotone
-// spawn-cadence multiplier (NON-INCREASING in the stage — enemies arrive no slower). PURE + deterministic. The
-// spawn loop multiplies SPAWN_STAGGER_BASE by it; the verifier RE-derives + asserts it non-increasing (AC6).
-export function spawnIntervalScale(stageIndex: number): number {
+// ── bulletSpeedScale(stageIndex, difficulty?) → [1, BULLET_SPEED_SCALE_MAX] (D6/F-difficulty D1/D2, AC6/AC3) ── the
+// closed-form monotone enemy bullet-speed multiplier (NON-DECREASING in the stage). PURE + deterministic (no RNG). The
+// spawn loop reads it to scale the archetype's `bulletSpeed`; the verifier RE-derives + asserts it non-decreasing (AC6).
+// F-difficulty-select (D1/D2): COMPOSES the per-level pressure scalar onto the raw ramp (× — a higher pressure = faster
+// bullets) then RE-CLAMPS to the SAME named caps, so for a FIXED difficulty it stays monotone in `s` (the scalar shifts
+// the curve, never un-orders it) AND bounded (Hard never exceeds BULLET_SPEED_SCALE_MAX — D2). The default `'normal'`
+// ⇒ difficultyPressure === 1.0 ⇒ the raw ramp unchanged ⇒ byte-identical to today (every existing caller + the
+// verifier's no-arg sweep is unaffected — AC3).
+export function bulletSpeedScale(stageIndex: number, difficulty: Difficulty = 'normal'): number {
   const s = Math.max(0, Math.floor(stageIndex || 0))
-  return clamp(SPAWN_INTERVAL_SCALE_BASE + SPAWN_INTERVAL_SCALE_PER_STAGE * s, SPAWN_INTERVAL_MIN_SCALE, SPAWN_INTERVAL_SCALE_BASE)
+  const raw = BULLET_SPEED_SCALE_BASE + BULLET_SPEED_SCALE_PER_STAGE * s
+  return clamp(raw * difficultyPressure(difficulty), BULLET_SPEED_SCALE_BASE, BULLET_SPEED_SCALE_MAX)
+}
+
+// ── spawnIntervalScale(stageIndex, difficulty?) → [SPAWN_INTERVAL_MIN_SCALE, 1] (D6/D8/F-difficulty D1/D2, AC6/AC3) ──
+// the closed-form monotone spawn-cadence multiplier (NON-INCREASING in the stage — enemies arrive no slower). PURE +
+// deterministic. The spawn loop multiplies SPAWN_STAGGER_BASE by it; the verifier RE-derives + asserts it non-increasing
+// (AC6). F-difficulty-select (D1/D2): COMPOSES the per-level pressure scalar by DIVIDE (÷ — a higher pressure SHORTENS
+// the spawn interval, so enemies arrive faster) then RE-CLAMPS to the SAME [SPAWN_INTERVAL_MIN_SCALE, 1] bounds — so
+// it stays per-level monotone + bounded (deep+Hard streams fast but never instant — D2). Default `'normal'` ⇒ 1.0 ⇒
+// the raw ramp unchanged ⇒ byte-identical to today (the verifier's no-arg sweep is unaffected — AC3).
+export function spawnIntervalScale(stageIndex: number, difficulty: Difficulty = 'normal'): number {
+  const s = Math.max(0, Math.floor(stageIndex || 0))
+  const raw = SPAWN_INTERVAL_SCALE_BASE + SPAWN_INTERVAL_SCALE_PER_STAGE * s
+  return clamp(raw / difficultyPressure(difficulty), SPAWN_INTERVAL_MIN_SCALE, SPAWN_INTERVAL_SCALE_BASE)
 }
 
 // ── hardShare(cfg) → [0,1] (D16, AC9) ── the EXACT normalized share of the two HARD enemy types
