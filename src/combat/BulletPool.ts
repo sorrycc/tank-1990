@@ -26,10 +26,20 @@ import type { Tank, TankSide, Facing } from '../entities/Tank.js'
 // classic "you may only have N shots out at once" rule. releaseAll() does NOT fire that callback (a pool
 // rebuild/teardown is not a despawn).
 
-const BULLET_W = 8 // px — programmer-art bullet (a small square, primitives only — AC11).
-const BULLET_H = 8 // px.
+const BULLET_W = 8 // px — programmer-art bullet (a small square, primitives only — AC11). This is the COLLISION
+const BULLET_H = 8 // px.  body size (set on the Arcade body, fixed) — the visible rect is restyled per shot below.
 const BULLET_COLOR = 0xf0e68c // light khaki bolt; reads against the dark playfield.
 const MUZZLE_STANDOFF = 6 // px — spawn the bullet a hair ahead of the tank along its facing (no self-overlap).
+
+// ── Travel TRACER (cosmetic — purely the VISIBLE rect; the collision body stays the fixed BULLET_W×BULLET_H) ──
+// A flat 8×8 dot reads as static even at speed, so a fast POWER/boss bolt is hard to perceive as moving. On
+// acquire we ELONGATE the visible rect along its travel axis into a short bright streak (long on the travel
+// axis, the normal 8px across) + brighten the tint, so a moving bolt reads as a streak — and a faster bolt's
+// equal-length streak simply covers more ground per frame (the "this one is faster" cue). rect.setSize ONLY
+// resizes the GameObject's drawing; the Arcade body keeps its fixed 8×8 (body.setSize is NEVER called), so
+// every collision (bullet×tank / bullet×terrain / bullet×bullet) is byte-identical to a plain square.
+const BULLET_TRACER_LEN = 16 // px — the streak length along the travel axis (the visible rect; body is unchanged).
+const BULLET_TRACER_COLOR = 0xfffbd6 // a brighter near-white bolt head so the moving streak reads against the dark field.
 
 // The per-bullet context, mutated on acquire (never re-allocated → no per-shot GC, AC9). Carried on the
 // rect's `bx` property (parallels the reference's `pj`). EXPORTED so the F3 GameScene's bullet×bullet scan
@@ -113,9 +123,16 @@ export class BulletPool {
     }
 
     const body = rect.body as Phaser.Physics.Arcade.Body
-    body.reset(mx, my) // snap body to the muzzle, clearing residual velocity.
+    body.reset(mx, my) // snap body to the muzzle, clearing residual velocity. Body stays the fixed BULLET_W×BULLET_H.
     body.enable = true
     body.setVelocity(0, 0) // Arcade velocity 0 — we hand-integrate (no double-step; freezes on a future hit-stop).
+    // Cosmetic travel TRACER: stretch the VISIBLE rect into a bright streak along the travel axis (horizontal
+    // facings → long X, vertical → long Y). setSize touches the drawing ONLY — the collision body above is the
+    // fixed 8×8 (never resized), so the streak cannot alter any collision. Re-set each acquire (a parked rect
+    // is reused for any facing), so no reset on _disable is needed.
+    if (vx !== 0) rect.setSize(BULLET_TRACER_LEN, BULLET_H)
+    else rect.setSize(BULLET_W, BULLET_TRACER_LEN)
+    rect.setFillStyle(BULLET_TRACER_COLOR)
     rect.setVisible(true)
     rect.setPosition(mx, my)
 

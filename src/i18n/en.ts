@@ -16,6 +16,12 @@ export const EN: Dict = {
     // F7 (D6/AC6) — the BEST line surfaced on the Title (read from MetaState; 0/0 on a fresh save).
     'title.best': 'BEST SCORE {score} · BEST STAGE {stage}',
 
+    // ── High-score table (the persistent top-5 finished runs — Title + GameOver, D6) — a heading, a row
+    // template (rank · score · stage), and an empty-state line for a fresh save. Rendered via t() at both sites.
+    'hi.title': 'HIGH SCORES',
+    'hi.row': '{rank}. {score} · STAGE {stage}',
+    'hi.empty': 'No runs yet — be the first!',
+
     // ── Controls reference (F6 §5.2, D9, AC7) — the shared CONTROLS_ROWS the Title renders so a first-time
     // player discovers both schemes. The action labels localise; the key TOKENS (WASD/J/Numpad0/SPACE/ENTER/M)
     // stay literal — they name physical keys (the bindings owned by core/Input.ts; this table mirrors them).
@@ -56,6 +62,7 @@ export const EN: Dict = {
     'hud.power': 'POWER {name} {secs}s',
     'hud.powerInstant': 'POWER {name}',
     'hud.stageCleared': 'STAGE {n} CLEARED', // F6 (D5, AC3) — the boss-stage clear banner (a timed overlay).
+    'hud.stageIntro': 'STAGE {n}', // (D3/D5, AC2) — the centered STAGE-N intro curtain shown before each stage.
     'hud.muted': 'MUTED', // F6 (D8, AC6) — the mute cue shown while audio is muted (M toggle).
 
     // ── GameOver (the run-summary snapshot — AC5) ──

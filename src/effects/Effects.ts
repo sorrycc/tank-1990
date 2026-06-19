@@ -24,6 +24,21 @@ const SHAKE_MS = 60 // ms — base camera shake on an impact.
 const SHAKE_INTENSITY = 0.003 // base shake intensity (fraction of viewport).
 const KILL_SHAKE_MULT = 2.2 // a kill shakes harder than a chip.
 
+// F8 (D4/D5, AC3) — the spawn-in materialize cue: a CONTRACTING ring (a pooled bloom played inward) at a spawn
+// center. A COOL colour distinct from the warm kill bloom so a spawn never reads as an impact. SHIELD_PEAK is
+// where the ring starts before it closes; SHIELD_LIFE the closing time. One truth so the three spawn sites match (D5).
+const SHIELD_COLOR = 0x74b9ff // cool blue spawn-in flash (programmer-art primitive — distinct from the kill bloom).
+const SHIELD_PEAK = 52 // px — the ring's starting width before it contracts to the spawn center.
+const SHIELD_LIFE = 0.35 // s — the spawn-in materialize duration (the default the spawn sites pass).
+
+// The muzzle-FLASH cue (the firing kick): a SMALL cool/white spark puff at the gun mouth on every successful
+// shot. A COOL near-white colour distinct from the warm-yellow impact spark so a fire never reads as a hit;
+// a low count + a slow speed so it's a brief flick, not a burst (firing happens many times a second — a fuller
+// burst per shot would be noise). NO bloom + NO shake (a shot is not an impact — a per-shot shake is nauseating).
+const MUZZLE_COLOR = 0xeaf6ff // cool near-white muzzle spark (programmer-art primitive — distinct from the warm impact).
+const MUZZLE_COUNT = 3 // sparks per shot (a brief flick).
+const MUZZLE_SPEED = 120 // px/s — slow muzzle-spark speed (a small puff, not an impact spray).
+
 export class Effects {
   private scene: Phaser.Scene
   private pool: ParticlePool
@@ -42,8 +57,20 @@ export class Effects {
       color: SPARK_COLOR,
       speed: big ? KILL_SPEED : IMPACT_SPEED,
     })
+    // F8 (D2/D3, AC1/AC2) — the staged expanding BLOOM (a flash that grows then fades), bigger + longer on a
+    // kill. Added INSIDE the façade so the single kill call site upgrades for FREE — no new GameScene call (D3).
+    this.pool.spawnBloom(x, y, { big })
     // Phaser applies the shake framerate-aware. A kill shakes harder than a chip (the strength cue).
     this.scene.cameras.main.shake(SHAKE_MS, SHAKE_INTENSITY * (big ? KILL_SHAKE_MULT : 1))
+  }
+
+  // ── spawnShield(x, y, duration?) (F8 §5.3, D4/D5, AC3 — the spawn-in JUICE) ── a CONTRACTING ring cue at a
+  // tank's spawn center (a pooled bloom played INWARD — reuses the bloom primitive, DRY). A cool colour distinct
+  // from the warm kill bloom so a spawn never reads as an impact. NO shake (a spawn is not an impact). One call
+  // per spawn site (GameScene's _buildPlayer / _spawnStep / _spawnBoss). Purely cosmetic — the real spawn-invuln
+  // is the existing SPAWN_BLINK_TIME i-frame (untouched).
+  spawnShield(x: number, y: number, duration: number = SHIELD_LIFE): void {
+    this.pool.spawnBloom(x, y, { contract: true, color: SHIELD_COLOR, peak: SHIELD_PEAK, life: duration })
   }
 
   // ── scorePopup(x, y, value) (F7 §5.4, D5, AC5 — the kill JUICE) ── a floating "+N" SCORE popup at a tank/boss
@@ -53,6 +80,14 @@ export class Effects {
   // the burst. ONE call site per kill (GameScene._onEnemyKilled); brick chips / bullet cancels do NOT call it (AC5).
   scorePopup(x: number, y: number, value: number): void {
     this.pool.spawnNumber(x, y - 18, `+${value}`, { color: '#feca57' })
+  }
+
+  // ── muzzleFlash(x, y) (the firing JUICE) ── a small cool/white spark puff at the gun mouth, reusing the
+  // pooled spark primitive (DRY — the SAME no-alloc pool the impacts use). Distinct from explosion(): NO bloom,
+  // NO camera shake (a shot fires many times a second — a shake per shot would be nauseating; just a flick of
+  // sparks). GameScene calls this at the three fire sites behind the tryFire boolean (once per real shot).
+  muzzleFlash(x: number, y: number): void {
+    this.pool.spawnSparks(x, y, { count: MUZZLE_COUNT, color: MUZZLE_COLOR, speed: MUZZLE_SPEED })
   }
 
   // Forward the per-frame tick to the pool. REAL dt (the freeze must not pause the pop — D9/D10).

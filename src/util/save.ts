@@ -34,12 +34,16 @@ const SAVE_KEY = 'tank-1990:meta'
 // The persistent meta shape. `currency` is the SHARED permanent bank (a fraction of run score, survives
 // death); `upgrades` maps player-slot ('1' = P1, '2' = P2) → that player's owned upgrade levels
 // (upgrade-id → level), so a later applyUpgrades(slot) folds exactly ONE player's tree with no schema
-// migration (Decision 6); `bestScore` / `bestStage` are the best ever reached (GameOver displays them).
+// migration (Decision 6); `bestScore` / `bestStage` are the best ever reached (GameOver displays them);
+// `highScores` is the top-N finished runs (kept sorted descending by score, capped by MetaState.bankRun —
+// the persistent high-score TABLE the Title + GameOver render). A null/missing field back-fills via the
+// DEFAULT_META spread below (no migration).
 export interface MetaState {
   currency: number
   upgrades: { '1': Record<string, number>; '2': Record<string, number> }
   bestScore: number
   bestStage: number
+  highScores: { score: number; stage: number }[]
 }
 
 // DEFAULT_META is the IDENTITY: empty shared bank, empty per-player upgrade maps, best 0/0 — a fresh
@@ -51,6 +55,7 @@ export const DEFAULT_META: Readonly<MetaState> = Object.freeze({
   upgrades: { '1': {}, '2': {} },
   bestScore: 0,
   bestStage: 0,
+  highScores: [],
 })
 
 export function loadMeta(): MetaState {
@@ -66,6 +71,12 @@ export function loadMeta(): MetaState {
     '1': { ...(u['1'] || {}) },
     '2': { ...(u['2'] || {}) },
   }
+  // CLONE the high-score array out of the back-filled merge for the SAME no-alias reason (a save written by
+  // an OLDER build has no `highScores` → it spreads in from the frozen DEFAULT_META, so a later bankRun push
+  // would mutate the shared frozen default / throw). Map each entry to a FRESH {score,stage} so the loaded
+  // table owns its own array AND its own entry objects. Defensive against a corrupt non-array / malformed entry.
+  const hs = Array.isArray(merged.highScores) ? merged.highScores : []
+  merged.highScores = hs.map((e) => ({ score: e?.score ?? 0, stage: e?.stage ?? 0 }))
   return merged
 }
 

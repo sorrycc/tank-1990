@@ -89,6 +89,28 @@ type TankCollider = Phaser.GameObjects.Rectangle & { tankRef?: Tank }
 // The IDLE intent a spawn-BLINKING enemy is ticked with (F4 §5.3, AC2) — all zero, so update() holds the body
 // still (no move, no facing change, no fire). A frozen literal shared by every blinking enemy (no allocation).
 const IDLE_INTENT = { up: false, down: false, left: false, right: false, dirX: 0, dirY: 0, firePressed: false }
+
+// (D3, AC2) — the STAGE-N intro-curtain duration (SECONDS). A brief beat before each stage's enemies stream in
+// (the classic "STAGE N" curtain). A coupled-scene tunable (not a shared pure number), so it lives here, not in
+// constants.ts. ~1.4 s sits in the spec's ~1.2–1.6 s window — long enough to read the stage, short enough to feel snappy.
+const STAGE_INTRO_SEC = 1.4 // s — how long the STAGE-N intro curtain holds before enemy spawning/AI resumes.
+
+// The firing-juice muzzle-flash offset (px) — how far ahead of the tank center, along its facing, the cool
+// muzzle spark pops (a hair past the barrel tip). A cosmetic coupled-scene tunable (not a shared pure number),
+// so it lives here, not in constants.ts — half a tile sits the flick at the gun mouth for the ~1-tile tank.
+const MUZZLE_OFFSET = 14 // px — the muzzle-spark standoff ahead of the tank center along facing.
+
+// ── F9 Eagle-destroyed loss sequence (F9 §5.3, D3/D4) ── the run's most dramatic beat gets a HEAVIER blast than a
+// generic kill: 2–3 big blooms STAGGERED at the eagle center + a stronger camera flash/shake, then the unchanged
+// run-over. Coupled-scene tunables (cosmetic FX, not shared pure numbers), so they live here, not in constants.ts.
+const EAGLE_BLAST_OFFSETS = [
+  { dx: 0, dy: 0, ms: 0 }, // the first burst — immediate, dead center on the eagle.
+  { dx: -12, dy: -8, ms: 90 }, // a second roll, up-left.
+  { dx: 14, dy: 6, ms: 180 }, // a third roll, down-right — the staggered multi-burst reads as a drawn-out blast.
+]
+const EAGLE_FLASH_MS = 220 // ms — the white camera flash punctuating the eagle's destruction (before the run-end red).
+const EAGLE_SHAKE_MS = 320 // ms — a longer, stronger shake than a kill's SHAKE_MS (the eagle blast hits hardest).
+const EAGLE_SHAKE_INTENSITY = 0.012 // fraction of viewport — well above a normal kill's shake (the heavier beat).
 // A solidBodies child carries F2's grid tags (tileKind/tileCol/…) + the F3 back-ref to the Base (the eagle's
 // TILE.BASE body, found + tagged in create()). The terrain callback reads these off the struck body (D2/D3).
 type SolidRect = Phaser.GameObjects.Rectangle & {
@@ -164,6 +186,13 @@ export class GameScene extends Phaser.Scene {
   private bossSpawned = false
   private bannerTimer = 0
   private bannerStage = 0
+
+  // ── STAGE-N intro curtain (D3/D4/D5, AC2/AC3) ── `curtainTimer` is the SECONDS remaining on the brief "STAGE N"
+  // intro shown before each stage's enemies stream in. Armed in _buildStage (so EVERY stage — the first + each
+  // advance — opens on it), decayed on the REAL dt in update(); while > 0 the spawn loop + enemy tick are gated
+  // (the player + bullets stay live — only the enemy pair is paused) and _publishHud mirrors a centered label to
+  // the HUD via the registry (the SAME pattern as the STAGE-N-CLEARED banner — GameScene owns WHEN, the HUD HOW).
+  private curtainTimer = 0
 
   // ── F7 pause state (F7 §5.3, Decisions D3/D4, AC4) ── `paused` gates update()'s gameplay block (the SAME
   // freeze idiom the gameOver branch uses — while paused the world is FULLY frozen but the FX pool still settles
@@ -347,6 +376,11 @@ export class GameScene extends Phaser.Scene {
     )
     // (The bullet × player tank overlaps are registered per-player inside _buildPlayer; enemy tanks register
     // their OWN in _spawnStep — all into the SAME side-generic shape via _registerTankOverlap, D9/AC9.)
+
+    // (D3, AC2) — arm the STAGE-N intro curtain. EVERY stage opens on it (the first build + each advance call this
+    // SHARED builder, DRY): update() gates the spawn loop + enemy tick while curtainTimer > 0, and _publishHud
+    // mirrors the centered "STAGE N" label to the HUD. The world is built + visible underneath (the player can move).
+    this.curtainTimer = STAGE_INTRO_SEC
   }
 
   // ── _buildPlayer(slot,x,y) (F4 §5.4, D10/D11) ── build a present player FRESH for this stage. Construct it
@@ -378,6 +412,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.spawnPos.set(slot, { x, y })
     this.playerTanks.set(slot, tank)
+    this.effects.spawnShield(x, y) // F8 (D5/AC3) — the spawn-in materialize cue at the player spawn center.
     return tank
   }
 
@@ -590,6 +625,11 @@ export class GameScene extends Phaser.Scene {
     // banner timer is decayed on the REAL dt in update() (so it shows through the run-end freeze beat).
     r.set('hud.banner', this.bannerTimer > 0 ? t('hud.stageCleared', { n: this.bannerStage }) : '')
     r.set('hud.muted', this.sfx.mute) // the mute cue (the HUD shows "MUTED" while true — D8).
+
+    // (D3/D5, AC2) — the STAGE-N intro-curtain label (the localised "STAGE N" while the curtain is up, else '').
+    // SAME registry-mirror pattern as the clear banner: the HUD renders it centered (the intro beat). The human
+    // stage number is stageIndex + 1. Its own key (NOT hud.banner) so the intro + clear render paths stay separate.
+    r.set('hud.stageIntro', this.curtainTimer > 0 ? t('hud.stageIntro', { n: this.runState.stageIndex + 1 }) : '')
   }
 
   // ── bullet × terrain solids resolution (F3 §5.3, D1/D2/D3/D4, AC1/AC2/AC6/AC10) ── ONE callback over the
@@ -611,7 +651,17 @@ export class GameScene extends Phaser.Scene {
         this.bullets.release(bulletRect)
         return
       }
-      this.effects.explosion(bulletRect.x, bulletRect.y, { big: true }) // a big kill burst at the eagle.
+      // F9 (§5.3, D3/D4, AC2) — the loss is the run's most dramatic beat: fire 2–3 STAGGERED big blooms at the
+      // EAGLE CENTER (not the bullet point) via time.delayedCall + a stronger camera flash/shake, instead of the
+      // lone kill burst. The bursts tick on real dt, so they roll on while _triggerGameOver defers the swap 700 ms.
+      const ex = base.rect.x
+      const ey = base.rect.y
+      for (const o of EAGLE_BLAST_OFFSETS) {
+        if (o.ms === 0) this.effects.explosion(ex + o.dx, ey + o.dy, { big: true }) // first burst — immediate.
+        else this.time.delayedCall(o.ms, () => this.effects.explosion(ex + o.dx, ey + o.dy, { big: true }))
+      }
+      this.cameras.main.flash(EAGLE_FLASH_MS, 255, 255, 255) // a white camera punch (the run-end RED flash follows).
+      this.cameras.main.shake(EAGLE_SHAKE_MS, EAGLE_SHAKE_INTENSITY) // stronger than a kill's shake — the heaviest beat.
       this.sfx.explosion({ big: true }) // F6 (D6/AC6) — the eagle-hit burst (the run-end follows via the guard).
       this.bullets.release(bulletRect)
       base.onHit() // flips destroyed ONCE → onDestroyed → _triggerGameOver (the gameOver guard, AC6/AC10).
@@ -739,6 +789,7 @@ export class GameScene extends Phaser.Scene {
         currencyBanked,
         bestScore: this.meta.getBestScore(),
         bestStage: this.meta.getBestStage(),
+        highScores: this.meta.getHighScores(), // read AFTER bankRun, so the table already includes this run (D4).
       }),
     )
   }
@@ -785,6 +836,23 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  // ── _muzzleFlash(tank) (the firing JUICE) ── pop the cool muzzle spark at the tank's GUN MOUTH on a
+  // successful shot: the body center offset a few px along `facing` (the SAME standoff idea BulletPool uses to
+  // place the bullet ahead of the tank — so the flick sits at the barrel tip, not the body center). ONE helper,
+  // called from the three fire sites behind the tryFire boolean (so it fires exactly once per real shot — DRY).
+  private _muzzleFlash(tank: Tank): void {
+    const c = tank.body.center
+    let mx = c.x
+    let my = c.y
+    switch (tank.facing) {
+      case 'up': my -= MUZZLE_OFFSET; break
+      case 'down': my += MUZZLE_OFFSET; break
+      case 'left': mx -= MUZZLE_OFFSET; break
+      case 'right': mx += MUZZLE_OFFSET; break
+    }
+    this.effects.muzzleFlash(mx, my)
+  }
+
   // ── _spawnStep(gdt) (F4 §5.3/§5.4, Decisions D8, AC1/AC2/AC7) — the staggered/capped spawn loop ──
   // Decays a spawn timer (on the GAMEPLAY dt so a future freeze pauses spawning too). When it elapses AND a
   // slot is free (enemiesAlive < the stage's concurrentEnemies cap) AND there is a queued enemy, spawn ONE at
@@ -821,6 +889,7 @@ export class GameScene extends Phaser.Scene {
     enemy.onDropFlag = enemy.carrier ? (x, y) => this._markDrop(x, y) : null
     this._registerTankOverlap(enemy) // the SAME bullet×tank overlap as players (F3 seam, D9/AC9).
     this.enemies.push(enemy)
+    this.effects.spawnShield(point.x, point.y) // F8 (D5/AC3) — the spawn-in materialize cue at the enemy spawn center.
 
     // Update the per-stage ledger (D8): one fewer queued, one more alive. enemiesRemaining = queued + alive
     // (kept in sync so the HUD/readout + the clear predicate read one truth).
@@ -852,8 +921,12 @@ export class GameScene extends Phaser.Scene {
       enemy.update(gdt, enemy.aiIntent) // drive it through the SAME spine (DRY — D3).
       // F6 (D6/AC6) — enemy fire audio routes through the scene like the players' (every tank's shot plays fire();
       // the boss's telegraphed volley fires here too — tryFire's boolean gates the blip). The throttle collapses a
-      // same-frame multi-shot pile-up into one transient so a busy frame doesn't machine-gun the blip.
-      if (enemy.aiIntent.firePressed && enemy.tryFire(this.bullets)) this.sfx.fire()
+      // same-frame multi-shot pile-up into one transient so a busy frame doesn't machine-gun the blip. The muzzle
+      // flash pops behind the SAME tryFire boolean (the firing JUICE — once per real shot, players + enemies alike).
+      if (enemy.aiIntent.firePressed && enemy.tryFire(this.bullets)) {
+        this.sfx.fire()
+        this._muzzleFlash(enemy)
+      }
     }
   }
 
@@ -927,6 +1000,7 @@ export class GameScene extends Phaser.Scene {
     enemy.onDeath = () => this._onEnemyKilled(enemy) // the SAME kill/score/advance funnel (DRY — it's a Tank).
     this._registerTankOverlap(enemy) // the SAME bullet×tank overlap as every tank (the F3 seam, D9).
     this.enemies.push(enemy)
+    this.effects.spawnShield(point.x, point.y) // F8 (D5/AC3) — the spawn-in materialize cue at the boss spawn center.
     this.boss = enemy
     this.bossSpawned = true
     // The ledger: the boss is the ONE alive enemy now (extra over the cleared roster). enemiesRemaining=1 here (at
@@ -985,7 +1059,8 @@ export class GameScene extends Phaser.Scene {
     this._bulletTerrainOverlap?.destroy() // ?. — first build had none; cleared so a re-teardown is a no-op too.
     this._bulletTerrainOverlap = undefined
     this.tileMap.destroy() // F2 — destroys the solid/water bodies + decorations (the eagle's body rode here).
-    this.base.rect.destroy() // the eagle VISUAL (its blocking body was a tilemap solid — already destroyed).
+    this.base.destroy() // F9 (D2/AC4) — kills the tracked white→rubble flash tween THEN destroys the eagle VISUAL
+    // (its blocking body was a tilemap solid — already gone), so a teardown mid-flash can't tick a dead rect.
   }
 
   // Destroy a tank's three GameObjects (the collider owning the body + the visible rect + the barrel). Phaser
@@ -1007,6 +1082,11 @@ export class GameScene extends Phaser.Scene {
     // freeze AND the run-end freeze beat (the same "FX run on real dt" contract). Clamped at 0. _publishHud reads
     // bannerTimer > 0 to publish the string. Done BEFORE the gameOver early-return so the banner finishes showing.
     this.bannerTimer = Math.max(0, this.bannerTimer - dt)
+
+    // (D3, AC2) — decay the STAGE-N intro curtain on the REAL dt (so it ends in real time regardless of the
+    // gameplay-dt freeze). Clamped at 0. While curtainTimer > 0 the spawn loop + enemy tick are gated below, and
+    // _publishHud mirrors the "STAGE N" label to the HUD. Decayed BEFORE the gameplay block so it counts down each frame.
+    this.curtainTimer = Math.max(0, this.curtainTimer - dt)
 
     // ── F5 power-up timers + the freeze boundary (F5 §5.3, D4/D5/AC3) ── decay freeze/shovel/shield on the
     // GAMEPLAY dt BEFORE the freeze is applied for the frame (so the freeze timer itself counts down in real
@@ -1063,14 +1143,21 @@ export class GameScene extends Phaser.Scene {
     // P1 — fire off the edge (the scene owns the pool, D12), then tick movement/facing/cooldown on `gdt`. A
     // dead-but-not-yet-respawned P1 isn't driven (Tank.update early-returns while !alive — defensive).
     if (this.p1.alive) {
-      // F6 (D6/AC6) — tryFire now returns whether a shot fired; play sound.fire() on success (the one audio owner).
-      if (s.p1.firePressed && this.p1.tryFire(this.bullets)) this.sfx.fire()
+      // F6 (D6/AC6) — tryFire now returns whether a shot fired; play sound.fire() + pop the muzzle flash on
+      // success (the firing JUICE, behind the SAME boolean so each fires exactly once per real shot).
+      if (s.p1.firePressed && this.p1.tryFire(this.bullets)) {
+        this.sfx.fire()
+        this._muzzleFlash(this.p1)
+      }
       this.p1.update(gdt, s.p1)
     }
 
     // P2 — gated on TWO_PLAYER (AC8). Input still returned p2 (cheap); the SCENE decides whether to drive it.
     if (TWO_PLAYER && this.p2 && this.p2.alive) {
-      if (s.p2.firePressed && this.p2.tryFire(this.bullets)) this.sfx.fire() // F6 (D6/AC6) — co-op fire blip.
+      if (s.p2.firePressed && this.p2.tryFire(this.bullets)) {
+        this.sfx.fire() // F6 (D6/AC6) — co-op fire blip.
+        this._muzzleFlash(this.p2) // the firing JUICE, behind the same tryFire boolean.
+      }
       this.p2.update(gdt, s.p2)
     }
 
@@ -1079,9 +1166,12 @@ export class GameScene extends Phaser.Scene {
     // while frozen). While the clock power-up is active (freezeTimer > 0) the enemies are FULLY frozen: skip BOTH
     // the spawn step AND the enemy tick entirely, so no enemy moves, runs AI, or fires (AC2 — "enemies don't move,
     // AI/fire skipped"; gdt=0 alone stops movement but not the AI/fire branches). While transitioning (the
-    // deferred stage rebuild is queued) we skip both too — the world is mid-teardown.
+    // deferred stage rebuild is queued) we skip both too — the world is mid-teardown. (D4, AC2): while the STAGE-N
+    // intro curtain is up (curtainTimer > 0) we skip both as well — no enemy spawns/acts during the intro beat (the
+    // player + bullets stay live; only the enemy pair is gated, per the spec's "pause enemy spawning/AI").
     const frozen = this.runState.freezeTimer > 0
-    if (!this.transitioning && !frozen) {
+    const curtain = this.curtainTimer > 0
+    if (!this.transitioning && !frozen && !curtain) {
       this._spawnStep(gdt)
       this._tickEnemies(gdt)
     }

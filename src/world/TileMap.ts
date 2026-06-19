@@ -38,6 +38,24 @@ import type { StageDescription } from './LevelGenerator.js'
 const DEPTH_TERRAIN = -5
 const DEPTH_TREES = 50
 
+// ── F8 visual richness (§5.2, D4/D5/D6) — DECORATION-only texture palette/geometry, layered OVER the existing
+// body rects (no body / passability change, AC4). LOCAL render constants owned by this ONE file (not shared, so
+// they do NOT belong in constants.ts — D6). Decorations are drawn a hair above the body (DEPTH_TERRAIN + 1) so
+// the texture reads; trees stay at DEPTH_TREES (above tanks). Programmer-art primitives only (no asset, AC11).
+const DEPTH_DECOR = DEPTH_TERRAIN + 1 // just above the terrain body rects so the texture reads.
+const MORTAR_COLOR = 0x7a4214 // a darker brick tint — the mortar hairlines crossing each sub-cell.
+const MORTAR_THICK = 2 // px — mortar line thickness.
+const STEEL_BEVEL_COLOR = 0xc5cdd8 // a lighter steel tint — the inset bevel frame edge.
+const STEEL_RIVET_COLOR = 0x5b6472 // a darker steel tint — the small corner rivet dots.
+const RIVET_SIZE = 4 // px — rivet dot side.
+const RIVET_INSET = 5 // px — rivet dot center inset from the tile corner.
+const WATER_RIPPLE_COLOR = 0x74b9ff // a lighter water tint — the two-tone shimmer overlay.
+const WATER_RIPPLE_MIN = 0.12 // ripple overlay min alpha (the slow yoyo low).
+const WATER_RIPPLE_MAX = 0.4 // ripple overlay max alpha (the slow yoyo high).
+const WATER_RIPPLE_MS = 1400 // ms — half the slow ripple cycle (yoyo) — cheap, slow shimmer.
+const CANOPY_LIGHT = 0x52b788 // a lighter canopy blob tint (dapple highlight).
+const CANOPY_DARK = 0x1b4332 // a darker canopy blob tint (dapple shadow).
+
 // A drawn rect that remembers its grid cell — for the brick sub-cell erosion seam + ice/water tagging.
 type TileRect = Phaser.GameObjects.Rectangle & {
   tileCol?: number
@@ -55,8 +73,13 @@ export class TileMap {
   // WATER — tank-blocking static bodies in a DISTINCT group so the LATER bullet collision can point at
   // `solidBodies` (bullets stop) but NOT `waterBodies` (bullets pass over water — D7). Tanks collide with both.
   waterBodies!: Phaser.Physics.Arcade.StaticGroup
-  // The bodiless decorations (TREES overdraw, ICE tag) + the playfield backdrop — tracked for teardown only.
+  // The bodiless decorations (TREES overdraw, ICE tag, F8 terrain texture) + the playfield backdrop — tracked
+  // for teardown only. F8 (§5.2): the brick mortar / steel bevel+rivets / water ripple / tree canopy decorations
+  // all push here so destroy()'s existing loop tears every one of them down (no body — decoration only, D4).
   private _objects!: Phaser.GameObjects.GameObject[]
+  // F8 (§5.2, D5) — the slow water-ripple alpha tweens, tracked so destroy() KILLS each one BEFORE its overlay
+  // object goes (so a stage rebuild leaks no live tween referencing a destroyed object — AC5).
+  private _waterTweens!: Phaser.Tweens.Tween[]
   // The brick sub-cell rects, keyed by `${col},${row},${subCol},${subRow}` so destroyBrickSubCell finds one.
   private _brickSubCells!: Map<string, TileRect>
 
@@ -79,6 +102,7 @@ export class TileMap {
     this._fortifyBodies = scene.physics.add.staticGroup() // F5 (D4a) — the shovel's temporary STEEL ring bodies.
     this._fortifyState = null // F5 (D4a) — nothing fortified yet (idempotent guard).
     this._objects = []
+    this._waterTweens = [] // F8 (§5.2, D5) — the slow water-ripple tweens (killed in destroy() before the overlays go).
     this._brickSubCells = new Map<string, TileRect>()
 
     // A dark playfield backdrop band so the stage reads against the page letterbox (cosmetic; below the
@@ -153,6 +177,14 @@ export class TileMap {
     rect.tileKind = TILE.BRICK
     this.solidBodies.add(rect) // staticGroup.add promotes it to a static Arcade body automatically.
     this._brickSubCells.set(brickKey(col, row, sc, sr), rect)
+
+    // F8 (§5.2, D4) — DECORATION ONLY: darker mortar hairlines crossing this sub-cell (a horizontal + a vertical
+    // line through its center) so the brick reads textured, not flat. Bodiless, tracked in _objects for teardown.
+    // (A chip hides the body+rect but not these loose lines — a stray mortar over an eroded cell is acceptable
+    // cosmetic noise; per-sub-cell mortar teardown is YAGNI for a polish pass — §2.)
+    const hLine = this.scene.add.rectangle(x, y, SUB_CELL_SIZE, MORTAR_THICK, MORTAR_COLOR).setDepth(DEPTH_DECOR)
+    const vLine = this.scene.add.rectangle(x, y, MORTAR_THICK, SUB_CELL_SIZE, MORTAR_COLOR).setDepth(DEPTH_DECOR)
+    this._objects.push(hLine, vLine)
   }
 
   // STEEL / BASE → one TILE_SIZE tank-blocking static body in `solidBodies` (D6). One rect per tile.
@@ -169,6 +201,31 @@ export class TileMap {
     rect.tileRow = row
     rect.tileKind = kind
     this.solidBodies.add(rect)
+
+    // F8 (§5.2, D4) — STEEL only: a lighter inset BEVEL frame + four small corner RIVET dots so the steel reads
+    // forged, not flat. DECORATION ONLY (bodiless, tracked in _objects). BASE keeps its plain eagle fill (it
+    // reads on its own). The bevel is a thin lighter rect inset inside the tile; the rivets sit at each corner.
+    if (kind === TILE.STEEL) {
+      const cx = this._cellX(col) + TILE_SIZE / 2
+      const cy = this._cellY(row) + TILE_SIZE / 2
+      const bevel = this.scene.add
+        .rectangle(cx, cy, TILE_SIZE - 6, TILE_SIZE - 6, STEEL_BEVEL_COLOR)
+        .setDepth(DEPTH_DECOR)
+        .setFillStyle(STEEL_BEVEL_COLOR, 0) // a STROKE-only frame so the steel fill still shows through the center.
+        .setStrokeStyle(2, STEEL_BEVEL_COLOR)
+      this._objects.push(bevel)
+      for (const [dx, dy] of [
+        [-1, -1],
+        [1, -1],
+        [-1, 1],
+        [1, 1],
+      ] as const) {
+        const rivet = this.scene.add
+          .rectangle(cx + dx * (TILE_SIZE / 2 - RIVET_INSET), cy + dy * (TILE_SIZE / 2 - RIVET_INSET), RIVET_SIZE, RIVET_SIZE, STEEL_RIVET_COLOR)
+          .setDepth(DEPTH_DECOR)
+        this._objects.push(rivet)
+      }
+    }
   }
 
   // WATER → one TILE_SIZE tank-blocking static body in the DISTINCT `waterBodies` group (D7). Tagged so the
@@ -186,6 +243,25 @@ export class TileMap {
     rect.tileRow = row
     rect.tileKind = TILE.WATER
     this.waterBodies.add(rect)
+
+    // F8 (§5.2, D5) — a cheap two-tone RIPPLE: a lighter overlay rect whose ALPHA tweens on a slow yoyo loop (the
+    // tween engine ticks it for free + Phaser pauses it with the scene — no per-frame ripple math). DECORATION
+    // ONLY (bodiless). The overlay tracks in _objects; the tween tracks in _waterTweens so destroy() kills it
+    // BEFORE the overlay goes (no live tween referencing a destroyed object — AC5).
+    const ripple = this.scene.add
+      .rectangle(this._cellX(col) + TILE_SIZE / 2, this._cellY(row) + TILE_SIZE / 2, TILE_SIZE, TILE_SIZE, WATER_RIPPLE_COLOR)
+      .setDepth(DEPTH_DECOR)
+      .setAlpha(WATER_RIPPLE_MIN)
+    this._objects.push(ripple)
+    const tween = this.scene.tweens.add({
+      targets: ripple,
+      alpha: WATER_RIPPLE_MAX,
+      duration: WATER_RIPPLE_MS,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.InOut',
+    })
+    this._waterTweens.push(tween)
   }
 
   // TREES / ICE → one bodiless rect (everything passes — D8). TREES draw at DEPTH_TREES (ABOVE tanks —
@@ -203,6 +279,19 @@ export class TileMap {
     rect.tileRow = row
     rect.tileKind = kind
     this._objects.push(rect)
+
+    // F8 (§5.2, D4) — TREES only: a dappled canopy — a couple of lighter/darker blobs OVER the trees fill so the
+    // foliage reads textured, not a flat green square. DECORATION ONLY (bodiless, everything still passes — D8).
+    // Drawn at the SAME (high) trees depth so the dapple stays ABOVE tanks (overdraw cover — AC4). Tracked in
+    // _objects. ICE keeps its plain fill (no canopy).
+    if (kind === TILE.TREES) {
+      const cx = this._cellX(col) + TILE_SIZE / 2
+      const cy = this._cellY(row) + TILE_SIZE / 2
+      const q = TILE_SIZE * 0.26 // the blob offset/size scale (a quarter-ish of the tile).
+      const dark = this.scene.add.rectangle(cx - q, cy - q, q * 2, q * 2, CANOPY_DARK).setDepth(depth)
+      const light = this.scene.add.rectangle(cx + q, cy + q, q * 1.6, q * 1.6, CANOPY_LIGHT).setDepth(depth)
+      this._objects.push(dark, light)
+    }
   }
 
   // ── destroyBrickSubCell(col,row,subCol,subRow) (D6, AC10 — the EROSION seam) ── remove exactly ONE
@@ -271,12 +360,15 @@ export class TileMap {
     this._fortifyState = null // back to un-fortified (the idempotent guard re-arms).
   }
 
-  // ── destroy() (D6 + F5 §5.5 D4a, AC10) ── tear down EVERY GameObject + body this TileMap created (the in-place
-  // stage→stage rebuild depends on leaking nothing — the reference's clear(true,true) + tracked-objects
-  // discipline). staticGroup.clear(true,true) destroys members + their bodies; we also destroy the tracked
-  // loose decorations (bg, trees, ice) + the groups themselves + drop the sub-cell map + the F5 fortify group/state
-  // (so a stage rebuild while fortified leaks nothing — AC10).
+  // ── destroy() (D6 + F5 §5.5 D4a + F8 §5.2 D5, AC10/AC5) ── tear down EVERY GameObject + body + tween this
+  // TileMap created (the in-place stage→stage rebuild depends on leaking nothing — the reference's clear(true,true)
+  // + tracked-objects discipline). staticGroup.clear(true,true) destroys members + their bodies; we also KILL the
+  // F8 water-ripple tweens FIRST (so no live tween references a soon-destroyed overlay), then destroy the tracked
+  // loose decorations (bg, trees, ice, + the F8 mortar/bevel/rivets/ripple/canopy) + the groups themselves + drop
+  // the sub-cell map + the F5 fortify group/state (so a rebuild while fortified/rippling leaks nothing — AC10/AC5).
   destroy(): void {
+    for (const t of this._waterTweens) t.remove() // F8 (D5) — stop + free each ripple tween before its overlay goes.
+    this._waterTweens = []
     this.solidBodies.clear(true, true)
     this.waterBodies.clear(true, true)
     this._fortifyBodies.clear(true, true) // F5 (D4a) — destroy any live steel ring bodies before the group goes.
