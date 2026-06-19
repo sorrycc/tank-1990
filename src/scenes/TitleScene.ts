@@ -32,7 +32,7 @@ export class TitleScene extends Phaser.Scene {
     // Heading + subtitle near the TOP (repositioned to make room for the controls reference below — every Y is
     // off the FIXED design resolution so it stays centered under Scale.FIT, the existing Title discipline).
     this.add
-      .text(cx, 120, t('title.heading'), {
+      .text(cx, 80, t('title.heading'), {
         fontFamily: UI_FONT,
         fontSize: '80px',
         color: '#e6edf3',
@@ -41,21 +41,21 @@ export class TitleScene extends Phaser.Scene {
       .setOrigin(0.5)
 
     this.add
-      .text(cx, 196, t('title.subtitle'), {
+      .text(cx, 150, t('title.subtitle'), {
         fontFamily: UI_FONT,
         fontSize: '24px',
         color: '#8b949e',
       })
       .setOrigin(0.5)
 
-    // ── F7 (D6/AC6) — the BEST line under the subtitle + the high-score table below the controls ── read
+    // ── F7 (D6/AC6) — the BEST line under the subtitle + the high-score table beside the controls (lower band) ── read
     // MetaState ONCE in create() (the impure save boundary — createMetaState() load()s a fresh view); the same
     // instance feeds the BEST line here AND the top-5 table further down (DRY). A fresh save reads 0/0 + an empty
     // table (the defensive save degrades to defaults — never blank/crash). Localised via t('title.best', {score,
     // stage}); positioned off the FIXED design resolution (cx + a fixed Y) so it centers under Scale.FIT.
     const meta = createMetaState()
     this.add
-      .text(cx, 234, t('title.best', { score: meta.getBestScore(), stage: meta.getBestStage() }), {
+      .text(cx, 188, t('title.best', { score: meta.getBestScore(), stage: meta.getBestStage() }), {
         fontFamily: UI_FONT,
         fontSize: '18px',
         color: '#feca57', // gold — matches the score/best chrome.
@@ -76,7 +76,7 @@ export class TitleScene extends Phaser.Scene {
     // The difficulty label (left of the level chips) + one chip per level on the SAME centered row. Fixed-x columns
     // (the CJK-safe alignment discipline — never derived from a label's pixel width). The chip Text objects are
     // captured so a key change re-tints them in place (the selected one bright, the rest dim) — no scene rebuild.
-    const DIFF_Y = 258
+    const DIFF_Y = 224 // (title-layout reflow) pulled up from 258 so the compressed top stack + two-column band below all fit 720px.
     this.add
       .text(cx - 200, DIFF_Y, t('title.difficulty'), { fontFamily: UI_FONT, fontSize: '20px', color: '#8b949e' })
       .setOrigin(0, 0.5)
@@ -244,25 +244,28 @@ export class TitleScene extends Phaser.Scene {
       sfx.uiMove()
     })
 
-    // ── Controls reference (F6 §5.4, D9, AC7) — the shared CONTROLS_ROWS so a first-time player discovers BOTH
-    // schemes. Two fixed-x columns per row (action label | keys), the CJK-safe alignment discipline (D9 — never
-    // padEnd, which only aligns under monospace). Six rows in ONE centered column block; the key TOKENS stay
-    // literal (they name physical keys). All positions derive from DESIGN_WIDTH/DESIGN_HEIGHT (never
-    // window.innerWidth) so it centers under Scale.FIT — the existing Title layout discipline.
-    // (F-difficulty-select §5.4) — the controls block is pushed DOWN below the new chooser row above (it occupies the
-    // 258–308 band); ROW_H tightened 34→30 so the controls + the hi-score table below still clear the start prompt.
-    // (F-seed-challenge §5.5) — the controls block is pushed DOWN below the new seed row above (it now occupies the
-    // 322–362 band); ROW_H tightened 30→28 so the controls + the hi-score table below still clear the start prompt.
-    this.add
-      .text(cx, 376, t('controls.title'), { fontFamily: UI_FONT, fontSize: '22px', color: '#5c6b7a', fontStyle: 'bold' })
-      .setOrigin(0.5)
+    // ── Lower band: two side-by-side columns (title-layout reflow) ── the controls reference (LEFT) + the
+    // persistent high-score table (RIGHT). The single-column stack had outgrown the 720px canvas (the start prompt
+    // overlapped the hi-score rows and the table ran off the bottom), so the two TALLEST blocks (6 control rows ·
+    // ≤5 hi-score rows) are paired horizontally to halve the band's height. Both columns share BAND_TITLE_Y +
+    // BAND_ROWS_TOP, and every x is a FIXED anchor off cx (never window.innerWidth, never a label's pixel width —
+    // the CJK-safe discipline, D9) so the whole layout stays centered under Scale.FIT.
+    const LEFT_CX = cx - 230 // controls column center.
+    const RIGHT_CX = cx + 230 // high-score column center (symmetric about cx — the two headers balance).
+    const BAND_TITLE_Y = 376 // both column headers sit on this row, ~44px below the top stack.
+    const BAND_ROW_H = 30
+    const BAND_ROWS_TOP = 410 // both columns' first row.
 
-    const ROW_H = 28
-    const rowsTop = 408
-    const LABEL_X = cx - 140 // the action-label column (left-anchored, fixed x — CJK-safe).
-    const KEYS_X = cx + 30 // the keys column (left-anchored, fixed x — never derived from the label's width).
+    // ── Controls reference (F6 §5.4, D9, AC7) — the shared CONTROLS_ROWS so a first-time player discovers BOTH
+    // schemes. Two fixed-x SUB-columns per row (action label | keys), the CJK-safe alignment discipline (D9 — never
+    // padEnd, which only aligns under monospace). The key TOKENS stay literal (they name physical keys).
+    this.add
+      .text(LEFT_CX, BAND_TITLE_Y, t('controls.title'), { fontFamily: UI_FONT, fontSize: '22px', color: '#5c6b7a', fontStyle: 'bold' })
+      .setOrigin(0.5)
+    const LABEL_X = LEFT_CX - 120 // the action-label sub-column (left-anchored, fixed x — CJK-safe).
+    const KEYS_X = LEFT_CX + 14 // the keys sub-column (left-anchored, fixed x — never derived from the label's width).
     for (let i = 0; i < CONTROLS_ROWS.length; i++) {
-      const y = rowsTop + i * ROW_H
+      const y = BAND_ROWS_TOP + i * BAND_ROW_H
       const [actionKey, keysKey] = CONTROLS_ROWS[i]
       this.add
         .text(LABEL_X, y, t(actionKey), { fontFamily: UI_FONT, fontSize: '18px', color: '#8b949e' })
@@ -272,25 +275,22 @@ export class TitleScene extends Phaser.Scene {
         .setOrigin(0, 0.5)
     }
 
-    // ── High-score table (the persistent top-5 — D5/AC3) ── read off the SAME MetaState instance as the BEST
-    // line (one extra getHighScores() read — DRY). A heading + up to 5 rows (rank · score · stage) via t(),
-    // or a single empty-state line for a fresh save. All Y off the FIXED design resolution (centers under
-    // Scale.FIT), positioned below the controls block — the Title's existing layout discipline.
-    const HI_TITLE_Y = rowsTop + CONTROLS_ROWS.length * ROW_H + 18
+    // ── High-score table (the persistent top-5 — D5/AC3) ── read off the SAME MetaState instance as the BEST line
+    // (one extra getHighScores() read — DRY). A heading + up to 5 rows (rank · score · stage) via t(), or a single
+    // empty-state line for a fresh save. Rendered as the RIGHT column of the band, row-aligned with the controls.
     this.add
-      .text(cx, HI_TITLE_Y, t('hi.title'), { fontFamily: UI_FONT, fontSize: '22px', color: '#5c6b7a', fontStyle: 'bold' })
+      .text(RIGHT_CX, BAND_TITLE_Y, t('hi.title'), { fontFamily: UI_FONT, fontSize: '22px', color: '#5c6b7a', fontStyle: 'bold' })
       .setOrigin(0.5)
     const scores = meta.getHighScores()
     if (scores.length === 0) {
       this.add
-        .text(cx, HI_TITLE_Y + 34, t('hi.empty'), { fontFamily: UI_FONT, fontSize: '18px', color: '#8b949e' })
+        .text(RIGHT_CX, BAND_ROWS_TOP, t('hi.empty'), { fontFamily: UI_FONT, fontSize: '18px', color: '#8b949e' })
         .setOrigin(0.5)
     } else {
-      const HI_ROW_H = 26
       for (let i = 0; i < scores.length; i++) {
         const { score, stage } = scores[i]
         this.add
-          .text(cx, HI_TITLE_Y + 32 + i * HI_ROW_H, t('hi.row', { rank: i + 1, score, stage }), {
+          .text(RIGHT_CX, BAND_ROWS_TOP + i * BAND_ROW_H, t('hi.row', { rank: i + 1, score, stage }), {
             fontFamily: UI_FONT,
             fontSize: '18px',
             color: '#c9d1d9',
