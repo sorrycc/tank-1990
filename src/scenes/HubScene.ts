@@ -10,7 +10,7 @@ import { Sound } from '../audio/Sound.js'
 // The between-runs META HUB — the LOCKED two-column shared-bank layout (D9). A SHARED currency header; a P1
 // upgrade column (left) + a P2 upgrade column (right), each rendered GENERICALLY off TANK_UPGRADES (no
 // per-upgrade UI code — the reference's generic-row stance, DRY); two cursors (P1 navigates the left column
-// with WASD + buys with J; P2 the right with arrows + buys with Numpad0 — the SAME physical keys the run uses,
+// with WASD + buys with J; P2 the right with arrows + buys with Numpad0 OR Shift — the SAME physical keys the run uses,
 // so no new key wiring, D9). Space/Enter = START RUN. In 1-PLAYER (TWO_PLAYER false) the P2 column is HIDDEN and
 // the lone P1 cursor drives the single column (a buy via J OR Space; Enter = START RUN). A buy debits the SHARED
 // currency + increments THAT player's level (the locked "shared bank, per-player trees" — the two trees COMPETE
@@ -107,7 +107,8 @@ export class HubScene extends Phaser.Scene {
 
     // ── Keyboard wiring (D9 — the SAME physical keys the run uses, so no Hub-only bindings) ──
     // P1: WASD navigate the left column + J buys. P2 (co-op only): arrows navigate the right column + Numpad0
-    // buys. Space/Enter = START RUN (a buy in 1P is ALSO J or Space — the lone column). `.on` (the scene is
+    // OR Shift buys (Shift = the run's laptop alt fire; MacBooks have no numpad). Space/Enter = START RUN (a buy
+    // in 1P is ALSO J or Space — the lone column). `.on` (the scene is
     // single-instance + torn down on start). The buy/move handlers no-op on a maxed/unaffordable buy (MetaState guards).
     const kb = this.input.keyboard!
     kb.on('keydown-W', () => this._move(1, -1))
@@ -117,6 +118,7 @@ export class HubScene extends Phaser.Scene {
       kb.on('keydown-UP', () => this._move(2, -1))
       kb.on('keydown-DOWN', () => this._move(2, 1))
       kb.on('keydown-NUMPAD_ZERO', () => this._buy(2)) // P2 fire = Numpad0 (the run's P2 fire key — DRY).
+      kb.on('keydown-SHIFT', () => this._buy(2)) // P2 fire ALT = Shift (the run's laptop alt fire — DRY; co-op only).
     } else {
       // Solo: the lone P1 column is ALSO drivable with the arrows + buyable with Space (the brief's 1P affordance).
       kb.on('keydown-UP', () => this._move(1, -1))

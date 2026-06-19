@@ -87,8 +87,8 @@ export function tDesc(cat: Category, id: string, en: string): string {
 // Decision 6): an ordered list of [actionKey, keysKey] pairs. The CHROME strings live in en.ts / zh-CN.ts
 // (`controls.*`) — so the bindings sit in ONE place (the i18n table), read by the Title as TWO fixed-x text
 // columns per row (action label | keys), the CJK-safe alignment discipline (never padEnd, which only aligns
-// under monospace). Trimmed to Tank 1990's two schemes: P1 (WASD move · J fire), P2 (arrows move · Numpad0 fire),
-// + the shared keys (SPACE/ENTER start · M mute). The key TOKENS (WASD/J/Numpad0/SPACE/ENTER/M) stay literal
+// under monospace). Trimmed to Tank 1990's two schemes: P1 (WASD move · J fire), P2 (arrows move · Numpad0/Shift fire),
+// + the shared keys (SPACE/ENTER start · M mute). The key TOKENS (WASD/J/Numpad0/Shift/SPACE/ENTER/M) stay literal
 // (they name PHYSICAL keys — not translatable), the ACTION labels localise. The bindings themselves stay owned by
 // core/Input.ts (the single key owner — `addKeys`); this table is a human-readable MIRROR (a rebind updates both).
 export const CONTROLS_ROWS: readonly (readonly [string, string])[] = [

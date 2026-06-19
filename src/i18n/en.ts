@@ -43,7 +43,7 @@ export const EN: Dict = {
     'hi.empty': 'No runs yet — be the first!',
 
     // ── Controls reference (F6 §5.2, D9, AC7) — the shared CONTROLS_ROWS the Title renders so a first-time
-    // player discovers both schemes. The action labels localise; the key TOKENS (WASD/J/Numpad0/SPACE/ENTER/M)
+    // player discovers both schemes. The action labels localise; the key TOKENS (WASD/J/Numpad0/Shift/SPACE/ENTER/M)
     // stay literal — they name physical keys (the bindings owned by core/Input.ts; this table mirrors them).
     'controls.title': 'CONTROLS',
     'controls.p1Move': 'P1 MOVE',
@@ -53,7 +53,7 @@ export const EN: Dict = {
     'controls.p2Move': 'P2 MOVE',
     'controls.p2Move.keys': 'Arrow Keys',
     'controls.p2Fire': 'P2 FIRE',
-    'controls.p2Fire.keys': 'Numpad0',
+    'controls.p2Fire.keys': 'Shift / Numpad0',
     'controls.start': 'START',
     'controls.start.keys': 'SPACE / ENTER',
     'controls.mute': 'MUTE',
@@ -69,7 +69,7 @@ export const EN: Dict = {
     'hub.cost': '{cost}',
     'hub.start': 'START RUN',
     'hub.best': 'BEST SCORE {score} · BEST STAGE {stage}', // F7 (D6/AC6) — the BEST line near the currency header.
-    'hub.footerCoop': 'P1: WASD move · J buy  |  P2: arrows move · Numpad0 buy  |  SPACE/ENTER: START RUN',
+    'hub.footerCoop': 'P1: WASD move · J buy  |  P2: arrows move · Shift / Numpad0 buy  |  SPACE/ENTER: START RUN',
     'hub.footerSolo': 'WASD / arrows: select · J / SPACE: buy  |  SPACE / ENTER: START RUN',
 
     // ── HUD (the parallel overlay — D8) ──

@@ -16,7 +16,7 @@ import Phaser from 'phaser'
 // which MUTATES the key's internal `_justDown` flag — calling it twice in a frame returns false the
 // second time. Therefore THIS class is the SOLE owner of the JustDown call for the two fire keys:
 // GameScene calls `sample()` EXACTLY ONCE per frame and stores the snapshot; nothing else may call
-// JustDown on J / NUMPAD_ZERO. A held fire key thus fires once per press.
+// JustDown on J / NUMPAD_ZERO / SHIFT. A held fire key thus fires once per press.
 
 // A single player's per-frame intent (Decision 3, AC1). Four RAW held cardinal booleans (so the Tank's
 // grid-snap logic can read direction priority directly) PLUS the derived dirX/dirY ∈ {−1,0,1}, PLUS a
@@ -62,7 +62,7 @@ export interface TouchState {
 
 export class Input {
   // Named physical keys; the snapshot derives intent from these. P1 = WASD move + J fire; P2 = arrow
-  // move + Numpad0 fire. NO jump/dodge/skill keys (YAGNI — Battle City has none).
+  // move + Numpad0 OR Shift fire (Shift is the laptop ALT — MacBooks have no numpad). NO jump/dodge/skill keys (YAGNI — Battle City has none).
   private keys: Record<string, Phaser.Input.Keyboard.Key>
 
   // ── touch (touch-controls §2, D1/D3) ── the OPTIONAL on-screen-pad source (P1 only — the touch use-case is a
@@ -76,7 +76,10 @@ export class Input {
     // addKeys lets us name each physical key in one place (the single-owner invariant, AC1). Bindings
     // (Decision 4, AC2): fire keys must avoid BOTH movesets AND each other. P1 fire = J (left-hand
     // cluster near WASD; the reference proved J comfortable). P2 fire = NUMPAD_ZERO (right side near the
-    // arrows, collides with nothing — WASD / arrows / J), avoiding the sticky-keys '/'+RShift trap.
+    // arrows, collides with nothing — WASD / arrows / J), avoiding the sticky-keys '/'+RShift trap. PLUS a
+    // laptop-friendly ALT — p2FireAlt = SHIFT (MacBooks have no numpad). Phaser KeyCodes has NO RIGHT_SHIFT
+    // (SHIFT is keyCode 16 for BOTH), so EITHER Shift fires P2 — harmless since P1 never uses Shift. The 5×Shift
+    // OS sticky-keys prompt is the known trade-off of choosing Shift (the very thing the numpad pick avoided).
     this.keys = scene.input.keyboard!.addKeys({
       // P1 — WASD move + J fire.
       p1Up: KC.W,
@@ -84,12 +87,13 @@ export class Input {
       p1Left: KC.A,
       p1Right: KC.D,
       p1Fire: KC.J,
-      // P2 — arrow move + Numpad0 fire.
+      // P2 — arrow move + Numpad0 fire, with SHIFT as a laptop ALT (dual-bind — MacBooks have no numpad).
       p2Up: KC.UP,
       p2Down: KC.DOWN,
       p2Left: KC.LEFT,
       p2Right: KC.RIGHT,
       p2Fire: KC.NUMPAD_ZERO,
+      p2FireAlt: KC.SHIFT, // laptop alt fire — OR'd with p2Fire in readPlayer (fires on EITHER Shift).
       // F7 (D4/AC4) — the PAUSE toggle keys (P + ESC). NEITHER is a player move/fire key, so the edge is
       // conflict-free; GameScene reads the JustDown edge to open pause. The overlay binds its OWN keydown-P/ESC
       // to CLOSE (the Phaser event bus, separate from these JustDown flags), and consumePause() swallows the
@@ -156,7 +160,15 @@ export class Input {
     const left = k[`${prefix}Left`].isDown
     const right = k[`${prefix}Right`].isDown
     // JustDown read here and ONLY here (the sole-owner invariant, AC2) — a held fire key fires once/press.
-    const firePressed = Phaser.Input.Keyboard.JustDown(k[`${prefix}Fire`])
+    // P2 also has an ALT fire key (p2FireAlt = SHIFT); P1 has none, so `altKey` is undefined and its JustDown is
+    // NEVER called → P1 stays byte-identical (AC4). BOTH JustDowns are read EVERY frame — `fireAlt` is computed
+    // into its OWN const BEFORE the `||` (do NOT inline to `fireMain || JustDown(altKey)`: `||` short-circuits, so
+    // when main is true the alt read is skipped, its `_justDown` flag latches, and next frame it re-fires —
+    // breaking once-per-press, AC1). The pause edges (sample() above) read both JustDowns for the same reason.
+    const fireMain = Phaser.Input.Keyboard.JustDown(k[`${prefix}Fire`])
+    const altKey = k[`${prefix}FireAlt`]
+    const fireAlt = altKey ? Phaser.Input.Keyboard.JustDown(altKey) : false
+    const firePressed = fireMain || fireAlt
     return {
       up,
       down,

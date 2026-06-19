@@ -61,7 +61,7 @@ offline and from `file://`.
 | action     | P1            | P2          |
 | ---------- | ------------- | ----------- |
 | move       | **W A S D**   | **Arrows**  |
-| fire       | **J**         | **Numpad 0**|
+| fire       | **J**         | **Shift / Numpad 0** |
 
 | shared              | key             |
 | ------------------- | --------------- |
