@@ -4,6 +4,7 @@ import { createMetaState } from '../core/MetaState.js'
 import type { MetaStateInstance } from '../core/MetaState.js'
 import { TANK_UPGRADES } from '../config/tank-upgrades.js'
 import { t, tName, tDesc } from '../i18n/index.js'
+import { Sound } from '../audio/Sound.js'
 
 // ── HubScene (F0 scaffold §5.3 → F5 §5.4, Decision 4/D8/D9/D12, AC6/AC7/AC9) ──
 // The between-runs META HUB — the LOCKED two-column shared-bank layout (D9). A SHARED currency header; a P1
@@ -50,6 +51,7 @@ export class HubScene extends Phaser.Scene {
   private meta!: MetaStateInstance
   private currencyHeader!: Phaser.GameObjects.Text
   private columns: Column[] = []
+  private sfx!: Sound // the menu-blip façade (the TitleScene precedent; a no-op under NoAudio — AC6).
 
   constructor() {
     super('Hub')
@@ -60,6 +62,9 @@ export class HubScene extends Phaser.Scene {
     // so each Hub entry re-reads the SAME storage; the save.ts try/catch makes a disabled storage degrade silently.
     this.meta = createMetaState()
     this.columns = []
+    // The menu-blip façade (shares Phaser's ONE AudioContext; resumed by the Title's first gesture — so the Hub's
+    // blips play). A no-op under NoAudio (AC6). The scene owns audio (D6); _move/_buy/_startRun call sfx.* below.
+    this.sfx = new Sound(this)
 
     // ── Header: the HUB title + the SHARED currency readout (the ONE bank both trees spend — D9). ──
     this.add
@@ -152,7 +157,9 @@ export class HubScene extends Phaser.Scene {
   private _move(slot: 1 | 2, dir: number): void {
     const col = this.columns.find((c) => c.slot === slot)
     if (!col) return
+    const before = col.cursor
     col.cursor = Phaser.Math.Clamp(col.cursor + dir, 0, TANK_UPGRADES.length - 1)
+    if (col.cursor !== before) this.sfx.uiMove() // tick ONLY on a real move — a clamped no-move at an end is silent (D4).
     this._render()
   }
 
@@ -164,7 +171,12 @@ export class HubScene extends Phaser.Scene {
     const col = this.columns.find((c) => c.slot === slot)
     if (!col) return
     const row = TANK_UPGRADES[col.cursor]
-    this.meta.buy(slot, row.id) // debit the SHARED bank + ++upgrades[slot][id] (no-op if maxed/unaffordable — D8).
+    // Capture the result (REPLACES the bare buy() — a second call would double-debit the shared bank). buy()
+    // debits + ++upgrades[slot][id] + SAVEs on success, returns false on a no-op (maxed/unaffordable — D8). The
+    // confirm blip on success, the denied buzz on a no-op (success-vs-rejection by ear — D6).
+    const bought = this.meta.buy(slot, row.id)
+    if (bought) this.sfx.uiSelect()
+    else this.sfx.denied()
     this._render()
   }
 
@@ -172,6 +184,7 @@ export class HubScene extends Phaser.Scene {
   // tree via startSpec(slot) into the run-start spec (the bought upgrades visibly change that player's tank next
   // run — AC6). `once`-free: the scene tears down on start, so a held key can't double-launch the same instance.
   private _startRun(): void {
+    this.sfx.uiSelect() // the start-run confirm blip (the Game's stageStart fanfare follows on the next scene — D6).
     this.scene.start('Game')
   }
 

@@ -233,4 +233,47 @@ export class Sound {
     if (!this._gateOk('uiSelect', 0.02)) return
     this._tone({ freq: 660, type: 'square', dur: 0.08, gain: 0.24, sweepTo: 990 })
   }
+
+  // stageStart — a short two-note "get-ready / go" fanfare for the STAGE-N intro curtain (the scene plays it as
+  // each stage's curtain is armed — the run's "start the game" beat). Deliberately DISTINCT from stageCleared's
+  // three-note A-major win arpeggio (a rising G4 → C5+lift, not A4/E5/A5). Throttled like the other jingles so a
+  // same-frame double-build can't stack it; its own key, so the boss-stage clear flourish (stageCleared) tailing
+  // into the next stage's stageStart never mutually throttles (two distinct timbres overlapping briefly — fine).
+  stageStart(): void {
+    if (!this._gateOk('stageStart', 0.2)) return
+    this._tone({ freq: 392, type: 'square', dur: 0.14, gain: 0.28 }) // G4
+    this._tone({ freq: 523, type: 'square', dur: 0.2, gain: 0.28, delay: 0.13, sweepTo: 587 }) // C5 → D5 lift.
+  }
+
+  // respawn — a soft ascending "materialize" blip when a player respawns after a death (the audio twin of the
+  // spawn-shield visual). A TRIANGLE sweep (softer + a different waveform/range than the square powerUp), so a
+  // respawn never sounds like a pickup. Wired at the death→respawn path only (the initial per-stage spawn beat is
+  // already covered by stageStart — D5).
+  respawn(): void {
+    if (!this._gateOk('respawn', 0.1)) return
+    this._tone({ freq: 300, type: 'triangle', dur: 0.18, gain: 0.2, sweepTo: 760 })
+  }
+
+  // uiMove — a quiet, short low tick for Hub cursor navigation (deliberately softer + lower than the bright
+  // uiSelect confirm, so rapid nav isn't grating). The Hub plays it ONLY on an actual cursor change (a clamped
+  // no-move at a list end is silent — the scene gates it). The tight throttle keeps fast nav snappy.
+  uiMove(): void {
+    if (!this._gateOk('uiMove', 0.02)) return
+    this._tone({ freq: 420, type: 'square', dur: 0.05, gain: 0.14 })
+  }
+
+  // denied — a low descending sawtooth "nope" buzz for a rejected Hub buy (maxed / can't afford). The negative
+  // counterpart to uiSelect's bright rising confirm, so a buy reads success-vs-rejection by ear.
+  denied(): void {
+    if (!this._gateOk('denied', 0.05)) return
+    this._tone({ freq: 200, type: 'sawtooth', dur: 0.14, gain: 0.22, sweepTo: 120 })
+  }
+
+  // itemDrop — a brief descending sine sparkle + a high noise tick when a carrier drops a power-up ("an item
+  // appeared"). Descending sine vs. powerUp's ascending square keeps DROP ≠ COLLECT by ear.
+  itemDrop(): void {
+    if (!this._gateOk('itemDrop', 0.1)) return
+    this._tone({ freq: 1180, type: 'sine', dur: 0.1, gain: 0.18, sweepTo: 760 })
+    this._noise({ dur: 0.04, gain: 0.1, type: 'highpass', freq: 3000 })
+  }
 }
