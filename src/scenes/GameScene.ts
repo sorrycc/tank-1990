@@ -1038,6 +1038,13 @@ export class GameScene extends Phaser.Scene {
   private _openPause(): void {
     if (this.paused || this.gameOver || this.transitioning) return
     this.paused = true
+    // Pause z-index fix: HIDE the parallel HUD scene so the modal reads clean ON TOP. The HUD is a SEPARATE scene
+    // registered after GameScene (main.ts), so it draws over GameScene's overlay regardless of the overlay's depth —
+    // hiding it is the only cross-scene-correct way to put the modal above it. The overlay carries its own RUN summary,
+    // and the world is frozen, so nothing is lost. Only RENDERING stops; the HUD's update()/registry mirror keeps
+    // running (cheap — don't "optimize" via scene.sleep). Re-shown in _closePause on resume; if a run ends while
+    // paused (_triggerGameOver stops the HUD), Phaser's sys.start() re-shows it on the next run's launch (AC4).
+    this.scene.setVisible(false, 'HUD')
     this.touchControls?.reset() // F-touch (D6) — clear held bools + the fire edge + hide the pad (no input leaks on resume).
     this.sfx.uiSelect() // a small pause blip (the one audio owner — DRY; a no-op under NoAudio).
     this.pauseOverlay = new PauseOverlay(this, {
@@ -1057,6 +1064,7 @@ export class GameScene extends Phaser.Scene {
       this.pauseOverlay = null
     }
     this.paused = false
+    this.scene.setVisible(true, 'HUD') // pause z-index fix — re-show the HUD scene hidden by _openPause (resume).
     this.touchControls?.show() // F-touch (D6) — re-show the pad on resume (held bools already cleared by reset()).
     this.input2.consumePause() // swallow the pending P/ESC JustDown edge (the close→reopen race fix — D4).
     this.sfx.uiSelect() // the RESUME blip — pause toggles share one confirm blip (_openPause already blips on OPEN; D7).
