@@ -674,8 +674,13 @@ export class GameScene extends Phaser.Scene {
     // multi-brick frame into one transient.
     this.effects.explosion(bulletRect.x, bulletRect.y)
     this.bullets.release(bulletRect)
-    if (kind === TILE.STEEL) this.sfx.steelClink()
-    else this.sfx.brickHit()
+    // Steel-break: a max-star (tier 3) PLAYER bullet carries `bx.canBreakSteel` (snapshotted at fire time in
+    // BulletPool.acquire). When such a bullet strikes STEEL we BREAK it — and signal the break with the brick
+    // crunch (`sfx.brickHit()`) rather than the metallic clink. A non-break steel hit (enemy/boss/sub-tier shot)
+    // still clinks. Brick always crunches.
+    const breaksSteel = kind === TILE.STEEL && bx.canBreakSteel
+    if (kind === TILE.STEEL && !breaksSteel) this.sfx.steelClink()
+    else this.sfx.brickHit() // a brick chip OR a steel break — the dry crunch reads as "this one broke".
 
     if (kind === TILE.BRICK) {
       // DEFER the body removal out of world.step (the footgun — D1/AC10). delayedCall(0) runs next tick, after
@@ -688,8 +693,19 @@ export class GameScene extends Phaser.Scene {
       if (col !== undefined && row !== undefined && sc !== undefined && sr !== undefined) {
         this.time.delayedCall(0, () => this.tileMap.destroyBrickSubCell(col, row, sc, sr))
       }
+    } else if (breaksSteel) {
+      // STEEL break (the steel-break seam): a max-star player's bullet destroys the WHOLE steel tile. DEFER the
+      // body removal out of world.step (the SAME footgun discipline as the brick chip — D1/AC10): delayedCall(0)
+      // runs next tick, after the step, so no Arcade body is destroyed mid-iteration on a multi-steel frame.
+      // destroySteelTile is idempotent (a missing tile is a no-op), so a same-tile double-overlap is safe. Capture
+      // the tags NOW (the body may be gone by the time the closure runs). The shared spark above reads as a break.
+      const col = solidRect.tileCol
+      const row = solidRect.tileRow
+      if (col !== undefined && row !== undefined) {
+        this.time.delayedCall(0, () => this.tileMap.destroySteelTile(col, row))
+      }
     }
-    // STEEL: NO terrain change (indestructible this phase — no bullet.power break-steel flag exists, D4).
+    // STEEL (non-break): NO terrain change — a normal/enemy bullet clinks off (indestructible for it).
   }
 
   // ── bullet × tank process filter (F3 §5.3, D7/D8, AC5/AC9) ── runs BEFORE the resolution: is this a valid,

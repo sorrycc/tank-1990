@@ -50,6 +50,11 @@ export interface BulletContext {
   owner: Tank | null // back-ref so release decrements the firer's live count (AC4/AC5).
   vx: number // px/s — hand-integrated travel velocity along the firing facing.
   vy: number
+  // Steel-break (max-star player only): a SNAPSHOT of the firer's `spec.canBreakSteel` taken at fire time
+  // (like `ownerSide`), so the hit site reads a plain bullet flag — it never re-derives the star tier nor
+  // reaches back into the firing Tank (which may already be dead by the time the deferred destroy runs).
+  // false for every enemy/boss/sub-tier-player shot; only a tier-3 player folds the flag → true.
+  canBreakSteel: boolean
 }
 
 // A pooled rectangle member carries its context on a `bx` property. EXPORTED so the F3 scene's overlap
@@ -79,7 +84,7 @@ export class BulletPool {
       const body = rect.body as Phaser.Physics.Arcade.Body
       body.setAllowGravity(false)
       // The per-bullet context, mutated on acquire (never re-allocated → no per-shot GC, AC9).
-      rect.bx = { active: false, ownerSide: 'player', owner: null, vx: 0, vy: 0 }
+      rect.bx = { active: false, ownerSide: 'player', owner: null, vx: 0, vy: 0, canBreakSteel: false }
       this._disable(rect)
       this._items.push(rect)
     }
@@ -142,6 +147,9 @@ export class BulletPool {
     bx.owner = owner
     bx.vx = vx
     bx.vy = vy
+    // Steel-break: snapshot the firer's reserved spec flag (the single source — config/tanks.ts). Only a
+    // max-star (tier 3) player folds `canBreakSteel: true`; every enemy/boss/sub-tier spec omits it → false.
+    bx.canBreakSteel = owner.spec.canBreakSteel === true
     return rect
   }
 
@@ -202,6 +210,7 @@ export class BulletPool {
     bx.owner = null
     bx.vx = 0
     bx.vy = 0
+    bx.canBreakSteel = false // park clean — a reused rect re-snapshots its firer's flag on the next acquire.
     const body = rect.body as Phaser.Physics.Arcade.Body
     body.setVelocity(0, 0)
     body.enable = false
