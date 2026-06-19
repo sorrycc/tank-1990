@@ -17,6 +17,26 @@ export const ZH_CN: Dict = {
     'title.subtitle': '坦克大战 — Battle City',
     'title.start': '按 SPACE / ENTER 或点击开始',
     'title.best': '最高分数 {score} · 最高关卡 {stage}', // F7 (D6/AC6) — 标题界面的最佳成绩行。
+    // ── F-difficulty-select（difficulty-select §5.4, D7, AC7 — 标题界面的难度/起始关卡选择行）── 三个难度档（选中项高亮）、
+    // 起始关卡读数、一行按键提示。
+    'title.difficulty': '难度',
+    'title.diff.easy': '简单',
+    'title.diff.normal': '普通',
+    'title.diff.hard': '困难',
+    'title.startStage': '起始关卡 {n}',
+    'title.diffHint': '← / → 难度 · ↑ / ↓ 起始关卡',
+    // F-settings（settings §5.4, AC5 — 标题界面的设置入口提示行，按 O 打开设置屏幕）。
+    'title.settings': 'O 设置',
+    // F-construction-mode（construction-mode §6, D6 — 标题界面的地图编辑入口提示行，按 T 打开编辑器）。
+    'title.construction': 'T  地图编辑',
+
+    // ── F-seed-challenge（seed-challenge §5.5, D1/D6, AC6 — 标题界面的种子行）── `title.seed` 以 8 位十六进制显示锁定/
+    // 上一局的种子；`title.seed.random` 是未锁定种子时的暗色占位（每局随机）；`title.seedHint` 一行按键提示；
+    // `title.seedEntry` 输入种子时的内联提示。
+    'title.seed': '种子 {seed}',
+    'title.seed.random': '随机',
+    'title.seedHint': 'S 编辑种子 · R 随机',
+    'title.seedEntry': '种子：{buffer}_  （ENTER 确定 · ESC 取消）',
 
     // ── 高分榜（持久化的前 5 名战绩 — 标题界面 + 游戏结束，D6）── 标题、行模板（名次 · 分数 · 关卡）、空状态行。
     'hi.title': '高分榜',
@@ -64,6 +84,21 @@ export const ZH_CN: Dict = {
     'hud.stageCleared': '关卡 {n} 通关', // F6 (D5, AC3) — Boss 关通关横幅（定时覆盖层）。
     'hud.stageIntro': '关卡 {n}', // (D3/D5, AC2) — 每关开始前居中显示的 STAGE-N 开场幕布。
     'hud.muted': '已静音', // F6 (D8, AC6) — 静音时的提示（M 键切换）。
+    'hud.oneUp': '额外生命', // (extra-life, D5, AC5/AC6) — 跨越分数里程碑时居中显示的 1UP 提示。
+
+    // ── 关卡间奖励结算（stage-bonus §6, D5, AC2 — 每次通关都会显示的经典奖励结算屏幕）── 标题居中；本关每种击杀过的
+    // 敌人一行（名称 · 数量 × 分值 = 小计）；clearBonus 为固定的通关奖励；total 为合计。各类型显示名（普通/快速/火力/
+    // 装甲/首领）翻译；GameScene 负责拼接整块字符串，HUD 仅镜像显示。
+    'bonus.title': '奖励结算',
+    'bonus.row': '{name}  {count} × {points} = {sub}',
+    'bonus.clearBonus': '通关奖励  {pts}',
+    'bonus.total': '合计  {pts}',
+    'bonus.basic': '普通',
+    'bonus.fast': '快速',
+    'bonus.power': '火力',
+    'bonus.armor': '装甲',
+    'bonus.stealth': '隐形', // stealth-enemy (AC5) — the stealth-tank kill row.
+    'bonus.boss': '首领',
 
     // ── 游戏结束（结算快照 — AC5）──
     'over.heading': '游戏结束',
@@ -84,6 +119,19 @@ export const ZH_CN: Dict = {
     'pause.p2Lives': 'P2 生命',
     'pause.help': '按 P / ESC 恢复游戏',
 
+    // ── 设置屏幕（F-settings §5.4, D5, AC6 — 标题界面可进入的设置菜单）── 标题、三个可编辑行（音量 · 难度 · 语言）
+    // 以及返回行，外加一行按键提示。音量显示百分比（settings.volumeValue）；难度值复用现有的 title.diff.*（DRY，无新串）；
+    // 语言在两个 settings.lang.* 名称间切换。语言名（English/简体中文）刻意保留各自的母语写法。
+    'settings.title': '设置',
+    'settings.volume': '音量',
+    'settings.volumeValue': '{pct}%',
+    'settings.difficulty': '难度',
+    'settings.language': '语言',
+    'settings.back': '返回',
+    'settings.hint': '↑ / ↓ 选择 · ← / → 调整 · ENTER / ESC 返回',
+    'settings.lang.en': 'English',
+    'settings.lang.zh': '简体中文',
+
     // ── 道具名称（HUD 当前道具 — AC2/AC8）──
     'power.helmet': '护盾',
     'power.clock': '冻结',
@@ -91,6 +139,25 @@ export const ZH_CN: Dict = {
     'power.star': '升级',
     'power.grenade': '炸弹',
     'power.tank': '加命',
+    'power.boat': '船', // boat-drill — amphibious (drive over water).
+    'power.drill': '钻头', // boat-drill — the bullet pierces one brick layer.
+
+    // ── 触摸控制（touch-controls §6 — 触摸设备上的屏幕开火按钮文字，仅在触摸设备显示；方向键画成三角形字形，无需文字）。
+    'touch.fire': '开火',
+
+    // ── 地图编辑（关卡编辑器）场景（construction-mode §6, D4 — 标题、当前笔刷标签（插入笔刷的瓦片名）、笔刷循环的七种
+    // 瓦片名、一行操作提示、保存确认提示）── 全部经 t() 读取（ConstructionScene 中不内联任何面向用户的字符串）。
+    'construction.title': '地图编辑',
+    'construction.brush': '笔刷：{tile}',
+    'construction.tile.empty': '空地',
+    'construction.tile.brick': '砖墙',
+    'construction.tile.steel': '钢墙',
+    'construction.tile.water': '水域',
+    'construction.tile.trees': '树林',
+    'construction.tile.ice': '冰面',
+    'construction.tile.base': '基地',
+    'construction.controls': '方向键移动 · SPACE 绘制 · B 笔刷 · C 清空 · S 保存 · P 游玩 · ESC 返回',
+    'construction.saved': '已保存',
   },
 
   // ── 升级条目内容覆盖（按 TANK_UPGRADES 行的 id 键控）── tName/tDesc('upgrade', id, en) 读取这里；缺失则回退到

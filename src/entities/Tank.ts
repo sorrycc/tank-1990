@@ -10,8 +10,13 @@ import {
   AI_REDECIDE_MIN,
   AI_REDECIDE_MAX,
   AI_SEEK_BIAS,
+  AI_SEEK_BIAS_RUSH,
+  AI_AIM_TOLERANCE,
   TELEGRAPH_FILL,
+  ICE_FRICTION,
+  ICE_GLIDE_CUTOFF,
 } from '../config/constants.js'
+import { TILE } from '../config/tiles.js' // PURE (no Phaser) — the ice-slide tile-kind probe; the split is intact.
 import type { PlayerIntent } from '../core/Input.js'
 import type { BulletPool } from '../combat/BulletPool.js'
 import type { TankSpec } from '../config/tanks.js'
@@ -75,6 +80,11 @@ const HIT_FLASH_COLOR = 0xffffff // the white flash tint (programmer-art primiti
 // much wall is left). A LOCAL render constant (owned by this ONE file — render-only feel, not shared, so it
 // stays out of the constants.ts owner / the verifier-imported path, like the HIT_FLASH_* locals above — D6/D4).
 const DAMAGED_TINT = 0x4a3b3b // the dark, desaturated shade the hull lerps TOWARD as hp/maxHp drops (full HP = spec.color).
+// stealth-enemy (§5.3, D2/D6, AC2) — the CONTAINER alpha a 'stealth' tank fades to when it is concealed (resting
+// under the TREES canopy, idle, not firing). Nearly invisible but a faint ghost so a watchful player can still spot
+// it. A LOCAL render constant (owned by this ONE file — render-only feel, not shared, so it stays out of the
+// constants.ts owner / the verifier-imported path, exactly like the HIT_FLASH_*/DAMAGED_TINT locals above — D6).
+const STEALTH_HIDDEN_ALPHA = 0.12 // container alpha while a stealth tank is concealed under trees (a faint ghost).
 
 export class Tank {
   scene: Phaser.Scene
@@ -93,6 +103,17 @@ export class Tank {
   behavior: string // 'player' for F1; the enemy FSM extends this later (D7 — 'basic'|'fast'|'power'|'armor'|'boss').
   facing: Facing
   lastDriveAxis: 'x' | 'y' | null // the axis we drove LAST frame; a TURN = chosen ≠ this (§5.3 step 2/4).
+
+  // ── F-ice-slide (ice-slide §2, D1/D2/D3) — the low-friction "ice glide" momentum, additive over the F1 spine ──
+  // `onSampleTile` is the SCENE-injected tile-kind probe (SOLID — keeps Tank.ts off TileMap): GameScene wires it on
+  // the two PLAYER tanks only (enemies leave it null → no glide, the existing instant-stop path runs byte-identically
+  // — D2/D7). A null sampler makes update() behave EXACTLY as today, so this is additive + zero-risk. `glideVel` is the
+  // SIGNED coasting speed (px/s) carried along `glideAxis` — the ONE axis the tank was last driving — so momentum is
+  // single-axis ONLY (the no-diagonal invariant stays structural: the cross axis is never written non-zero — D1).
+  onSampleTile: ((x: number, y: number) => number) | null // null on enemies/tests → no glide (the instant-stop path).
+  private glideVel: number // px/s — the signed coasting speed carried along glideAxis while sliding on ice (0 = at rest).
+  private glideAxis: 'x' | 'y' | null // the axis glideVel rides (= the last-driven axis); null when not gliding.
+  private wasGliding: boolean // true if the PREVIOUS frame deferred the lane snap (a coast); drives the ONE re-settle.
 
   cooldownTimer: number // s — decays by dt; a fire is allowed at ≤ 0 (AC4).
   liveBullets: number // current shots out (incremented on fire, decremented on release — AC4/AC5).
@@ -129,8 +150,25 @@ export class Tank {
   // seek state); `updateAI` rebuilds the intent each tick + the scene feeds it through the SAME update() spine.
   carrier: boolean
   onDropFlag: ((x: number, y: number) => void) | null
+  // ── boat-drill (DRILL) ── the LIVE drill flag the SCENE sets each frame on a PLAYER tank from
+  // RunState.drillTimer > 0; BulletPool.acquire snapshots it onto the fired bullet's `bx.drill` (the same
+  // stance as the `ownerSide`/`canBreakSteel` snapshot — the bullet carries a plain flag, never reaches back
+  // into the Tank). Defaults false so an enemy/boss tank never drills (the scene only sets it on players).
+  drill: boolean
   private aiRedecideTimer: number // s — decays by dt; at ≤ 0 (or when blocked) the AI re-decides a cardinal (D4).
   aiIntent: PlayerIntent // the PlayerIntent-shaped snapshot updateAI emits; the scene drives update(gdt, this.aiIntent).
+
+  // ── F-smart-ai per-tank AI profile (smart-ai §2, D1/D2/D3) ── additive over the F4 AI spine. The profile is
+  // resolved ONCE in the ctor (NOT per frame — KISS/DRY) so the per-tick re-decide stays branch-light and there is
+  // ONE place type flavor is decided. `aiRushEagle` (the eagle-rush cohort flag) defaults false in the ctor; the
+  // SCENE flips it on a spawn-time coin flip (`stageRng() < AI_EAGLE_RUSH_RATE`) — the same pattern as `carrier`
+  // — so a player/boss leaves it false (byte-unchanged). A rusher targets the eagle UNCONDITIONALLY + seeks it at
+  // AI_SEEK_BIAS_RUSH (real base pressure — D3). `aiSeekBias`/`aiAimTolerance` are the EFFECTIVE per-type knobs
+  // (the light type flavor — D1/D5): derived in the ctor off the AI_SEEK_BIAS/AI_AIM_TOLERANCE anchors via a small
+  // switch on spec.behavior (fast wanders more, armor pushes straighter, power holds lanes + shoots aligned).
+  aiRushEagle: boolean // the cohort flag (default false; the scene flips it per spawn). True → always target the eagle.
+  private aiSeekBias: number // 0..1 — this tank's effective seek probability (the per-type flavor; AI_SEEK_BIAS_RUSH overrides for a rusher).
+  private aiAimTolerance: number // px — this tank's cross-axis "aligned enough to fire" band (the per-type flavor).
 
   // ── F6 boss telegraph (F6 §5.3, D2, AC2) ── additive over the F4 AI spine. `telegraphSec` (copied from the
   // spec in the ctor; 0 = no telegraph, the IDENTITY for every non-boss spec) is the pre-fire wind-up window.
@@ -156,6 +194,11 @@ export class Tank {
     this.behavior = spec.behavior // (was the `behavior` ctor arg in F1).
     this.facing = 'up' // tanks start facing up (the classic player spawn orientation).
     this.lastDriveAxis = null
+    // F-ice-slide (D2) — no probe + no momentum on a fresh tank. The scene wires onSampleTile on PLAYER tanks only.
+    this.onSampleTile = null
+    this.glideVel = 0
+    this.glideAxis = null
+    this.wasGliding = false
     this.cooldownTimer = 0
     this.liveBullets = 0
     this.maxBullets = spec.maxBullets // (was MAX_PLAYER_BULLETS; now from the spec).
@@ -174,8 +217,43 @@ export class Tank {
     // F4 enemy-AI + carrier defaults — a player never carries / never AI-decides (the scene drives it).
     this.carrier = false
     this.onDropFlag = null
+    this.drill = false // boat-drill — no drill until the scene sets it from an active drill window (enemies stay false).
     this.aiRedecideTimer = 0 // re-decide immediately on the first AI tick.
     this.aiIntent = { up: false, down: false, left: false, right: false, dirX: 0, dirY: 0, firePressed: false }
+
+    // ── F-smart-ai per-tank AI profile (smart-ai §2, D1/D5) ── resolve the type flavor ONCE here (KISS/DRY).
+    // `aiRushEagle` defaults false (the scene flips it on a spawn coin flip — D2; the player/boss leave it false).
+    // The per-type seek bias / aim tolerance derive off the AI_SEEK_BIAS / AI_AIM_TOLERANCE anchors via this small
+    // switch on the behaviour tag — the SINGLE place type flavor is decided, so the per-tick re-decide stays
+    // branch-light (D1). NO new spec field (the flavor is AI feel keyed off the existing tag, not a swept tunable —
+    // YAGNI/SOLID). The multipliers are inline + intent-commented (the anchor stays the single owner — DRY/D5).
+    this.aiRushEagle = false
+    switch (spec.behavior) {
+      case 'fast':
+        // FAST flanks/wanders MORE — a lower seek bias (×0.8) so the scout darts around the lanes instead of
+        // committing, and a TIGHTER aim band (×0.8) so its erratic darting doesn't spray (it shoots only when truly lined up).
+        this.aiSeekBias = AI_SEEK_BIAS * 0.8
+        this.aiAimTolerance = AI_AIM_TOLERANCE * 0.8
+        break
+      case 'power':
+        // POWER holds lanes + shoots aligned — the baseline seek bias with a WIDER aim band (×1.2) so the gunner
+        // fires its fast bolt the moment a target enters its lane (it punishes alignment harder than the rest).
+        this.aiSeekBias = AI_SEEK_BIAS
+        this.aiAimTolerance = AI_AIM_TOLERANCE * 1.2
+        break
+      case 'armor':
+        // ARMOR pushes STRAIGHTER toward the base — a higher seek bias (×1.15) so the heavy grinds toward the fort,
+        // with the baseline aim band (it is a wall, not a sharpshooter).
+        this.aiSeekBias = AI_SEEK_BIAS * 1.15
+        this.aiAimTolerance = AI_AIM_TOLERANCE
+        break
+      default:
+        // basic / boss / player — the baseline anchors (no flavor tweak). The player/boss never run updateAI's seek
+        // roll meaningfully (the player is Input-driven; the boss commits via its own telegraph AI), so the anchors are inert for them.
+        this.aiSeekBias = AI_SEEK_BIAS
+        this.aiAimTolerance = AI_AIM_TOLERANCE
+        break
+    }
 
     // F6 boss telegraph (D2) — copy the spec's pre-fire wind-up window (default 0 = no telegraph, the identity
     // for every non-boss spec → the gated branch in updateAI is skipped). The runtime wind-up state starts clear.
@@ -227,6 +305,10 @@ export class Tank {
     // guard here means a stray tick can't move/fire a corpse. Hold the body still + leave the visual hidden.
     if (!this.alive) {
       this.body.setVelocity(0, 0)
+      // F-ice-slide (D-defensive) — a corpse carries NO momentum (a stray tick can't coast a dead tank).
+      this.glideVel = 0
+      this.glideAxis = null
+      this.wasGliding = false
       return
     }
 
@@ -240,6 +322,23 @@ export class Tank {
       const blink = Math.floor(this.scene.time.now / 100) % 2 === 0 ? 0.35 : 1
       this.rect.setAlpha(this.spawnIframe > 0 ? blink : 1)
       if (this.spawnIframe === 0) this.rect.setAlpha(1)
+    }
+
+    // stealth-enemy (§5.3, D2/D3/D6, AC2) — the STEALTH visibility cue: a render-only CONTAINER-ALPHA branch (the
+    // carrier/telegraph ANALOGUE, but on the ALPHA channel — the fill-cue chain below writes setFillStyle, never
+    // alpha, so the two never fight). GATED on `behavior === 'stealth'` (no other type ever enters — byte-unchanged
+    // for them) AND `spawnIframe <= 0` (the spawn-blink above owns the alpha while it ticks, so at most one alpha
+    // writer runs per frame — the SAME discipline the fill chain documents). "Concealed" (D3) is a pure per-frame
+    // derivation of state the tank ALREADY owns: it sits UNDER the canopy (onSampleTile center === TILE.TREES), is
+    // at REST (zero body velocity — not "moving in the open"), and is not firing (not telegraphing AND no live shot
+    // out). A null probe (an un-wired tank) never conceals → fully backward-compatible. It touches ONLY setAlpha —
+    // never the body, the fill, or isHittable() (a concealed stealth tank is still a normal 1-HP target — AC2).
+    if (this.behavior === 'stealth' && this.spawnIframe <= 0) {
+      const onTrees = this.onSampleTile?.(this.body.center.x, this.body.center.y) === TILE.TREES
+      const idle = this.body.velocity.x === 0 && this.body.velocity.y === 0
+      const firing = this.telegraphing || this.liveBullets > 0
+      const concealed = onTrees && idle && !firing
+      this.rect.setAlpha(concealed ? STEALTH_HIDDEN_ALPHA : 1)
     }
 
     // 1) Cooldown decay (seconds) — a fire is allowed once this hits 0 (AC4).
@@ -273,15 +372,46 @@ export class Tank {
     // ONLY on the frame a player switches between a horizontal and a vertical cardinal — §5.3 step 2).
     const turned = driveAxis !== null && this.lastDriveAxis !== null && driveAxis !== this.lastDriveAxis
 
+    // F-ice-slide (ice-slide §2, D3) — is the tank's CENTER sitting on a TILE.ICE cell THIS frame? Sampled ONCE
+    // via the scene-injected probe (null on enemies/tests → onIce stays false → the existing instant-stop path
+    // below runs byte-identically — D2/D7). The classic ice read: the body must be CENTERED over ice to glide.
+    const onIce = this.onSampleTile?.(this.body.center.x, this.body.center.y) === TILE.ICE
+
     // 3) Drive — exactly ONE velocity component non-zero (Decision 5/AC3). The cross component is held at
-    // EXACTLY 0, so Arcade never integrates a diagonal (the no-diagonal invariant is STRUCTURAL). Idle → 0,0.
+    // EXACTLY 0, so Arcade never integrates a diagonal (the no-diagonal invariant is STRUCTURAL). F-ice-slide
+    // (D5): the drive step is now GATED — OFF ice it is BYTE-IDENTICAL to today (held → ±moveSpeed; released →
+    // instant 0,0). ON ice a release COASTS the last-driven axis with momentum decay instead of stopping dead.
     if (driveAxis === 'x') {
-      this.body.setVelocity(this.facing === 'right' ? this.moveSpeed : -this.moveSpeed, 0)
+      // A key is held on the X axis → drive at ±moveSpeed (as today) AND seed the glide momentum (records the
+      // signed speed + axis so a later release coasts; off ice this seed is simply never read — harmless — D5).
+      const vx = this.facing === 'right' ? this.moveSpeed : -this.moveSpeed
+      this.body.setVelocity(vx, 0)
+      this.glideVel = vx
+      this.glideAxis = 'x'
     } else if (driveAxis === 'y') {
-      this.body.setVelocity(0, this.facing === 'down' ? this.moveSpeed : -this.moveSpeed)
+      const vy = this.facing === 'down' ? this.moveSpeed : -this.moveSpeed
+      this.body.setVelocity(0, vy)
+      this.glideVel = vy
+      this.glideAxis = 'y'
+    } else if (onIce && this.glideAxis !== null && Math.abs(this.glideVel) > ICE_GLIDE_CUTOFF) {
+      // No key held, but the tank is centered on ICE and still carries glide above the settle floor → KEEP moving
+      // along the glide axis (single-axis only — the cross axis stays EXACTLY 0, so no diagonal — D1/AC3), and
+      // decay the momentum framerate-independently (`*= ICE_FRICTION ** dt` — the per-second retention factor, D4).
+      if (this.glideAxis === 'x') this.body.setVelocity(this.glideVel, 0)
+      else this.body.setVelocity(0, this.glideVel)
+      this.glideVel *= ICE_FRICTION ** dt
     } else {
+      // The existing instant-stop (bare ground OR the glide has settled under the cutoff / left ice — AC2). Clear
+      // any residual momentum so a future release on ice starts fresh (no stale glide survives a full stop).
       this.body.setVelocity(0, 0)
+      this.glideVel = 0
+      this.glideAxis = null
     }
+
+    // Is the tank still carrying glide THIS frame (a post-release ice coast, or the seeded momentum on a turn
+    // frame on ice)? While it is, the lane re-center is DEFERRED (the surface is slippery — an instant lane snap
+    // would feel sticky — D6). We re-settle the lane ONCE the glide clears (the else branch below).
+    const gliding = onIce && this.glideAxis !== null && Math.abs(this.glideVel) > ICE_GLIDE_CUTOFF
 
     // 4) Turn-time re-center — a DISCRETE, collision-aware, velocity-ONLY snap (Decision 5/6, AC3), run
     // ONLY on a turn frame. On a non-turn frame do NOTHING here (steady single-axis driving already holds
@@ -289,7 +419,14 @@ export class Tank {
     // corner to its nearest 1-TILE corridor lane in ONE write to body.position[cross] (the cross VELOCITY
     // stays 0 — no diagonal). We snap the body's CORNER (not the center) to the LANE_INSET-offset TILE
     // lattice (D1) so a ~1-tile tank lands EXACTLY centered (a 2px inset) in a 1-tile corridor lane.
-    if (turned) {
+    //
+    // F-ice-slide (D6) — SLIPPERY TURNS: while `gliding` we SKIP the turn-time snap (the slippery surface lets
+    // the new heading take a beat to win). Once the glide settles to rest (cutoff reached) OR the tank leaves ice
+    // — i.e. NOT gliding — we run the SAME _recenterCross on the CURRENT heading's cross axis ONCE so the tank
+    // re-settles into its lane (no permanent lane drift — AC4), reusing the helper verbatim (DRY, no second path).
+    if (gliding) {
+      // Sliding — defer the lane discipline (do nothing; the re-settle fires when the glide clears, below).
+    } else if (turned) {
       if (driveAxis === 'x') {
         // Driving horizontally → the CROSS axis is Y; snap the body's TOP corner to the centered Y-lane.
         this._recenterCross('y', this.body.y, PLAYFIELD_Y)
@@ -297,7 +434,21 @@ export class Tank {
         // Driving vertically → the CROSS axis is X; snap the body's LEFT corner to the centered X-lane.
         this._recenterCross('x', this.body.x, PLAYFIELD_X)
       }
+    } else if (this.wasGliding && this.lastDriveAxis !== null) {
+      // Just settled OUT of an ice coast (we deferred the snap last frame; this frame the glide cleared OR a key was
+      // re-pressed/the tank left ice). Re-settle the lane ONCE on the LAST sliding heading's cross axis so a tank
+      // that slid to a stop lands cleanly back in its corridor (AC4 — no permanent lane drift). The cross-velocity
+      // stays 0 (no diagonal — D1). Gating on `wasGliding` (NOT a bare driveAxis===null) keeps OFF-ice behaviour
+      // BYTE-IDENTICAL to today (AC2): a tank that never glided never enters this re-settle. Reuses _recenterCross
+      // verbatim (DRY — no second snap path); the dead-band makes it a no-op when already lane-aligned.
+      if (this.lastDriveAxis === 'x') this._recenterCross('y', this.body.y, PLAYFIELD_Y)
+      else this._recenterCross('x', this.body.x, PLAYFIELD_X)
     }
+
+    // F-ice-slide (D6) — remember whether we deferred the snap THIS frame, so the NEXT frame can run the ONE
+    // re-settle exactly when the glide clears (the wasGliding edge above). Off ice this is always false → the
+    // re-settle branch never fires → behaviour is byte-identical to today (AC2).
+    this.wasGliding = gliding
 
     // Record the axis we drove THIS frame so the next frame can detect a turn. A null (idle) frame leaves
     // lastDriveAxis at its prior value so resuming the SAME axis after a pause is not falsely a "turn".
@@ -455,25 +606,32 @@ export class Tank {
       : this.body.blocked.up || this.body.blocked.down
 
     if (this.aiRedecideTimer <= 0 || blocked) {
-      // Choose the target: the eagle base, OR the nearest live player if it is Manhattan-closer (AC3). A live
-      // player is one present in ctx.players (the scene passes only present + alive players).
+      // Choose the target. F-smart-ai (D3): an EAGLE-RUSH cohort member (aiRushEagle) HARD-COMMITS to the eagle —
+      // it targets the fort UNCONDITIONALLY (skip the closer-player retarget) so there is real base pressure. A
+      // non-rush enemy keeps the EXISTING pick BYTE-UNCHANGED: the eagle base, OR the nearest live player if it is
+      // Manhattan-closer (AC3 — a live player is one present in ctx.players, only present + alive players passed).
       const cx = this.body.center.x
       const cy = this.body.center.y
       let target = ctx.eagle
-      let best = Math.abs(ctx.eagle.x - cx) + Math.abs(ctx.eagle.y - cy)
-      for (const p of ctx.players) {
-        const d = Math.abs(p.x - cx) + Math.abs(p.y - cy)
-        if (d < best) {
-          best = d
-          target = p
+      if (!this.aiRushEagle) {
+        let best = Math.abs(ctx.eagle.x - cx) + Math.abs(ctx.eagle.y - cy)
+        for (const p of ctx.players) {
+          const d = Math.abs(p.x - cx) + Math.abs(p.y - cy)
+          if (d < best) {
+            best = d
+            target = p
+          }
         }
       }
 
-      // Seek-bias (AI_SEEK_BIAS) the greedy cardinal toward the target, else wander a random cardinal. The
-      // greedy cardinal picks the axis with the LARGER Manhattan gap (KISS — no pathfinding, D4).
+      // Seek-bias the greedy cardinal toward the target, else wander a random cardinal. F-smart-ai (D1/D3): a rusher
+      // uses the raised AI_SEEK_BIAS_RUSH (it commits to the fort + wanders far less); every other enemy uses its
+      // per-type aiSeekBias (the type flavor — fast wanders more, armor pushes straighter). The greedy cardinal
+      // picks the axis with the LARGER Manhattan gap (KISS — no pathfinding, D4).
+      const seekBias = this.aiRushEagle ? AI_SEEK_BIAS_RUSH : this.aiSeekBias
       let dirX = 0
       let dirY = 0
-      if (Math.random() < AI_SEEK_BIAS) {
+      if (Math.random() < seekBias) {
         const gx = target.x - cx
         const gy = target.y - cy
         if (Math.abs(gx) >= Math.abs(gy)) dirX = gx >= 0 ? 1 : -1
@@ -510,22 +668,61 @@ export class Tank {
     //     frame + clear telegraphing (the cooldown then re-arms on the successful tryFire in the scene's tick).
     // The timer decays on the GAMEPLAY dt the scene passes (so a clock freeze pauses the wind-up too — the SAME
     // "freeze pauses every gameplay timer" contract every enemy obeys; §5.4 issue (a)).
+    //
+    // F-smart-ai (D4) — AIMED FIRING: every fire decision is now ANDed with `_aimedAtTarget(ctx)`, so an enemy
+    // only commits a shot when SOME target (the eagle or a live player) is roughly axis-aligned in FRONT of its
+    // barrel (within aiAimTolerance on the cross axis). This wraps BOTH the immediate path (the four archetypes)
+    // AND the boss telegraph ARM (a boss only winds up a shot when it has a line — its timing is otherwise
+    // byte-unchanged), so shots read as intentional rather than sprayed on the bare cooldown beat (one helper,
+    // both paths — DRY). Compute the aim gate once here.
+    const aimed = this._aimedAtTarget(ctx)
     if (this.telegraphSec > 0) {
       if (this.telegraphing) {
         this.telegraphTimer = Math.max(0, this.telegraphTimer - dt)
         this.aiIntent.firePressed = this.telegraphTimer <= 0
         if (this.telegraphTimer <= 0) this.telegraphing = false // fire this frame; the wind-up is done.
-      } else if (this.cooldownTimer <= 0) {
-        this.telegraphing = true // ARM the wind-up (the warning blink begins); hold fire until it elapses.
+      } else if (this.cooldownTimer <= 0 && aimed) {
+        this.telegraphing = true // ARM the wind-up (the warning blink begins); hold fire until it elapses (D4: only with a line).
         this.telegraphTimer = this.telegraphSec
         this.aiIntent.firePressed = false
       } else {
-        this.aiIntent.firePressed = false // still on cooldown — nothing to telegraph yet.
+        this.aiIntent.firePressed = false // still on cooldown, or no line on a target yet — nothing to telegraph.
       }
     } else {
-      // The existing immediate-fire path (telegraphSec === 0) — byte-unchanged for the four archetypes + player.
-      this.aiIntent.firePressed = this.cooldownTimer <= 0
+      // The immediate-fire path (telegraphSec === 0). F-smart-ai (D4): gated on the aim test, so the four archetypes
+      // fire only when lined up on a target down their lane (the player path never reaches here — it is Input-driven).
+      this.aiIntent.firePressed = this.cooldownTimer <= 0 && aimed
     }
+  }
+
+  // ── _aimedAtTarget(ctx) (F-smart-ai §2, D4) ── the aimed-firing gate: true iff SOME target (the eagle, or any
+  // live player passed in ctx) lies within `aiAimTolerance` px on the CROSS axis of this tank's current facing AND
+  // is in FRONT of the barrel (the correct side along the facing). So a shot only commits when the tank is roughly
+  // lined up down a lane at a real target — no more firing at walls/empty lanes on the bare cooldown beat (D4).
+  // KISS: a tiny per-target cross/forward test, no raycast/no terrain check (the bullet's own collision resolves
+  // any wall in the way — the gate only asks "am I pointed at something?"). Reuses ctx.eagle/ctx.players already
+  // passed to updateAI — NO new ctx field. The per-type aiAimTolerance (the type flavor — D5) sets the band width.
+  private _aimedAtTarget(ctx: { eagle: { x: number; y: number }; players: { x: number; y: number }[] }): boolean {
+    const cx = this.body.center.x
+    const cy = this.body.center.y
+    const tol = this.aiAimTolerance
+    // A closure testing one target point against the current facing: the CROSS-axis offset must be within tol AND
+    // the target must sit on the correct side along the facing (in front of the barrel, not behind the tank).
+    const aimedAt = (tx: number, ty: number): boolean => {
+      switch (this.facing) {
+        case 'up':
+          return Math.abs(tx - cx) <= tol && ty <= cy // same column (±tol) AND above (in front of an up-facing barrel).
+        case 'down':
+          return Math.abs(tx - cx) <= tol && ty >= cy // same column (±tol) AND below.
+        case 'left':
+          return Math.abs(ty - cy) <= tol && tx <= cx // same row (±tol) AND to the left.
+        case 'right':
+          return Math.abs(ty - cy) <= tol && tx >= cx // same row (±tol) AND to the right.
+      }
+    }
+    if (aimedAt(ctx.eagle.x, ctx.eagle.y)) return true
+    for (const p of ctx.players) if (aimedAt(p.x, p.y)) return true
+    return false
   }
 
   // ── isHittable() (F3 §5.2, D7, AC5/AC8 — the victim filter) ── a bullet only damages a tank that is ALIVE
@@ -579,6 +776,10 @@ export class Tank {
     this.spawnIframe = SPAWN_IFRAME // arm the post-respawn invulnerability (D7/D11).
     this.facing = 'up'
     this.lastDriveAxis = null
+    // F-ice-slide (D-defensive) — a fresh spawn carries no glide momentum (no momentum survives across lives, AC6).
+    this.glideVel = 0
+    this.glideAxis = null
+    this.wasGliding = false
     this.cooldownTimer = 0
     this.telegraphing = false // F6 — a fresh spawn starts with no shot winding up (defensive; the boss never respawns).
     this.telegraphTimer = 0

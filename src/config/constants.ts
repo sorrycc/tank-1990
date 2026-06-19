@@ -103,6 +103,27 @@ export const LANE_INSET = (TILE_SIZE - TANK_SIZE) / 2 // px — the ~1-tile tank
 // post-turn misalignment is always corrected. The single PURE owner so any later tuning is DRY.
 export const LANE_SNAP_EPSILON = 0.5 // px.
 
+// ── F-ice-slide (ice-slide §2/§3, D4/D5/D6) — the low-friction "ice glide" feel scalars, beside the tank-feel
+// anchors above (the LANE_* / TANK_SIZE owners). PURE DATA (no Phaser) read ONLY by the coupled Tank movement
+// spine (entities/Tank.ts): when a tank's CENTER sits on a TILE.ICE cell, releasing the direction key keeps it
+// gliding ~1 tile with momentum decay instead of stopping dead (the classic slippery ice). Owned ONCE here (DRY)
+// so any later tuning is a single edit; the verifier ignores them (plain feel scalars, no invariant references
+// them — like the LANE_* numbers). Single-axis glide only (KISS/YAGNI) — only the last-driven axis ever carries
+// momentum, so the no-diagonal invariant stays STRUCTURAL (the cross axis is never written non-zero).
+
+// ICE_FRICTION (D4) — the per-SECOND multiplicative RETENTION of glide speed while coasting on ice (0 < f < 1).
+// Applied as `glideVel *= ICE_FRICTION ** dt` each frame the player holds NO key but still glides on ice, so the
+// decay is framerate-independent (the px/s convention — dt in seconds). Tuned LOW (0.09 retained per second → a fast
+// exponential die-off) so the tank coasts ~1 tile before |glideVel| drops under ICE_GLIDE_CUTOFF + settles. The
+// coast distance is ∫v dt = (moveSpeed − ICE_GLIDE_CUTOFF)/(−ln f); at f=0.09, moveSpeed≈104, cutoff=8 → ~40px ≈
+// one TILE_SIZE (the design's "~1 tile" target). Lower f = a snappier stop, higher f = a longer slide (DRY tuning).
+export const ICE_FRICTION = 0.09 // per-second glide retention on ice (0<f<1 — coasts ~1 tile then settles).
+
+// ICE_GLIDE_CUTOFF (D5) — the tiny px/s FLOOR below which the coasting glide settles to rest (velocity → 0, the
+// lane re-settle fires). Without it the exponential decay would creep forever sub-pixel; this snaps the tank to a
+// clean stop once it has effectively stopped, so it never drifts imperceptibly off its lane. The single PURE owner.
+export const ICE_GLIDE_CUTOFF = 8 // px/s — below this the ice coast settles to a dead stop (and re-settles the lane).
+
 // ── F3 Combat & terrain (F3 §5.2, Decisions D4/D7/D8, AC5/AC6/AC8/AC9) — PURE combat DATA (no Phaser) ──
 // All Phaser-free numbers/flags the F3 combat resolution reads. Owned ONCE here (DRY) so the scene's
 // overlap callbacks, Tank's hit funnel, and Base's loss guard read the SAME truth — and the verifier still
@@ -165,6 +186,34 @@ export const AI_REDECIDE_MAX = 1.6 // s — longest wander commitment.
 // harder. 0.6 keeps them mostly purposeful but still wandering (the classic Battle City feel).
 export const AI_SEEK_BIAS = 0.6 // 0..1 — chance a re-decide seeks the target instead of wandering.
 
+// ── F-smart-ai (smart-ai §2/§5, D1/D2/D5) — deeper enemy AI feel scalars, beside the AI_SEEK_BIAS/AI_REDECIDE_*
+// anchors above. PURE DATA (no Phaser) read ONLY by the coupled enemy AI (entities/Tank.updateAI + the per-tank
+// AI-profile derived in its ctor) + the spawn-time cohort flip (scenes/GameScene._spawnStep). Owned ONCE here
+// (DRY) so any later tuning is a single edit; the verifier ignores them (plain feel scalars, like the AI_*/LANE_*
+// numbers — no invariant references them). They keep AI randomness OFF the seeded determinism pin: the in-tick
+// wander/seek/aim rolls stay runtime Math.random(); the ONLY seeded draw is the cohort coin flip, which rides the
+// EXISTING stageRng stream the spawn loop already advances (so the procedural-stage gate is byte-unaffected — §5).
+
+// AI_EAGLE_RUSH_RATE (D2) — fraction [0,1] of spawned enemies flagged into the EAGLE-RUSH cohort: a rusher
+// HARD-COMMITS to the eagle base (it targets the eagle regardless of a closer player + seeks it at the raised
+// AI_SEEK_BIAS_RUSH below), so there is real, visible base pressure instead of every enemy treating the eagle and
+// the players symmetrically. The scene flips it per spawn with `enemy.aiRushEagle = stageRng() < AI_EAGLE_RUSH_RATE`
+// — exactly the `enemy.carrier = stageRng() < CARRIER_RATE` pattern two lines away (DRY). The boss never sets it.
+export const AI_EAGLE_RUSH_RATE = 0.35 // 0..1 — share of enemies that hard-commit to rushing the eagle base.
+
+// AI_SEEK_BIAS_RUSH (D1/D3) — the RAISED seek probability [0,1] a rusher uses in place of its per-type aiSeekBias:
+// it both COMMITS to the eagle (Decision 3) and wanders far less (this high bias), so it pushes the fort hard
+// without any pathfinding (the carved corridor to the fort already guarantees reachability). Set well above
+// AI_SEEK_BIAS so a rusher reads as purposeful pressure, but < 1 so it still re-decides at obstacles (no grinding).
+export const AI_SEEK_BIAS_RUSH = 0.9 // 0..1 — the eagle-rush cohort's high seek bias (purposeful base pressure).
+
+// AI_AIM_TOLERANCE (D4) — the px half-width of the "aligned enough to fire" band. An enemy only sets firePressed
+// when SOME target (the eagle or a live player) lies within this many px of its facing axis AND in front of its
+// barrel — so shots read as INTENTIONAL (aimed down a lane at a real target) rather than sprayed on the bare
+// cooldown beat. ~half a tile keeps the gate forgiving enough that a roughly-lined-up enemy still fires, while a
+// tank pointed at a wall/empty lane holds fire. The per-type aiAimTolerance derives off this anchor in the ctor.
+export const AI_AIM_TOLERANCE = TILE_SIZE * 0.6 // px — the cross-axis alignment band a target must sit within to fire.
+
 // CARRIER_RATE (F4 §5.2, AC7) — fraction [0,1] of spawned enemies flagged red-flash power-up CARRIERS. On a
 // carrier's death its onDropFlag(x,y) fires once (the F5 pickup seam); F4 only flags + marks the drop point.
 export const CARRIER_RATE = 0.25 // 0..1 — share of enemies that flash red + drop a power-up on death (F5 spawns it).
@@ -220,3 +269,90 @@ export const TELEGRAPH_FILL = 0xffeaa7 // bright warning amber — the telegraph
 // STAGE_CLEARED_BANNER_SEC (F6 §5.2, D5, AC3) — how long the "STAGE N CLEARED" banner shows after a boss stage
 // is cleared. Decayed on the REAL dt (so it shows through the run-end freeze beat); the HUD renders it while > 0.
 export const STAGE_CLEARED_BANNER_SEC = 2.5 // s — the STAGE-N-CLEARED banner duration (AC3).
+
+// ── F-extra-life 1UP milestones (extra-life §5.2, D1, AC1) — PURE shared milestone DATA (no Phaser) ──
+// EXTRA_LIFE_SCORE (D1, AC1) — the points-per-1UP step (the classic Battle City "extra tank every 20000"). The
+// SINGLE shared owner (DRY): RunState seeds its carried `nextExtraLifeScore` threshold from it, GameScene passes
+// it as the `step` to the pure extraLivesCrossed() helper, and the verifier reads it — one number, no inlined
+// duplicate. A run that earns this many points awards +1 life to every present player slot (the shared-score
+// model — D4). The verifier node-imports this module (a stray Phaser import would throw — re-proving purity).
+export const EXTRA_LIFE_SCORE = 20000 // points per 1UP milestone (every 20000 earned → +1 life to all slots, AC1).
+
+// ── F-stage-bonus between-stage tally (stage-bonus §5.2, D2/D4, AC2/AC3) — PURE shared tally DATA (no Phaser) ──
+// The classic Battle City between-stage bonus screen: on EVERY stage clear a brief overlay lists the kills-by-type
+// (count × points) plus a flat stage-clear bonus, then the next stage's intro curtain plays. Both numerics are
+// shared (GameScene arms/banks them; the verifier could read them) so they live in the constants owner ONCE (DRY).
+
+// STAGE_BONUS_SEC (D2, AC3) — how long the bonus tally overlay holds before the deferred stage advance fires. A
+// COUPLE of seconds so it feels snappy (and it is skippable on the P1 fire/start edge — D6). GameScene arms its
+// `tallyTimer` to this; the timer is decayed on the REAL dt (so it ends in real time through the world freeze).
+export const STAGE_BONUS_SEC = 2.2 // s — the between-stage bonus-tally window (snappy + skippable, AC2/AC3).
+
+// STAGE_CLEAR_BONUS (D4, AC2) — the flat points banked to runState.score ONCE per stage clear (the classic
+// "you cleared the stage" reward on top of the per-type kill subtotals). Added at the one-shot clear site so it
+// is banked exactly once; the tally string shows it on its own line + folds it into the displayed TOTAL.
+export const STAGE_CLEAR_BONUS = 1000 // points — the flat per-stage-clear bonus (banked once per clear, AC2).
+
+// ── F-difficulty-select Title difficulty scalars (difficulty-select §5.2, D1/D2/D6, AC1) — PURE shared DATA (no Phaser) ──
+// The Title's Easy/Normal/Hard chooser scales the EXISTING closed-form pressure ramps (config/stages.ts) + the run-start
+// lives by a per-level SCALAR — NOT a ramp rewrite (D1). Owned ONCE here (DRY) so config/stages.ts folds the SAME table
+// the Title labels + GameScene reads; the verifier node-imports this module (a stray Phaser import would throw under
+// node — re-proving purity). NORMAL is the literal IDENTITY (1.0 pressure / +0 lives) so a Normal run is byte-identical
+// to today + the verifier's no-arg ramp sweep is byte-unaffected (D1/AC1/AC3).
+
+// DIFFICULTY_PRESSURE (D1/D2, AC1/AC2) — the per-level enemy-pressure multiplier. config/stages.ts COMPOSES it onto
+// the raw ramp (× bullet speed / ÷ spawn interval) then re-clamps to the SAME named caps, so a higher pressure means
+// faster bullets + a shorter spawn interval while staying BOUNDED (D2). easy < normal === 1.0 < hard (ordered) so a Hard
+// run streams harder enemies, an Easy run the reverse. normal === 1.0 is the identity (the default-arg path is unchanged).
+export const DIFFICULTY_PRESSURE = { easy: 0.85, normal: 1.0, hard: 1.2 } as const
+
+// DIFFICULTY_LIVES_BONUS (D1/D6, AC1/AC5) — the per-level ADD to each slot's run-start lives, folded into the seed map by
+// GameScene as `Math.max(1, START_LIVES + spec.startLivesBonus + bonus)` (clamped ≥ 1 — D6, so Hard's −1 never zeroes a
+// run). easy = +1 (a kinder buffer), normal = +0 (the identity — today's START_LIVES), hard = −1 (fewer lives, the wall).
+export const DIFFICULTY_LIVES_BONUS = { easy: 1, normal: 0, hard: -1 } as const
+
+// MAX_START_STAGE (D5, AC4/AC7) — the cap on the Title's optional starting-stage offset (a "skip to stage N" practice
+// option). The Title clamps the picker to [0, MAX_START_STAGE]; createRunState seeds a non-zero start stage from it.
+// Owned here so the Title's clamp + any later consumer read the SAME ceiling (DRY). 0 = the default (start at stage 0).
+export const MAX_START_STAGE = 20 // the deepest stage the Title's starting-stage picker can seed (a practice cap, AC4).
+
+// ── F-seed-challenge run-seed display/input width (seed-challenge §5.2, D1, AC1) — PURE shared DATA (no Phaser) ──
+// SEED_HEX_DIGITS (D1, AC1) — the width (in hex digits) of the run seed shown on the Title + typed into the seed
+// entry. The whole-run seed is ALREADY a `>>> 0` unsigned-32-bit int everywhere (_mintSeed / nextSeed / generateStage),
+// and a u32 is EXACTLY 8 hex digits — the most compact lossless copy-paste text form (KISS/DRY). Owned here ONCE so
+// config/seed.ts (formatSeed's padStart + parseSeed's length cap) and the Title's entry cap read the SAME width (no
+// inlined `8` — DRY). The verifier node-imports config/seed.ts and asserts the 8-hex round-trip against this owner.
+export const SEED_HEX_DIGITS = 8 // hex digits in a u32 run seed (the Title display/input width — DRY owner, AC1).
+
+// ── F-settings master-volume step (settings §5/D6, AC2) — PURE shared DATA (no Phaser) ──
+// VOLUME_STEP (D6) — the ±increment the Settings VOLUME row nudges the persisted master level by (and clamps back
+// to the literal [0,1] Phaser-volume bounds, so the 0/1 limits need no constant of their own). Owned here ONCE
+// (DRY) so the Settings scene's ←/→ edit reads the SAME step; the persisted value rides Phaser's global
+// `sound.volume`, which audio/Sound.ts already multiplies into every synthesized tone (D2 — no audio change).
+export const VOLUME_STEP = 0.1 // the Settings ±volume increment (clamped to [0,1] — the master level granularity).
+
+// ── F-touch-controls on-screen pad geometry (touch-controls §3, D2/D3) — PURE layout DATA (no Phaser) ──
+// The camera-fixed D-pad + FIRE button live in entities/TouchControls.ts (Phaser-coupled), but their px
+// geometry — like every other layout anchor in this file — is owned HERE ONCE (DRY) so the coupled UI object
+// reads a single source. NO Phaser import: the verifier still node-imports this module cleanly (programmer-art
+// rects/arcs only — the pad is synthesised from these scalars, no asset). They are plain layout scalars; no
+// verifier invariant (four-types-distinct, boss-HP, currency range) references them, so the gate is unaffected.
+
+// TOUCH_DPAD_BTN (D2) — the px side of ONE square D-pad arrow button. Four of these form the plus-shaped pad
+// (an UP/DOWN column crossing a LEFT/RIGHT row), so the whole cluster spans 3 × this each way. Sized large
+// enough for a thumb on a phone screen at the 1280×720 design resolution (FIT-letterboxed to the viewport).
+export const TOUCH_DPAD_BTN = 72 // px — one square D-pad arrow button (the plus cluster is 3× this each way).
+
+// TOUCH_DPAD_MARGIN (D2) — px from the screen's bottom-left corner to the D-pad cluster, so the pad clears the
+// letterbox edge and sits under the player's left thumb (camera-fixed, scrollFactor 0 — it does not pan).
+export const TOUCH_DPAD_MARGIN = 40 // px — inset of the D-pad cluster from the bottom-left screen edge.
+
+// TOUCH_FIRE_RADIUS (D2) — the px radius of the round FIRE button (right thumb). A large arc so a tap lands easily.
+export const TOUCH_FIRE_RADIUS = 64 // px — the round FIRE button radius (bottom-right, the right thumb).
+
+// TOUCH_FIRE_MARGIN (D2) — px from the screen's bottom-right corner to the FIRE button center's nearest edge.
+export const TOUCH_FIRE_MARGIN = 56 // px — inset of the FIRE button from the bottom-right screen edge.
+
+// TOUCH_ALPHA (D2) — the translucent fill alpha of the pad chrome so the playfield stays visible underneath
+// (the pad is overlaid above the world but below the pause modal — programmer-art, deliberately see-through).
+export const TOUCH_ALPHA = 0.35 // 0..1 — the translucent overlay alpha of the touch-pad primitives.

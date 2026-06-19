@@ -208,11 +208,16 @@ export class TileMap {
     if (kind === TILE.STEEL) {
       const cx = this._cellX(col) + TILE_SIZE / 2
       const cy = this._cellY(row) + TILE_SIZE / 2
+      // Tag each decoration with (tileCol,tileRow) + the STEEL kind so the steel-break seam (destroySteelTile)
+      // can find + drop exactly this tile's bevel/rivets when a max-star bullet breaks it (no orphan decor).
       const bevel = this.scene.add
         .rectangle(cx, cy, TILE_SIZE - 6, TILE_SIZE - 6, STEEL_BEVEL_COLOR)
         .setDepth(DEPTH_DECOR)
         .setFillStyle(STEEL_BEVEL_COLOR, 0) // a STROKE-only frame so the steel fill still shows through the center.
-        .setStrokeStyle(2, STEEL_BEVEL_COLOR)
+        .setStrokeStyle(2, STEEL_BEVEL_COLOR) as TileRect
+      bevel.tileCol = col
+      bevel.tileRow = row
+      bevel.tileKind = TILE.STEEL
       this._objects.push(bevel)
       for (const [dx, dy] of [
         [-1, -1],
@@ -222,7 +227,10 @@ export class TileMap {
       ] as const) {
         const rivet = this.scene.add
           .rectangle(cx + dx * (TILE_SIZE / 2 - RIVET_INSET), cy + dy * (TILE_SIZE / 2 - RIVET_INSET), RIVET_SIZE, RIVET_SIZE, STEEL_RIVET_COLOR)
-          .setDepth(DEPTH_DECOR)
+          .setDepth(DEPTH_DECOR) as TileRect
+        rivet.tileCol = col
+        rivet.tileRow = row
+        rivet.tileKind = TILE.STEEL
         this._objects.push(rivet)
       }
     }
@@ -304,6 +312,40 @@ export class TileMap {
     if (!rect) return
     this._brickSubCells.delete(key)
     this.solidBodies.remove(rect, true, true) // remove from the group + destroy the GameObject + its body.
+  }
+
+  // ── destroySteelTile(col,row) (the steel-break seam) ── remove a WHOLE STEEL tile: its one TILE_SIZE static
+  // body (_addSolidTile builds ONE rect per steel tile, not four sub-cells) + the bodiless bevel/rivet decoration
+  // rects so no orphan decor lingers. ONLY a max-star (tier 3) player's `canBreakSteel` bullet reaches here (the
+  // GameScene gates on `bx.canBreakSteel`); enemy/boss/sub-tier shots still clink off steel unchanged. Mirrors the
+  // brick-chip discipline (idempotent, removes rect+body via `solidBodies.remove(rect,true,true)`), whole-tile. The
+  // scene DEFERS this out of the bullet×terrain overlap step (delayedCall(0)) so no Arcade body is destroyed inside
+  // world.step iteration. Idempotent: a missing tile is a no-op — a same-tile double overlap is safe (no throw).
+  destroySteelTile(col: number, row: number): void {
+    // Find the whole-tile STEEL body in solidBodies by its (col,row) tag + STEEL kind. The group's children are
+    // the brick sub-cells + steel/base tiles; we match only the one STEEL rect for this cell. KISS — a direct
+    // scan over the handful of solid bodies (no extra map: steel-break is rare + the group is small).
+    let steelRect: TileRect | undefined
+    for (const child of this.solidBodies.getChildren()) {
+      const r = child as TileRect
+      if (r.tileKind === TILE.STEEL && r.tileCol === col && r.tileRow === row) {
+        steelRect = r
+        break
+      }
+    }
+    if (!steelRect) return // already gone (or never a steel tile here) — idempotent no-op.
+    this.solidBodies.remove(steelRect, true, true) // remove from the group + destroy the GameObject + its body.
+
+    // Drop the steel's bodiless bevel/rivet DECORATION rects (they live in _objects, tagged with tileCol/tileRow
+    // in _addSolidTile) so no orphan decor lingers over the now-empty cell. Destroy each + prune it from the list.
+    this._objects = this._objects.filter((o) => {
+      const decor = o as TileRect
+      if (decor.tileKind === TILE.STEEL && decor.tileCol === col && decor.tileRow === row) {
+        decor.destroy()
+        return false // drop it from the tracked list (already destroyed).
+      }
+      return true
+    })
   }
 
   // ── fortifyBaseRing(cells) (F5 §5.5, D4a, AC2/AC10 — the shovel rising edge) ── swap the eagle's fort-ring

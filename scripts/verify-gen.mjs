@@ -34,22 +34,30 @@ import { DEFAULT_META, loadMeta, saveMeta } from '../src/util/save.js'
 // SHARED predicates. Importing them here under node RE-PROVES their purity (a stray `import 'phaser'`
 // throws) — the convention every pure module satisfies.
 import { TILE, TILE_PROPS, isTankPassable, isBulletPassable, isDestructible } from '../src/config/tiles.js'
-import { stageConfig, hardShare, bulletSpeedScale, spawnIntervalScale, BRICK_DENSITY_MAX, STEEL_DENSITY_MAX, WATER_DENSITY_MAX, TREES_DENSITY_MAX, ICE_DENSITY_MAX, TOTAL_ENEMIES_MAX, BULLET_SPEED_SCALE_MAX } from '../src/config/stages.js'
+import { stageConfig, hardShare, bulletSpeedScale, spawnIntervalScale, difficultyPressure, BRICK_DENSITY_MAX, STEEL_DENSITY_MAX, WATER_DENSITY_MAX, TREES_DENSITY_MAX, ICE_DENSITY_MAX, TOTAL_ENEMIES_MAX, BULLET_SPEED_SCALE_MAX } from '../src/config/stages.js'
 import { generateStage, tankFits, isFortApproachWindow, windowCenter, FOOTPRINT, STAGE_MOTIFS, selectMotif, MOTIF_PARAMS } from '../src/world/LevelGenerator.js'
 // F4 PURE modules (D1/D5/D11): the tank roster + the active-run owner. Importing them here under node
 // RE-PROVES their purity (a stray `import 'phaser'` throws) — the convention every pure module satisfies.
 import { ENEMY_ARCHETYPES, ENEMY_SPECS, BASIC, FAST, POWER, ARMOR, BOSS, bossSpecForStage, PLAYER_BASE, PLAYER_STAR_TIERS, applyStarTier, rosterPick } from '../src/config/tanks.js'
-import { ARMOR_TANK_HP, SPAWN_INTERVAL_MIN_SCALE, CURRENCY_RATIO, FIRE_COOLDOWN } from '../src/config/constants.js'
-import { createRunState } from '../src/core/RunState.js'
+import { ARMOR_TANK_HP, SPAWN_INTERVAL_MIN_SCALE, CURRENCY_RATIO, FIRE_COOLDOWN, EXTRA_LIFE_SCORE, SEED_HEX_DIGITS } from '../src/config/constants.js'
+import { createRunState, extraLivesCrossed } from '../src/core/RunState.js'
+// F-seed-challenge — the PURE hex run-seed round-trip (node-imported → re-proving purity; a stray Phaser import throws).
+import { formatSeed, parseSeed } from '../src/config/seed.js'
 // ── F5 PURE modules (D1/D3/D5/D6/D12): the power-up roster, the permanent upgrade rows + applyUpgrades, and
 // the i18n core + the two dictionaries. Importing them here under node RE-PROVES their purity (a stray
 // `import 'phaser'` throws) — the convention every pure module satisfies (AC9/AC11). The Phaser-coupled
 // entities/PowerUp.ts, world/TileMap.ts, the scenes, and MetaState's storage methods are NEVER imported.
-import { POWERUPS, POWERUP_BY_ID, POWERUP_KINDS, pickPowerUpKind, HELMET_SHIELD_SEC, CLOCK_FREEZE_SEC, SHOVEL_FORTIFY_SEC } from '../src/config/powerups.js'
+import { POWERUPS, POWERUP_BY_ID, POWERUP_KINDS, pickPowerUpKind, HELMET_SHIELD_SEC, CLOCK_FREEZE_SEC, SHOVEL_FORTIFY_SEC, BOAT_SAIL_SEC, DRILL_PIERCE_SEC } from '../src/config/powerups.js'
 import { TANK_UPGRADES, TANK_UPGRADES_BY_ID, applyUpgrades } from '../src/config/tank-upgrades.js'
 import { t, tName, tDesc, setLocale } from '../src/i18n/index.js'
 import { EN } from '../src/i18n/en.js'
 import { ZH_CN } from '../src/i18n/zh-CN.js'
+// ── F-construction-mode PURE modules (construction-mode §5, D1/D3) — the custom-stage seam + the saved-grid wrapper.
+// Node-importing them RE-PROVES their purity (a stray `import 'phaser'` throws under node — the convention every
+// pure module satisfies). The verifier drives buildCustomStage's round-trip + customMap's defensive degrade/reject;
+// the Phaser-coupled editor scene (scenes/ConstructionScene.ts) is NEVER imported (it would throw under node).
+import { buildCustomStage, CUSTOM_STAGE_SEED, CUSTOM_MOTIF } from '../src/config/customStage.js'
+import { loadCustomMap, saveCustomMap, hasCustomMap } from '../src/util/customMap.js'
 
 function fail(msg) {
   console.error(`verify-gen FAILED: ${msg}`)
@@ -219,6 +227,46 @@ const STAGE_K = 30 // sweep stageConfig(0..STAGE_K) — covers multiple boss mil
       if (sis > spawnIntervalScale(prev.stageIndex) + 1e-12) fail(`stages: spawnIntervalScale increased at ${s}`)
     }
     prev = cfg
+  }
+}
+
+// ── F-difficulty-select per-level ramp sweep + no-arg IDENTITY (difficulty-select §5.6, D1/D2, AC1/AC2/AC3) ──
+// The Title difficulty is a PURE per-level SCALAR composed onto the SAME closed-form ramps then re-clamped to the
+// SAME named caps. For EACH level the ramps must STILL be bounded (∈ the caps) AND per-level monotone in the stage
+// (the scalar shifts the curve, never un-orders it); and the no-arg default MUST equal the `'normal'` path (the
+// identity — so the existing no-arg §5 sweep above is byte-unaffected). difficultyPressure is driven for ordering +
+// the unknown→1 fallback. This extends §5 WITHOUT touching the no-arg checks above (they ARE the identity case).
+{
+  // difficultyPressure: easy < normal === 1 < hard (ordered + bounded), and an unknown/garbage level → normal's 1.
+  const pe = difficultyPressure('easy')
+  const pn = difficultyPressure('normal')
+  const ph = difficultyPressure('hard')
+  if (pn !== 1) fail(`difficulty: difficultyPressure('normal') = ${pn}, expected 1 (the identity, AC1)`)
+  if (!(pe < pn)) fail(`difficulty: difficultyPressure('easy') (${pe}) not < normal (${pn}) — AC2`)
+  if (!(ph > pn)) fail(`difficulty: difficultyPressure('hard') (${ph}) not > normal (${pn}) — AC2`)
+  if (difficultyPressure('__nope__') !== pn) fail(`difficulty: an unknown level must fall back to normal's 1.0 (AC2)`)
+
+  // For each level, sweep both ramps over 0..STAGE_K: bounded ∈ the caps + per-level monotone. Each scalar is a
+  // per-level CONSTANT, so a fixed level cannot un-order the curve (bullet non-decreasing / spawn non-increasing).
+  for (const d of ['easy', 'normal', 'hard']) {
+    let prevB = null
+    let prevS = null
+    for (let s = 0; s <= STAGE_K; s++) {
+      const b = bulletSpeedScale(s, d)
+      const i = spawnIntervalScale(s, d)
+      if (b < 1 || b > BULLET_SPEED_SCALE_MAX) fail(`difficulty: bulletSpeedScale(${s}, '${d}') = ${b} out of [1,${BULLET_SPEED_SCALE_MAX}] (AC3)`)
+      if (i < SPAWN_INTERVAL_MIN_SCALE || i > 1) fail(`difficulty: spawnIntervalScale(${s}, '${d}') = ${i} out of [${SPAWN_INTERVAL_MIN_SCALE},1] (AC3)`)
+      if (prevB !== null && b < prevB - 1e-12) fail(`difficulty: bulletSpeedScale decreased at ${s} for '${d}' (AC3)`)
+      if (prevS !== null && i > prevS + 1e-12) fail(`difficulty: spawnIntervalScale increased at ${s} for '${d}' (AC3)`)
+      prevB = b
+      prevS = i
+    }
+  }
+
+  // The no-arg default IS the 'normal' identity (so the existing no-arg §5 sweep above is byte-unaffected — AC3).
+  for (let s = 0; s <= STAGE_K; s++) {
+    if (bulletSpeedScale(s) !== bulletSpeedScale(s, 'normal')) fail(`difficulty: bulletSpeedScale(${s}) != bulletSpeedScale(${s}, 'normal') — the no-arg default must be the identity (AC3)`)
+    if (spawnIntervalScale(s) !== spawnIntervalScale(s, 'normal')) fail(`difficulty: spawnIntervalScale(${s}) != spawnIntervalScale(${s}, 'normal') — the no-arg default must be the identity (AC3)`)
   }
 }
 
@@ -437,7 +485,7 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
 // determinism), NOT gameplay balance (the HONEST scope — D11).
 // ════════════════════════════════════════════════════════════════════════════════════════════
 {
-  const KNOWN_BEHAVIORS = new Set(['basic', 'fast', 'power', 'armor', 'player', 'boss']) // F6 (D1) — + the boss tag.
+  const KNOWN_BEHAVIORS = new Set(['basic', 'fast', 'power', 'armor', 'player', 'boss', 'stealth']) // F6 (D1) — + boss; stealth-enemy (D1) — + the stealth tag.
 
   // ── 7a) Every TankSpec is well-formed (AC4) ── positive numbers, a known behaviour, sane caps. Swept over
   // the four enemy archetypes + the player base + every star tier's folded spec (applyStarTier(t)).
@@ -458,10 +506,13 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
   if (ARMOR.maxHp !== ARMOR_TANK_HP) fail(`tanks: ARMOR.maxHp = ${ARMOR.maxHp} != ARMOR_TANK_HP ${ARMOR_TANK_HP}`)
   if (ARMOR_TANK_HP !== 4) fail(`tanks: ARMOR_TANK_HP = ${ARMOR_TANK_HP}, expected 4 (the four-flash armor tank, F4)`)
 
-  // ── 7c) The four enemy types DIFFER on a tunable stat (AC4) ── pairwise distinct on at least one of
+  // ── 7c) EVERY enemy archetype DIFFERS on a tunable stat (AC4) ── pairwise distinct on at least one of
   // {moveSpeed, bulletSpeed, maxHp}. A regression that makes two types identical fails loudly (AC4 is a data
   // check, not eyeballing). FAST out-moves BASIC; POWER out-shoots BASIC; ARMOR out-HPs BASIC (the spec intent).
-  const types = [BASIC, FAST, POWER, ARMOR]
+  // stealth-enemy (§5.5): the sweep is over the REAL `ENEMY_ARCHETYPES` (re-derived from the source, NOT a literal
+  // [BASIC,FAST,POWER,ARMOR]), so the 5th type (STEALTH — distinct on moveSpeed) is checked + a future 6th needs no
+  // edit here (DRY). The named-spec spot-checks below still pin the classic four's distinguishing axes by name.
+  const types = ENEMY_ARCHETYPES
   for (let i = 0; i < types.length; i++) {
     for (let j = i + 1; j < types.length; j++) {
       const a = types[i]
@@ -490,7 +541,7 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
   }
   // A degenerate all-zero roster falls back to a known id (the total fold — never undefined).
   {
-    const id = rosterPick(mulberry32(1), { basic: 0, fast: 0, power: 0, armor: 0 })
+    const id = rosterPick(mulberry32(1), { basic: 0, fast: 0, power: 0, armor: 0, stealth: 0 }) // stealth-enemy: + the 5th weight.
     if (!(id in ENEMY_SPECS)) fail(`tanks: rosterPick({all 0}) returned unknown id ${id}`)
   }
 
@@ -564,7 +615,10 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
     for (const spec of ENEMY_ARCHETYPES) {
       if (spec.behavior === 'boss' || spec.id === 'boss') fail(`tanks: the BOSS must NOT be in ENEMY_ARCHETYPES (D3)`)
     }
-    if (ENEMY_ARCHETYPES.length !== 4) fail(`tanks: ENEMY_ARCHETYPES has ${ENEMY_ARCHETYPES.length} specs, expected 4 (the boss is not weighted in — D3)`)
+    // stealth-enemy (§5.5): the count pin is RE-DERIVED — the ordered roster + the id→spec lookup must AGREE
+    // (`ENEMY_ARCHETYPES.length === Object.keys(ENEMY_SPECS).length`), NOT a magic `4`. This keeps the "boss absent
+    // from the roster" intent (the boss is in neither) while a 5th (stealth) or future Nth type needs no edit here.
+    if (ENEMY_ARCHETYPES.length !== Object.keys(ENEMY_SPECS).length) fail(`tanks: ENEMY_ARCHETYPES (${ENEMY_ARCHETYPES.length}) and ENEMY_SPECS (${Object.keys(ENEMY_SPECS).length}) disagree (the roster + the lookup must match; the boss is in neither — D3)`)
   }
 
   // ── 7h) F6 balance-scalar guards (F6 §7, D10/issue #3, AC8) ── the constants.ts SCALARS the existing sweeps do
@@ -593,8 +647,22 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
     const cfg0 = stageConfig(0)
     if (a.stageIndex !== 0) fail(`RunState: fresh stageIndex = ${a.stageIndex}, expected 0`)
     if (a.score !== 0) fail(`RunState: fresh score = ${a.score}, expected 0`)
+    // (extra-life, D2, AC2) — the carried 1UP threshold is SEEDED to EXTRA_LIFE_SCORE on a fresh run.
+    if (a.nextExtraLifeScore !== EXTRA_LIFE_SCORE)
+      fail(`RunState: fresh nextExtraLifeScore = ${a.nextExtraLifeScore}, expected ${EXTRA_LIFE_SCORE} (extra-life AC2)`)
     if (a.enemiesQueued !== cfg0.totalEnemies || a.enemiesRemaining !== cfg0.totalEnemies || a.enemiesAlive !== 0)
       fail(`RunState: fresh spawn ledger not seeded from stageConfig(0)`)
+    // ── F-difficulty-select deep start (difficulty-select §5.6, D5, AC4) ── the OPTIONAL startStage arg seeds the
+    // run-global stageIndex + its ledger from stageConfig(startStage), NOT stage 0. The no-arg form above still
+    // seeds stageIndex === 0 (asserted just above — every existing call site is byte-unchanged). A non-zero start
+    // begins the run deep (a "skip to stage N" practice run); advance() then keeps climbing from there.
+    {
+      const deep = createRunState(RS_SEED, { 1: { lives: 3, tier: 0 } }, 7)
+      const cfg7 = stageConfig(7)
+      if (deep.stageIndex !== 7) fail(`RunState: createRunState(..., 7) stageIndex = ${deep.stageIndex}, expected 7 (AC4)`)
+      if (deep.enemiesQueued !== cfg7.totalEnemies || deep.enemiesRemaining !== cfg7.totalEnemies || deep.enemiesAlive !== 0)
+        fail(`RunState: createRunState(..., 7) spawn ledger not seeded from stageConfig(7) (AC4)`)
+    }
     for (const slot of Object.keys(FRESH)) {
       const s = Number(slot)
       if (a.lives[s] !== 3) fail(`RunState: fresh lives[${s}] = ${a.lives[s]}, expected 3`)
@@ -602,6 +670,11 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
       if (a.shieldTimer[s] !== 0) fail(`RunState: fresh shieldTimer[${s}] = ${a.shieldTimer[s]}, expected 0 (the identity)`)
     }
     if (a.freezeTimer !== 0 || a.shovelTimer !== 0) fail(`RunState: fresh power-up timers not 0 (the neutral identity)`)
+    // (stage-bonus, D1, AC1) — the per-stage kills-by-type ledger seeds every roster id (basic/fast/power/armor/
+    // boss) to 0 on a fresh run (a fresh stage starts at 0 kills — the tally counts only the stage just cleared).
+    for (const id of ['basic', 'fast', 'power', 'armor', 'boss']) {
+      if (a.killsByStage[id] !== 0) fail(`RunState: fresh killsByStage['${id}'] = ${a.killsByStage[id]}, expected 0 (stage-bonus AC1)`)
+    }
     // Mutate a's carried state, then drive advance() — the carried score/lives/tier must SURVIVE advance (D10).
     a.score = 4200
     a.lives[1] = 1
@@ -618,6 +691,32 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
       if (a.enemiesQueued !== cfg.totalEnemies || a.enemiesAlive !== 0) fail(`RunState: ledger not reseeded at step ${i}`)
       if (a.score !== 4200) fail(`RunState: score NOT carried across advance() (got ${a.score}) — D10`)
       if (a.lives[1] !== 1) fail(`RunState: lives NOT carried across advance() — D10`)
+      // (extra-life, D2, AC2) — the 1UP threshold is CARRIED untouched across advance() (like score — it survives a
+      // stage advance so the milestone fires once per crossing across the whole run).
+      if (a.nextExtraLifeScore !== EXTRA_LIFE_SCORE)
+        fail(`RunState: nextExtraLifeScore NOT carried across advance() (got ${a.nextExtraLifeScore}) — extra-life AC2`)
+    }
+
+    // ── extraLivesCrossed(prevThreshold, score, step) is a PURE, tested helper (extra-life D1/D3, AC3) ── drive a
+    // case table over the ONE implementation GameScene calls: no crossing → lives 0, threshold unchanged; an exact
+    // hit → lives 1, threshold +step; a SINGLE big jump crossing TWO thresholds at once (the boss/grenade edge) →
+    // lives 2; and EVERY return's nextThreshold is strictly > score (the loop terminator invariant).
+    {
+      const S = EXTRA_LIFE_SCORE
+      const below = extraLivesCrossed(S, S - 1, S) // just under the first milestone — no crossing.
+      if (below.lives !== 0) fail(`extraLivesCrossed: (S, S-1, S) lives = ${below.lives}, expected 0 (no crossing)`)
+      if (below.nextThreshold !== S) fail(`extraLivesCrossed: no-cross must leave nextThreshold = ${S} (got ${below.nextThreshold})`)
+      const one = extraLivesCrossed(S, S, S) // exactly at the first milestone — one 1UP.
+      if (one.lives !== 1) fail(`extraLivesCrossed: (S, S, S) lives = ${one.lives}, expected 1`)
+      if (one.nextThreshold !== 2 * S) fail(`extraLivesCrossed: (S, S, S) nextThreshold = ${one.nextThreshold}, expected ${2 * S}`)
+      const two = extraLivesCrossed(S, 2 * S + 1, S) // a single jump past TWO milestones (the boss/grenade edge — D3).
+      if (two.lives !== 2) fail(`extraLivesCrossed: (S, 2S+1, S) lives = ${two.lives}, expected 2 (two-at-once)`)
+      if (two.nextThreshold !== 3 * S) fail(`extraLivesCrossed: (S, 2S+1, S) nextThreshold = ${two.nextThreshold}, expected ${3 * S}`)
+      // Every return's nextThreshold is strictly > score (the loop self-terminates since step > 0 — AC3).
+      for (const [prev, score] of [[S, S - 1], [S, S], [S, 2 * S + 1], [S, 5 * S]]) {
+        const r = extraLivesCrossed(prev, score, S)
+        if (!(r.nextThreshold > score)) fail(`extraLivesCrossed: nextThreshold (${r.nextThreshold}) not > score (${score}) — AC3`)
+      }
     }
 
     // ── The per-slot lives/tier fold reaches run start (F5 D5b, AC6) ── a seeded { lives:5, tier:2 } map yields
@@ -658,10 +757,66 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
       if (r.shieldTimer[1] !== 0) fail(`RunState: advance() did NOT reset shieldTimer (AC3)`)
     }
 
+    // ── tallyKill(id) increments the per-stage kills-by-type ledger + advance() resets it (stage-bonus D1, AC1) ──
+    // tallyKill('basic') etc. bump the matching count; an id OUTSIDE the roster no-ops (no stray key, defensive).
+    // advance() then RESETS every count to 0 (a fresh stage starts at 0 kills — the SAME lifecycle as the spawn
+    // ledger). The carried economy (score/lives) is UNTOUCHED by either (the D10 invariant holds for the new field).
+    {
+      const r = createRunState(0xba5, { 1: { lives: 3, tier: 0 } })
+      r.score = 555
+      r.tallyKill('basic')
+      r.tallyKill('basic')
+      r.tallyKill('armor')
+      r.tallyKill('boss')
+      r.tallyKill('__nope__') // an unknown id must NO-OP (no stray key, no throw).
+      if (r.killsByStage.basic !== 2) fail(`RunState: tallyKill('basic')×2 → killsByStage.basic = ${r.killsByStage.basic}, expected 2 (AC1)`)
+      if (r.killsByStage.armor !== 1) fail(`RunState: tallyKill('armor') → killsByStage.armor = ${r.killsByStage.armor}, expected 1 (AC1)`)
+      if (r.killsByStage.boss !== 1) fail(`RunState: tallyKill('boss') → killsByStage.boss = ${r.killsByStage.boss}, expected 1 (AC1)`)
+      if (r.killsByStage.fast !== 0 || r.killsByStage.power !== 0) fail(`RunState: tallyKill bumped an untouched type (AC1)`)
+      if ('__nope__' in r.killsByStage) fail(`RunState: tallyKill('__nope__') created a stray key (must no-op an unknown id, AC1)`)
+      if (r.score !== 555) fail(`RunState: tallyKill must NOT touch the carried score (D10)`)
+      // advance() resets every count to 0 (the fresh stage starts at 0 kills — stage-bonus AC1).
+      r.advance()
+      for (const id of ['basic', 'fast', 'power', 'armor', 'boss']) {
+        if (r.killsByStage[id] !== 0) fail(`RunState: advance() did NOT reset killsByStage['${id}'] (= ${r.killsByStage[id]}, expected 0) — stage-bonus AC1`)
+      }
+      if (r.score !== 555) fail(`RunState: advance() must carry the score across (D10) — got ${r.score}`)
+    }
+
     // isBossStage() tracks stageConfig.isBoss (the boss-feature seam). Drive a fresh run to a boss stage.
     const c = createRunState(1, { 1: { lives: 3, tier: 0 } })
     while (c.stageIndex < BOSS_STAGE_EVERY - 1) c.advance()
     if (!c.isBossStage()) fail(`RunState: isBossStage() false at the first boss stage (index ${c.stageIndex})`)
+  }
+
+  // ── 7i) F-seed-challenge — the PURE hex run-seed round-trip (seed-challenge §5.6, D1/D5, AC1/AC2) ── formatSeed/
+  // parseSeed are PURE (node-imported above → re-proving purity). The verifier proves the TOTAL/round-trip contract:
+  // parseSeed reads ≤ SEED_HEX_DIGITS hex (0x/#/whitespace-stripped) → a u32, returns null on empty/invalid/over-long
+  // (never throws); formatSeed is an 8-char zero-padded UPPER hex of `seed >>> 0`; the two round-trip on any valid
+  // 8-hex string. §7f already proves the seed CHAIN from a fixed seed — this only nails the text codec (the new bit).
+  {
+    if (SEED_HEX_DIGITS !== 8) fail(`seed: SEED_HEX_DIGITS = ${SEED_HEX_DIGITS}, expected 8 (a u32 is 8 hex digits, AC1)`)
+    // parseSeed — a valid value parses to the right u32; the 0x prefix is stripped; casing is irrelevant.
+    if ((parseSeed('1A2B3C4D') >>> 0) !== 0x1a2b3c4d) fail(`seed: parseSeed('1A2B3C4D') !== 0x1A2B3C4D (AC2)`)
+    if ((parseSeed('0xFF') >>> 0) !== 255) fail(`seed: parseSeed('0xFF') !== 255 (0x prefix not stripped, AC2)`)
+    if ((parseSeed('  deadbeef  ') >>> 0) !== 0xdeadbeef) fail(`seed: parseSeed(' deadbeef ') !== 0xDEADBEEF (trim/case, AC2)`)
+    // parseSeed — empty / non-hex / over-long (> 8 digits, overflows a u32) → null (never throws — AC2/AC3).
+    if (parseSeed('') !== null) fail(`seed: parseSeed('') must be null (empty input, AC2)`)
+    if (parseSeed('xyz') !== null) fail(`seed: parseSeed('xyz') must be null (non-hex, AC2)`)
+    if (parseSeed('123456789') !== null) fail(`seed: parseSeed('123456789') must be null (> 8 digits, AC2)`)
+    // formatSeed — 8-char zero-padded UPPER hex of `seed >>> 0`.
+    if (formatSeed(0) !== '00000000') fail(`seed: formatSeed(0) = '${formatSeed(0)}', expected '00000000' (AC2)`)
+    if (formatSeed(0xdeadbeef) !== 'DEADBEEF') fail(`seed: formatSeed(0xDEADBEEF) = '${formatSeed(0xdeadbeef)}', expected 'DEADBEEF' (AC2)`)
+    if (formatSeed(15) !== '0000000F') fail(`seed: formatSeed(15) = '${formatSeed(15)}', expected '0000000F' (pad, AC2)`)
+    // Round-trip — formatSeed(parseSeed(s)) === s.toUpperCase() for any valid 8-hex string (the codec is lossless).
+    for (const s of ['00000000', 'DEADBEEF', '0000000F', '1a2b3c4d', 'FFFFFFFF']) {
+      const round = formatSeed(parseSeed(s))
+      if (round !== s.toUpperCase()) fail(`seed: round-trip formatSeed(parseSeed('${s}')) = '${round}', expected '${s.toUpperCase()}' (AC2)`)
+    }
+    // Belt-and-suspenders (D5) — a parsed seed seeds the run verbatim (the GameScene seam: createRunState(parseSeed(s))).
+    const cafe = parseSeed('CAFEBABE')
+    if (createRunState(cafe, { 1: { lives: 3, tier: 0 } }).seed !== (cafe >>> 0))
+      fail(`seed: createRunState(parseSeed('CAFEBABE')).seed did not equal the parsed seed (the GameScene seam, AC4)`)
   }
 }
 
@@ -672,9 +827,10 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
 // fold + pick determinism + the i18n structure), NOT gameplay balance (the HONEST scope — D11).
 // ════════════════════════════════════════════════════════════════════════════════════════════
 {
-  // ── 8a) Power-up roster well-formed (AC1/AC2) ── all six kinds present; every PowerUpDef has a numeric colour
-  // + a duration ≥ 0; the THREE timed kinds (helmet/clock/shovel) carry a duration > 0; the lookup is total.
-  const EXPECTED_KINDS = ['helmet', 'clock', 'shovel', 'star', 'grenade', 'tank']
+  // ── 8a) Power-up roster well-formed (AC1/AC2 + boat-drill) ── all EIGHT kinds present; every PowerUpDef has a
+  // numeric colour + a duration ≥ 0; the FIVE timed kinds (helmet/clock/shovel/boat/drill) carry a duration > 0;
+  // the THREE instant kinds (star/grenade/tank) carry 0; the lookup is total.
+  const EXPECTED_KINDS = ['helmet', 'clock', 'shovel', 'star', 'grenade', 'tank', 'boat', 'drill']
   for (const kind of EXPECTED_KINDS) {
     if (!POWERUP_KINDS.includes(kind)) fail(`powerups: kind '${kind}' missing from POWERUP_KINDS`)
     const def = POWERUP_BY_ID[kind]
@@ -684,7 +840,7 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
     if (typeof def.durationSec !== 'number' || def.durationSec < 0) fail(`powerups: def '${kind}'.durationSec = ${def.durationSec} invalid`)
   }
   if (POWERUPS.length !== EXPECTED_KINDS.length) fail(`powerups: POWERUPS has ${POWERUPS.length} defs, expected ${EXPECTED_KINDS.length}`)
-  for (const timed of ['helmet', 'clock', 'shovel']) {
+  for (const timed of ['helmet', 'clock', 'shovel', 'boat', 'drill']) {
     if (!(POWERUP_BY_ID[timed].durationSec > 0)) fail(`powerups: timed kind '${timed}' must have durationSec > 0`)
   }
   for (const instant of ['star', 'grenade', 'tank']) {
@@ -694,6 +850,8 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
   if (POWERUP_BY_ID.helmet.durationSec !== HELMET_SHIELD_SEC) fail(`powerups: helmet duration != HELMET_SHIELD_SEC`)
   if (POWERUP_BY_ID.clock.durationSec !== CLOCK_FREEZE_SEC) fail(`powerups: clock duration != CLOCK_FREEZE_SEC`)
   if (POWERUP_BY_ID.shovel.durationSec !== SHOVEL_FORTIFY_SEC) fail(`powerups: shovel duration != SHOVEL_FORTIFY_SEC`)
+  if (POWERUP_BY_ID.boat.durationSec !== BOAT_SAIL_SEC) fail(`powerups: boat duration != BOAT_SAIL_SEC`)
+  if (POWERUP_BY_ID.drill.durationSec !== DRILL_PIERCE_SEC) fail(`powerups: drill duration != DRILL_PIERCE_SEC`)
 
   // ── 8b) pickPowerUpKind is total + deterministic (AC1) ── over a long draw it ONLY ever returns a known kind;
   // two fresh rngs from the SAME seed → the SAME kind sequence (the seeded drop the carrier death relies on, D3).
@@ -798,22 +956,105 @@ for (let i = 0; i < SWEEP_SEEDS; i++) {
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// 9) F-construction-mode — the custom-stage seam + the saved-grid wrapper (construction-mode §5, D1/D3).
+// Both modules are PURE (node-imported above → re-proving purity, AC6). The verifier proves DATA properties:
+// buildCustomStage is TOTAL + returns a VALID StageDescription (the SAME shape generateStage emits — one base,
+// 3 enemy + 2 player spawns, 17×17 GRID-SPACE tiles, window-center coords) for an authored grid; and customMap's
+// loadCustomMap degrades to null under a no-DOM/disabled storage (node) + saveCustomMap REJECTS a malformed grid.
+// The PROCEDURAL generator is byte-untouched (buildCustomStage is a SEPARATE function), so §5/§6 stay green by construction.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+{
+  // A hand-authored 17×17 grid: all EMPTY with a few terrain cells + ONE painted BASE (at a NON-default cell so the
+  // base-derivation is exercised, not the bottom-center fallback). RE-derived from the SAME GRID_*/TILE owners (DRY).
+  const grid = []
+  for (let r = 0; r < GRID_ROWS; r++) grid.push(new Array(GRID_COLS).fill(TILE.EMPTY))
+  grid[5][5] = TILE.BRICK
+  grid[6][6] = TILE.STEEL
+  grid[7][7] = TILE.WATER
+  grid[8][8] = TILE.TREES
+  grid[9][9] = TILE.ICE
+  const BASE_COL = 3
+  const BASE_ROW = 10
+  grid[BASE_ROW][BASE_COL] = TILE.BASE // a NON-default base cell (not bottom-center) — exercises the base scan.
+
+  const d = buildCustomStage(grid)
+  // The description shape EXACTLY matches the procedural one (so the WHOLE downstream is reused — D1).
+  if (d.cols !== GRID_COLS || d.rows !== GRID_ROWS) fail(`custom: dims ${d.cols}x${d.rows}, expected ${GRID_COLS}x${GRID_ROWS} (D1)`)
+  if (d.tiles.length !== GRID_ROWS) fail(`custom: tiles has ${d.tiles.length} rows, expected ${GRID_ROWS}`)
+  // The tiles are the AUTHORED grid (GRID-SPACE ints) — every cell a known tile + the painted terrain preserved.
+  const validTiles = new Set(Object.values(TILE))
+  for (let r = 0; r < GRID_ROWS; r++) {
+    if (d.tiles[r].length !== GRID_COLS) fail(`custom: row ${r} has ${d.tiles[r].length} cols, expected ${GRID_COLS}`)
+    for (let c = 0; c < GRID_COLS; c++) {
+      if (!validTiles.has(d.tiles[r][c])) fail(`custom: invalid tile ${d.tiles[r][c]} at (${c},${r})`)
+    }
+  }
+  if (d.tiles[5][5] !== TILE.BRICK || d.tiles[7][7] !== TILE.WATER) fail(`custom: authored terrain not preserved in tiles (D1)`)
+  // Exactly ONE BASE tile (D5 — the editor keeps at most one) at the painted cell, with the window-center coords (D13).
+  let baseCount = 0
+  for (let r = 0; r < GRID_ROWS; r++) for (let c = 0; c < GRID_COLS; c++) if (d.tiles[r][c] === TILE.BASE) baseCount++
+  if (baseCount !== 1) fail(`custom: expected exactly 1 BASE tile, found ${baseCount} (D5)`)
+  if (d.base.col !== BASE_COL || d.base.row !== BASE_ROW) fail(`custom: base.col/row (${d.base.col},${d.base.row}) != painted (${BASE_COL},${BASE_ROW}) (D5)`)
+  {
+    const wc = windowCenter(BASE_COL, BASE_ROW)
+    if (d.base.x !== wc.x || d.base.y !== wc.y) fail(`custom: base (x,y) != window-center (D13)`)
+  }
+  // 3 enemy + 2 player spawns, each a window-center anchor (the SAME placement generateStage uses — D1).
+  if (d.enemySpawns.length !== 3) fail(`custom: expected 3 enemy spawns, got ${d.enemySpawns.length} (D1)`)
+  if (d.playerSpawns.length !== 2) fail(`custom: expected 2 player spawns, got ${d.playerSpawns.length} (D1)`)
+  for (const s of [...d.enemySpawns, ...d.playerSpawns]) {
+    const wc = windowCenter(s.col, s.row)
+    if (s.x !== wc.x || s.y !== wc.y) fail(`custom: spawn ${s.which} (x,y) != window-center (D13)`)
+    if (s.col < 0 || s.row < 0 || s.col >= GRID_COLS || s.row >= GRID_ROWS) fail(`custom: spawn ${s.which} out of bounds`)
+  }
+  // The metadata: the sentinel seed, the 'custom' motif, stage 0, not a boss (D1/D7).
+  if (d.seed !== CUSTOM_STAGE_SEED) fail(`custom: seed ${d.seed} != CUSTOM_STAGE_SEED ${CUSTOM_STAGE_SEED}`)
+  if (d.motif !== CUSTOM_MOTIF) fail(`custom: motif '${d.motif}' != CUSTOM_MOTIF '${CUSTOM_MOTIF}'`)
+  if (d.stageIndex !== 0) fail(`custom: stageIndex ${d.stageIndex}, expected 0 (stage 0 only — D7)`)
+  if (d.isBoss !== false) fail(`custom: isBoss ${d.isBoss}, expected false`)
+
+  // TOTALITY (D1): an UN-authored grid (no BASE painted) still yields a valid description — base defaults to
+  // bottom-center (the generator's `(floor(cols/2), rows-1)`), so a map without a hand-placed eagle is PLAYABLE.
+  const noBase = []
+  for (let r = 0; r < GRID_ROWS; r++) noBase.push(new Array(GRID_COLS).fill(TILE.EMPTY))
+  const dn = buildCustomStage(noBase)
+  if (dn.base.col !== Math.floor(GRID_COLS / 2) || dn.base.row !== GRID_ROWS - 1)
+    fail(`custom: no-base default not bottom-center (got ${dn.base.col},${dn.base.row}) (D5)`)
+
+  // ── customMap (D3) ── under node (no DOM/localStorage) loadCustomMap degrades to null + hasCustomMap is false
+  // (save.ts's get returns the fallback — never throws). saveCustomMap REJECTS a malformed grid (wrong dims / a bad
+  // cell value) → false, so a corrupt in-memory grid can never poison the saved slot; a valid grid's save attempt
+  // does not throw (returns true/false depending on the no-DOM storage — either is fine, the point is it never throws).
+  if (loadCustomMap() !== null) fail(`customMap: loadCustomMap() under node must degrade to null (no DOM storage, D3)`)
+  if (hasCustomMap() !== false) fail(`customMap: hasCustomMap() under node must be false (no DOM storage, D3)`)
+  if (saveCustomMap([[TILE.EMPTY]]) !== false) fail(`customMap: saveCustomMap(wrong-dims) must be rejected → false (D3)`)
+  const badCell = []
+  for (let r = 0; r < GRID_ROWS; r++) badCell.push(new Array(GRID_COLS).fill(TILE.EMPTY))
+  badCell[0][0] = 999 // an out-of-range tile int — a corrupt cell.
+  if (saveCustomMap(badCell) !== false) fail(`customMap: saveCustomMap(bad-cell) must be rejected → false (D3)`)
+  saveCustomMap(grid) // a VALID grid — must NOT throw (the no-DOM set returns false; the point is it degrades safely).
+}
+
 console.log(
   `verify-gen OK: rng deterministic + pinned; constants ${GRID_COLS}x${GRID_ROWS} (pure node-import); ` +
     `save clone-no-alias; tiles TILE_PROPS total + helpers read the table; ` +
     `stages monotonic over stageConfig(0..${STAGE_K}) (densities+counts+hardShare+boss cadence + F4 bulletSpeed/spawnInterval ramps, D16/F4-AC6); ` +
+    `F-difficulty per-level ramps bounded+monotone + no-arg===normal-identity + difficultyPressure ordered/unknown→1 + deep-start seeds stageIndex/ledger (difficulty-select AC1/AC2/AC3/AC4); ` +
     `stage sweep ${SWEEP_SEEDS} seeds × ${SWEEP_STAGES.length} stages — determinism + bounds (≤scatterCells, D14) + ` +
     `eagle enclosed&reachable (footprint BFS, D15) + spawn validity & window-center pin (D13); ` +
     `F7 motifs known/deterministic + selectMotif total + shape-space-used (${SWEEP_MOTIFS.size} distinct) (F7 AC1/AC2/AC3); ` +
     `regression pin (D10, F7-repinned +motif); ` +
-    `F4 roster well-formed + 4 types distinct + rosterPick known/deterministic + applyStarTier monotone + ` +
+    `F4 roster well-formed + ${ENEMY_ARCHETYPES.length} types distinct (incl. stealth-enemy) + rosterPick known/deterministic + applyStarTier monotone + ` +
     `F6 BOSS well-formed (heavier-than-armor HP + telegraph>0 + heavier-fire bulletSpeed≥POWER/fireCooldown≤BASIC) + ` +
     `bossSpecForStage monotone/never-weaker/fire-unscaled + boss absent from roster (D3) + balance guards ` +
     `(0<CURRENCY_RATIO<1, FIRE_COOLDOWN>0) (F6 AC2/AC8/AC9); ` +
     `RunState.advance() deterministic & stageIndex strictly increasing & economy carried + per-slot seed fold + ` +
-    `tickTimers decay/clamp + advance-reset (F5 D5b/D5c/AC3/AC6); ` +
-    `F5 power-ups well-formed (6 kinds, durations, pickPowerUpKind deterministic) + upgrade rows cost-monotone + ` +
+    `tickTimers decay/clamp + advance-reset (F5 D5b/D5c/AC3/AC6) + killsByStage seeds-0/tallyKill-increments/advance-resets (stage-bonus AC1); ` +
+    `F5 power-ups well-formed (8 kinds incl. boat+drill, durations, pickPowerUpKind deterministic) + upgrade rows cost-monotone + ` +
     `applyUpgrades identity/never-weaker/graceful + i18n structure (ZH⊆EN, content keyed to real rows, fallback chain) ` +
+    `+ F-seed-challenge formatSeed/parseSeed pure round-trip+clamp+null (8-hex u32, seed-challenge AC1/AC2) ` +
+    `+ F-construction-mode buildCustomStage total/valid (1 base, 3+2 spawns, 17×17, window-center) + customMap degrade-null/reject-corrupt (construction-mode AC6); ` +
     `(pure node-import, AC1/AC2/AC6/AC9/AC11). (FOOTPRINT=${FOOTPRINT} tiles.)`,
 )
 process.exit(0)

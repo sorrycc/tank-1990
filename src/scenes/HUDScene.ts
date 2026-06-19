@@ -30,6 +30,12 @@ const QUEUE_ICON = 12 // px — one icon pip (a small programmer-art tank square
 const QUEUE_GAP = 4 // px — spacing between icons (so a full grid stays inside HUD_PANEL_WIDTH).
 const QUEUE_COLOR = 0xf0932b // orange — matches the enemies-left readout (the pressure cue).
 
+// (stage-bonus §5.4, D5, AC2) — the between-stage bonus-tally PANEL geometry (a framed rect behind the centered
+// multi-line tally Text). Sized to sit comfortably inside the playfield with margin for ~7 lines; a coupled-scene
+// layout tunable (not a shared pure number), so it lives here, not in constants.ts (the SAME "local detail" rule).
+const TALLY_PANEL_W = 360 // px — the bonus-panel width (fits the longest localised row with margin).
+const TALLY_PANEL_H = 300 // px — the bonus-panel height (title + up to five type rows + bonus + total, with margin).
+
 export class HUDScene extends Phaser.Scene {
   // One fixed Text per readout line (created once in create(), updated in place each frame — DRY, no per-frame
   // GameObject churn). The P2-lives line is created but hidden in 1P (TWO_PLAYER false — AC8).
@@ -56,6 +62,18 @@ export class HUDScene extends Phaser.Scene {
   // `hud.stageIntro` while the curtain is up ('' otherwise), so the HUD just mirrors it (the SAME registry-
   // decoupled pattern as the STAGE-N-CLEARED banner above — GameScene owns WHEN, the HUD owns HOW).
   private introLabel!: Phaser.GameObjects.Text
+  // (extra-life §5.4, D5, AC5): the centered 1UP "EXTRA LIFE" cue — GameScene publishes the localised string to
+  // `hud.oneUp` while its timer is live ('' otherwise), so the HUD just mirrors it (the SAME registry-decoupled
+  // pattern as the clear/intro banner — GameScene owns WHEN, the HUD owns HOW). A distinct GOLD celebratory tint
+  // + its OWN geometry/depth, placed CLEAR of the clear/intro banner (offset below center) so a same-frame
+  // overlap stays legible. Blank otherwise (never a stray render).
+  private oneUpLabel!: Phaser.GameObjects.Text
+  // (stage-bonus §5.4, D5, AC2): the between-stage bonus tally — GameScene publishes the FULLY-FORMATTED multi-line
+  // block to `hud.tally` while the window is up ('' otherwise), so the HUD just mirrors it into one centered Text on
+  // a framed programmer-art panel (the SAME registry-decoupled idiom as the clear/intro banner — GameScene owns WHEN
+  // + the formatting, the HUD owns layout). Its OWN key + geometry/depth so it never clobbers the other banners.
+  private tallyPanel!: Phaser.GameObjects.Rectangle
+  private tallyLabel!: Phaser.GameObjects.Text
 
   constructor() {
     super('HUD')
@@ -145,6 +163,44 @@ export class HUDScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(10)
 
+    // (extra-life §5.4, D5, AC5) — the centered 1UP "EXTRA LIFE" cue: a CENTERED timed text overlay over the
+    // playfield, mirrored from `hud.oneUp`. A distinct GOLD celebratory tint (the 1UP juice); placed BELOW the
+    // playfield center (offset by ~1/5 the height) so it sits CLEAR of the clear/intro banner (which centers) and
+    // a same-frame overlap stays legible. Its own depth (above the readouts). Blank until GameScene arms a crossing.
+    this.oneUpLabel = this.add
+      .text(PLAYFIELD_X + PLAYFIELD_W / 2, PLAYFIELD_Y + PLAYFIELD_H * 0.7, '', {
+        fontFamily: UI_FONT,
+        fontSize: '36px',
+        color: '#ffd700', // gold — the celebratory 1UP tint (distinct from the gold clear banner's geometry).
+        fontStyle: 'bold',
+        align: 'center',
+      })
+      .setOrigin(0.5)
+      .setDepth(10)
+
+    // (stage-bonus §5.4, D5, AC2) — the between-stage bonus tally: a framed programmer-art PANEL + a centered
+    // multi-line Text mirrored from `hud.tally`. Centered over the playfield off the FIXED design resolution
+    // (PLAYFIELD_X/Y/W/H — the single layout owners), a HIGHER depth than the banners so the tally reads on top of
+    // the just-armed clear banner. A neutral dark fill + a gold outline (distinct from the gold clear banner's plain
+    // text). Both hidden until GameScene publishes a non-empty block (the SAME mirror discipline as bannerLabel).
+    this.tallyPanel = this.add
+      .rectangle(PLAYFIELD_X + PLAYFIELD_W / 2, PLAYFIELD_Y + PLAYFIELD_H / 2, TALLY_PANEL_W, TALLY_PANEL_H, 0x0d1117, 0.92)
+      .setStrokeStyle(2, 0xfeca57)
+      .setOrigin(0.5)
+      .setDepth(11)
+      .setVisible(false)
+    this.tallyLabel = this.add
+      .text(PLAYFIELD_X + PLAYFIELD_W / 2, PLAYFIELD_Y + PLAYFIELD_H / 2, '', {
+        fontFamily: UI_FONT,
+        fontSize: '20px',
+        color: '#e6edf3',
+        align: 'center',
+        lineSpacing: 8,
+      })
+      .setOrigin(0.5)
+      .setDepth(12)
+      .setVisible(false)
+
     // Prime the readouts so the panel reads sanely before GameScene's first registry write (defensive).
     this._render()
   }
@@ -216,6 +272,20 @@ export class HUDScene extends Phaser.Scene {
     // `hud.stageIntro` while the curtain is up (and '' otherwise), so the HUD just mirrors it (the SAME
     // registry-decoupled pattern as the clear banner above — GameScene owns WHEN, the HUD owns HOW).
     this.introLabel.setText((r.get('hud.stageIntro') as string | undefined) ?? '')
+
+    // (extra-life §5.4, D5, AC5) — the centered 1UP "EXTRA LIFE" cue: GameScene publishes the localised string to
+    // `hud.oneUp` while its timer is live (and '' otherwise), so the HUD just mirrors it (the SAME registry-
+    // decoupled pattern as the clear/intro banner — its OWN key so the cues never clobber one another).
+    this.oneUpLabel.setText((r.get('hud.oneUp') as string | undefined) ?? '')
+
+    // (stage-bonus §5.4, D5, AC2) — the between-stage bonus tally: GameScene publishes the FULLY-FORMATTED multi-
+    // line block to `hud.tally` while its window is up ('' otherwise), so the HUD just mirrors it into the centered
+    // Text + shows the framing panel only when non-empty (the SAME mirror discipline as bannerLabel — GameScene owns
+    // WHEN + the formatting, the HUD owns layout). Both hidden on a blank string (never a stray render).
+    const tally = (r.get('hud.tally') as string | undefined) ?? ''
+    const showTally = tally.length > 0
+    this.tallyLabel.setText(tally).setVisible(showTally)
+    this.tallyPanel.setVisible(showTally)
 
     // F6 (D8, AC6) — the MUTED cue: shown only while audio is muted (the M toggle flips Phaser's global mute, and
     // GameScene publishes `hud.muted` = sound.mute). KISS — one boolean read, one label.

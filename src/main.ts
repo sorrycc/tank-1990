@@ -6,17 +6,13 @@ import { HubScene } from './scenes/HubScene.js'
 import { GameScene } from './scenes/GameScene.js'
 import { HUDScene } from './scenes/HUDScene.js'
 import { GameOverScene } from './scenes/GameOverScene.js'
+import { SettingsScene } from './scenes/SettingsScene.js'
+import { ConstructionScene } from './scenes/ConstructionScene.js'
 import { setLocale, detectLocale } from './i18n/index.js'
-
-// ── Set the live locale ONCE at boot (F5 §5.4, Decision D12, AC9) ── BEFORE any scene renders chrome. F5's
-// locked Hub scope does NOT add a `language` field to the meta schema (YAGNI — a language-switch row is a
-// later feature), so the locale is auto-DETECTED from the browser each boot: a zh browser → 'zh-CN' (the user
-// reads Chinese), else 'en'. detectLocale() is guarded (a headless/no-navigator env degrades to 'en', never
-// throws — mirrors save.ts's defensive discipline). This is the reference's boot seam, trimmed to the auto-detect.
-setLocale(detectLocale())
+import { loadSettings, saveSettings, hasStoredSettings } from './util/settings.js'
 
 // ── Single boot site (F0 scaffold §5.3, Decision 1/2/3, AC4/AC5/AC6) ──
-// Builds ONE Phaser.Game config and registers all SIX scenes. The scene registration ORDER
+// Builds ONE Phaser.Game config and registers all SEVEN scenes. The scene registration ORDER
 // matters: the first entry (Boot) auto-starts (AC6); every other scene is inert until explicitly
 // started via a transition, so the world/HUD never double-runs. There is NO Victory scene
 // (Decision 2) — Tank 1990 is ENDLESS: a run ends only on eagle-death / lives spent → GameOver.
@@ -48,10 +44,25 @@ const config: Phaser.Types.Core.GameConfig = {
 
   backgroundColor: '#0b0e14', // Dark slate so primitive rectangles read clearly.
 
-  scene: [BootScene, TitleScene, HubScene, GameScene, HUDScene, GameOverScene],
+  scene: [BootScene, TitleScene, HubScene, GameScene, HUDScene, GameOverScene, SettingsScene, ConstructionScene],
 }
 
 const game = new Phaser.Game(config)
+
+// ── Apply the persisted player preferences ONCE at boot (F-settings §5.3, D2/D4, AC2/AC3) ── AFTER building the
+// game (so `game.sound` exists) but BEFORE the first scene renders chrome (the existing locale boot-order
+// discipline). loadSettings() reads + clamps the persisted blob (never throws — it inherits save.ts's try/catch).
+const settings = loadSettings()
+// D4 — honor today's browser auto-detect on a TRULY fresh save (no stored blob yet) so a zh browser still opens in
+// Chinese for a new player; once a settings blob exists, use the STORED locale (the sticky, runtime-switchable
+// choice). On a fresh save we then saveSettings the detected locale ONCE so it becomes the persisted default.
+const fresh = !hasStoredSettings()
+const locale = fresh ? detectLocale() : settings.locale
+setLocale(locale)
+// D2 — push the master level into Phaser's GLOBAL sound.volume; audio/Sound.ts already multiplies it into every
+// synthesized tone (so this single write wires volume end-to-end — no per-sound plumbing). 1 by default = unchanged.
+game.sound.volume = settings.volume
+if (fresh) saveSettings({ ...settings, locale }) // seed the detected locale into the persisted default (D4).
 
 // DEV-ONLY debug handle (stripped from the production build — Vite tree-shakes the `import.meta.env.DEV`
 // branch out of `npm run build`). Exposes the live game on window so a dev/headless smoke test can inspect

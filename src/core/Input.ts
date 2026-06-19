@@ -46,10 +46,30 @@ export interface InputSnapshot {
   pausePressed: boolean // F7 (D4/AC4) — a JustDown EDGE over P/ESC (sole-owned here, like the fire edges).
 }
 
+// ── TouchState (touch-controls §2, D1) — the MINIMAL pure-data seam between Input and the Phaser-coupled
+// on-screen pad (entities/TouchControls). Input stays the SOLE snapshot owner: it does NOT add a second
+// producer Tank reads; instead it MERGES this tiny held-cardinals + fire-edge source into p1 inside sample()
+// (DRY — one intent consumer, one merge site). The shape is deliberately Phaser-free so Input never imports
+// the coupled control object — it only reads four held bools + drains one fire edge. `consumeFire()` returns
+// the pending tap edge and CLEARS it (the JustDown discipline — a held finger does not machine-gun, D4).
+export interface TouchState {
+  up: boolean
+  down: boolean
+  left: boolean
+  right: boolean
+  consumeFire(): boolean // drain the pending FIRE-tap edge (returns true once per tap, then false).
+}
+
 export class Input {
   // Named physical keys; the snapshot derives intent from these. P1 = WASD move + J fire; P2 = arrow
   // move + Numpad0 fire. NO jump/dodge/skill keys (YAGNI — Battle City has none).
   private keys: Record<string, Phaser.Input.Keyboard.Key>
+
+  // ── touch (touch-controls §2, D1/D3) ── the OPTIONAL on-screen-pad source (P1 only — the touch use-case is a
+  // single local player; P2 needs a second physical device, KISS). NULL on a non-touch device (GameScene only
+  // wires it when `device.input.touch`), so sample()'s merge branch is skipped and the keyboard path stays
+  // BYTE-IDENTICAL to today (no desktop interference, AC4). It is pure data to Input (the TouchState seam).
+  touch: TouchState | null = null
 
   constructor(scene: Phaser.Scene) {
     const KC = Phaser.Input.Keyboard.KeyCodes
@@ -89,7 +109,32 @@ export class Input {
   sample(): InputSnapshot {
     const pP = Phaser.Input.Keyboard.JustDown(this.keys.pauseP)
     const pE = Phaser.Input.Keyboard.JustDown(this.keys.pauseEsc)
-    return { p1: this.readPlayer('p1'), p2: this.readPlayer('p2'), pausePressed: pP || pE }
+    // P1 is built from the keyboard exactly as before, then — ONLY if a touch source is wired — MERGED with the
+    // on-screen pad (touch-controls §2, D1). Keyboard-only (touch null) is byte-identical to today (AC4).
+    const p1 = this.readPlayer('p1')
+    return { p1: this.touch ? this._mergeTouch(p1, this.touch) : p1, p2: this.readPlayer('p2'), pausePressed: pP || pE }
+  }
+
+  // ── _mergeTouch (touch-controls §2, D1/D4) ── compose the on-screen pad into P1's intent WITHOUT a second
+  // movement path: OR the touch held cardinals onto the keyboard's, then RE-DERIVE dirX/dirY from the merged
+  // booleans using the SAME opposing-cancels formula readPlayer uses (so a left key + a right touch still cancel
+  // to 0 — the invariant holds for the merged set, KISS). The FIRE edge is OR'd in via consumeFire(), drained
+  // ONCE here (sample() is the sole per-frame caller — the JustDown discipline, so a held finger fires once, D4).
+  // Keyboard and touch thus COMPOSE — neither suppresses the other (AC5). Returns a fresh intent (no mutation).
+  private _mergeTouch(p1: PlayerIntent, touch: TouchState): PlayerIntent {
+    const up = p1.up || touch.up
+    const down = p1.down || touch.down
+    const left = p1.left || touch.left
+    const right = p1.right || touch.right
+    return {
+      up,
+      down,
+      left,
+      right,
+      dirX: (right ? 1 : 0) - (left ? 1 : 0), // re-derived — opposing still cancels (the SAME readPlayer formula).
+      dirY: (down ? 1 : 0) - (up ? 1 : 0),
+      firePressed: p1.firePressed || touch.consumeFire(), // OR the drained tap edge onto the keyboard fire edge.
+    }
   }
 
   // ── consumePause() (F7 §5.3, D4, AC4 — the close→reopen race fix) ── swallow any PENDING P/ESC JustDown edge

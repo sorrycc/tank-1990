@@ -15,6 +15,26 @@ export const EN: Dict = {
     'title.start': 'Press SPACE / ENTER or click to start',
     // F7 (D6/AC6) — the BEST line surfaced on the Title (read from MetaState; 0/0 on a fresh save).
     'title.best': 'BEST SCORE {score} · BEST STAGE {stage}',
+    // ── F-difficulty-select (difficulty-select §5.4, D7, AC7) — the Title difficulty/start-stage chooser row. The
+    // three level labels (the selected one highlighted), the start-stage readout, and a one-line key hint. ──
+    'title.difficulty': 'DIFFICULTY',
+    'title.diff.easy': 'EASY',
+    'title.diff.normal': 'NORMAL',
+    'title.diff.hard': 'HARD',
+    'title.startStage': 'START STAGE {n}',
+    'title.diffHint': '← / → difficulty · ↑ / ↓ start stage',
+    // F-settings (settings §5.4, AC5) — the Title hint line for the new Settings screen (`O` opens it).
+    'title.settings': 'O settings',
+    // F-construction-mode (construction-mode §6, D6) — the Title hint line for the level editor (`T` opens it).
+    'title.construction': 'T  Construction',
+
+    // ── F-seed-challenge (seed-challenge §5.5, D1/D6, AC6) — the Title run-seed row. `title.seed` shows the pinned/
+    // last run seed as 8-hex; `title.seed.random` is the dim placeholder when no seed is pinned (a fresh-random run);
+    // `title.seedHint` the one-line key hint; `title.seedEntry` the inline entry prompt shown while typing a seed.
+    'title.seed': 'SEED {seed}',
+    'title.seed.random': 'RANDOM',
+    'title.seedHint': 'S edit seed · R random',
+    'title.seedEntry': 'SEED: {buffer}_  (ENTER ok · ESC cancel)',
 
     // ── High-score table (the persistent top-5 finished runs — Title + GameOver, D6) — a heading, a row
     // template (rank · score · stage), and an empty-state line for a fresh save. Rendered via t() at both sites.
@@ -64,6 +84,22 @@ export const EN: Dict = {
     'hud.stageCleared': 'STAGE {n} CLEARED', // F6 (D5, AC3) — the boss-stage clear banner (a timed overlay).
     'hud.stageIntro': 'STAGE {n}', // (D3/D5, AC2) — the centered STAGE-N intro curtain shown before each stage.
     'hud.muted': 'MUTED', // F6 (D8, AC6) — the mute cue shown while audio is muted (M toggle).
+    'hud.oneUp': 'EXTRA LIFE', // (extra-life, D5, AC5/AC6) — the centered 1UP cue shown on a score-milestone crossing.
+
+    // ── Between-stage bonus tally (stage-bonus §6, D5, AC2) — the classic bonus screen shown on EVERY stage clear.
+    // The title heads a centered panel; one `bonus.row` per enemy type killed this stage (name · count × points =
+    // subtotal); `bonus.clearBonus` the flat stage-clear bonus; `bonus.total` the grand total. The per-type display
+    // names (BASIC/FAST/POWER/ARMOR/BOSS) localise; GameScene formats the whole block + the HUD mirrors it.
+    'bonus.title': 'BONUS',
+    'bonus.row': '{name}  {count} × {points} = {sub}',
+    'bonus.clearBonus': 'STAGE CLEAR  {pts}',
+    'bonus.total': 'TOTAL  {pts}',
+    'bonus.basic': 'BASIC',
+    'bonus.fast': 'FAST',
+    'bonus.power': 'POWER',
+    'bonus.armor': 'ARMOR',
+    'bonus.stealth': 'STEALTH', // stealth-enemy (AC5) — the stealth-tank kill row.
+    'bonus.boss': 'BOSS',
 
     // ── GameOver (the run-summary snapshot — AC5) ──
     'over.heading': 'GAME OVER',
@@ -86,6 +122,20 @@ export const EN: Dict = {
     'pause.p2Lives': 'P2 LIVES',
     'pause.help': 'Press P / ESC to resume',
 
+    // ── Settings screen (F-settings §5.4, D5, AC6) — the dedicated options menu reachable from the Title.
+    // A title, the three editable rows (VOLUME · DIFFICULTY · LANGUAGE) + a BACK row, and a one-line key hint.
+    // VOLUME shows a percent (`settings.volumeValue`); the DIFFICULTY value reuses the existing `title.diff.*`
+    // labels (DRY — no new difficulty strings); LANGUAGE toggles between the two `settings.lang.*` names. ──
+    'settings.title': 'SETTINGS',
+    'settings.volume': 'VOLUME',
+    'settings.volumeValue': '{pct}%',
+    'settings.difficulty': 'DIFFICULTY',
+    'settings.language': 'LANGUAGE',
+    'settings.back': 'BACK',
+    'settings.hint': '↑ / ↓ select · ← / → change · ENTER / ESC back',
+    'settings.lang.en': 'English',
+    'settings.lang.zh': '简体中文',
+
     // ── Power-up names (the HUD active-power-up + any in-world label key off the kind id — AC2/AC8) ──
     'power.helmet': 'SHIELD',
     'power.clock': 'FREEZE',
@@ -93,5 +143,26 @@ export const EN: Dict = {
     'power.star': 'STAR',
     'power.grenade': 'GRENADE',
     'power.tank': 'EXTRA LIFE',
+    'power.boat': 'BOAT', // boat-drill — amphibious (drive over water).
+    'power.drill': 'DRILL', // boat-drill — the bullet pierces one brick layer.
+
+    // ── Touch controls (touch-controls §6) — the on-screen FIRE button label, shown ONLY on a touch-capable
+    // device (the D-pad arrows are drawn as triangle glyphs, so they need no string — KISS). Read via t('touch.fire').
+    'touch.fire': 'FIRE',
+
+    // ── Construction (level editor) scene (construction-mode §6, D4) — the heading, the current-brush label
+    // (interpolating the brush's tile name), the seven tile names the brush cycles, the one-line controls hint,
+    // and the brief save-confirm blip. All read via t() in ConstructionScene (no literal user-facing string inlined).
+    'construction.title': 'CONSTRUCTION',
+    'construction.brush': 'Brush: {tile}',
+    'construction.tile.empty': 'EMPTY',
+    'construction.tile.brick': 'BRICK',
+    'construction.tile.steel': 'STEEL',
+    'construction.tile.water': 'WATER',
+    'construction.tile.trees': 'TREES',
+    'construction.tile.ice': 'ICE',
+    'construction.tile.base': 'BASE',
+    'construction.controls': 'Arrows move · SPACE paint · B brush · C clear · S save · P play · ESC back',
+    'construction.saved': 'Saved',
   },
 }

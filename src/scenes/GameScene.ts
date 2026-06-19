@@ -6,6 +6,7 @@ import {
   PLAYFIELD_Y,
   PLAYFIELD_W,
   PLAYFIELD_H,
+  TILE_SIZE,
   TWO_PLAYER,
   MAX_DT,
   START_LIVES,
@@ -14,7 +15,12 @@ import {
   SPAWN_BLINK_TIME,
   SPAWN_STAGGER_BASE,
   CARRIER_RATE,
+  AI_EAGLE_RUSH_RATE,
   STAGE_CLEARED_BANNER_SEC,
+  EXTRA_LIFE_SCORE,
+  STAGE_BONUS_SEC,
+  STAGE_CLEAR_BONUS,
+  DIFFICULTY_LIVES_BONUS,
 } from '../config/constants.js'
 import { TILE } from '../config/tiles.js'
 import { Input } from '../core/Input.js'
@@ -24,12 +30,24 @@ import { BulletPool } from '../combat/BulletPool.js'
 import type { BulletRect } from '../combat/BulletPool.js'
 import { Effects } from '../effects/Effects.js'
 import { stageConfig, spawnIntervalScale, bulletSpeedScale } from '../config/stages.js'
+import type { Difficulty } from '../config/stages.js'
+// ── F-difficulty-select (difficulty-select §5.4, D3/D4) ── the persisted Title preference: loadSettings() reads the
+// chosen difficulty + start-stage ONCE in create() (the impure save boundary, beside createMetaState()). F-seed-challenge
+// (D4/AC5) — saveSettings() writes the actually-used run seed back so the Title can display + a retry can replay it.
+import { loadSettings, saveSettings } from '../util/settings.js'
 import { generateStage } from '../world/LevelGenerator.js'
 import type { StageDescription, SpawnPoint } from '../world/LevelGenerator.js'
+// ── F-construction-mode (construction-mode §5.4, D1/D2/D7) ── the PURE custom-stage seam + the saved-grid wrapper.
+// buildCustomStage(grid) returns the SAME StageDescription shape generateStage does, so a hand-authored map feeds
+// the WHOLE downstream (TileMap + the combat spine) with NO new branch; loadCustomMap() reads the saved grid (null
+// on corrupt/missing). Both are PURE (the verifier node-imports + drives them — §5); GameScene only orchestrates
+// WHICH source to build the FIRST stage from (custom vs. procedural), then reverts to procedural on advance() (D7).
+import { buildCustomStage } from '../config/customStage.js'
+import { loadCustomMap } from '../util/customMap.js'
 import { TileMap } from '../world/TileMap.js'
-import { createRunState } from '../core/RunState.js'
+import { createRunState, extraLivesCrossed } from '../core/RunState.js'
 import type { RunState, SlotSeed } from '../core/RunState.js'
-import { ENEMY_SPECS, rosterPick, applyStarTier, bossSpecForStage } from '../config/tanks.js'
+import { ENEMY_SPECS, BOSS, rosterPick, applyStarTier, bossSpecForStage } from '../config/tanks.js'
 import { applyUpgrades } from '../config/tank-upgrades.js'
 import { mulberry32 } from '../util/rng.js'
 import type { RNG } from '../util/rng.js'
@@ -45,6 +63,8 @@ import {
   HELMET_SHIELD_SEC,
   CLOCK_FREEZE_SEC,
   SHOVEL_FORTIFY_SEC,
+  BOAT_SAIL_SEC,
+  DRILL_PIERCE_SEC,
 } from '../config/powerups.js'
 import type { PowerUpKind } from '../config/powerups.js'
 // ── F6 Boss & co-op polish (F6 §5.4/§5.5) ── the WebAudio SFX façade (the one audio owner — D6) + the i18n
@@ -56,6 +76,10 @@ import { t } from '../i18n/index.js'
 // Phaser-coupled; NEVER imported by the verifier. GameScene news it up on the P/ESC edge + tears it on resume.
 import { PauseOverlay } from '../entities/PauseOverlay.js'
 import type { RunInfo } from '../entities/PauseOverlay.js'
+// ── F-touch-controls (touch-controls §2/§3, D2/D3) ── the on-screen D-pad + FIRE button (Phaser-coupled, NEVER
+// verifier-imported). GameScene builds it ONLY on a touch-capable device and wires it as input2.touch, so Input
+// MERGES it into P1's intent (the one drive spine — no new movement path). On desktop it never exists (AC4).
+import { TouchControls } from '../entities/TouchControls.js'
 
 // ── GameScene (F0 §5.3 + F1 §5.4 + F2 §5.4 + F3 Combat & terrain §5.4, Decisions D1/D3/D6/D7/D8/D9/D10/D11,
 // AC1–AC11) ──
@@ -99,6 +123,11 @@ const STAGE_INTRO_SEC = 1.4 // s — how long the STAGE-N intro curtain holds be
 // muzzle spark pops (a hair past the barrel tip). A cosmetic coupled-scene tunable (not a shared pure number),
 // so it lives here, not in constants.ts — half a tile sits the flick at the gun mouth for the ~1-tile tank.
 const MUZZLE_OFFSET = 14 // px — the muzzle-spark standoff ahead of the tank center along facing.
+
+// (extra-life §5.3, D5, AC5) — how long the centered "EXTRA LIFE" 1UP cue holds after a score milestone is
+// crossed. A coupled-scene cue tunable (a single-use duration, not a shared pure number), so it lives here, not
+// in constants.ts (the SAME "local detail" rule as STAGE_INTRO_SEC/MUZZLE_OFFSET). ~2.0 s — long enough to read.
+const ONE_UP_BANNER_SEC = 2.0 // s — how long the centered 1UP "EXTRA LIFE" cue shows after a milestone crossing.
 
 // ── F9 Eagle-destroyed loss sequence (F9 §5.3, D3/D4) ── the run's most dramatic beat gets a HEAVIER blast than a
 // generic kill: 2–3 big blooms STAGGERED at the eagle center + a stronger camera flash/shake, then the unchanged
@@ -156,6 +185,11 @@ export class GameScene extends Phaser.Scene {
   // spawnTimer/spawnCursor: the staggered-spawn cadence + the round-robin L→C→R cursor over the three top spawns.
   private runState!: RunState
   private desc!: StageDescription
+  // ── F-construction-mode (construction-mode §5.4, D7) ── the ONE-SHOT authored grid the FIRST _buildStage() builds
+  // from instead of the procedural generator. Set in create() ONLY when settings.playCustom is true AND a valid saved
+  // grid exists; consumed (and NULLED) by the first _buildStage(); every later rebuild (advance()) falls through to
+  // generateStage (the custom grid seeds stage 0 only — D7). Null = the procedural path (the identity — today's run).
+  private _customGrid: number[][] | null = null
   private enemies: Tank[] = []
   private stageRng!: RNG
   private spawnTimer = 0
@@ -170,6 +204,10 @@ export class GameScene extends Phaser.Scene {
   // shovelWasActive: the shovel-timer FALLING-edge latch so the revert fires exactly once when the timer hits 0.
   private powerups!: PowerUpPool
   private meta!: MetaStateInstance
+  // F-difficulty-select (D4) — the run's chosen difficulty, read ONCE from loadSettings() in create() (the impure save
+  // boundary). Cached here (NOT on RunState — it is a spawn/ramp INPUT, not run economy — D4/SOLID) + passed to the two
+  // _spawnStep ramp reads (bulletSpeedScale/spawnIntervalScale). Defaulted 'normal' (the identity) until create() reads it.
+  private difficulty: Difficulty = 'normal'
   private upgrades: Record<number, Record<string, number>> = {} // cached per-slot Hub tree (read once — D4b).
   private ringCells: Array<{ col: number; row: number }> = [] // the fort-ring tile coords (D4a).
   private shovelWasActive = false // the shovel-timer falling-edge latch (revert fires once — D4a/D10).
@@ -187,12 +225,30 @@ export class GameScene extends Phaser.Scene {
   private bannerTimer = 0
   private bannerStage = 0
 
+  // ── F-extra-life 1UP cue (extra-life §5.3, D5, AC5) ── `oneUpTimer` is the SECONDS remaining on the brief
+  // centered "EXTRA LIFE" cue armed when a banked kill crosses a score milestone (extraLivesCrossed in
+  // _onEnemyKilled). Decayed on the REAL dt in update() (beside bannerTimer, so it shows through the run-end
+  // freeze beat); _publishHud mirrors the localised cue to the HUD via the `hud.oneUp` registry key while it is
+  // live (its OWN key, so it never clobbers the clear/intro banner). NOT reset by _buildStage (a transient cue —
+  // it decays on its own; the carried `nextExtraLifeScore` on RunState owns the once-per-crossing discipline).
+  private oneUpTimer = 0
+
   // ── STAGE-N intro curtain (D3/D4/D5, AC2/AC3) ── `curtainTimer` is the SECONDS remaining on the brief "STAGE N"
   // intro shown before each stage's enemies stream in. Armed in _buildStage (so EVERY stage — the first + each
   // advance — opens on it), decayed on the REAL dt in update(); while > 0 the spawn loop + enemy tick are gated
   // (the player + bullets stay live — only the enemy pair is paused) and _publishHud mirrors a centered label to
   // the HUD via the registry (the SAME pattern as the STAGE-N-CLEARED banner — GameScene owns WHEN, the HUD HOW).
   private curtainTimer = 0
+
+  // ── F-stage-bonus between-stage tally (stage-bonus §5.3, D2/D3/D6, AC2/AC3/AC4) ── `tallyTimer` is the SECONDS
+  // remaining on the brief bonus-tally overlay armed at EVERY stage clear (boss OR non-boss). It mirrors the intro
+  // curtain VERBATIM: armed at the one-shot clear site (STAGE_BONUS_SEC from constants), decayed on the REAL dt in
+  // update() (so it ends in real time through the world freeze), gated against the enemy pair while up, and
+  // skippable on the P1 fire/start edge. The DEFERRED _advanceStage() is HELD until it elapses/skips — so the tally
+  // sits BETWEEN the clear and the next stage's curtain (D3). While tallyTimer > 0 _publishHud mirrors the formatted
+  // tally block to the HUD via `hud.tally` (the SAME registry-decoupled idiom — GameScene owns WHEN, the HUD HOW).
+  // NOT reset by _buildStage (a transient overlay tied to the clear→advance beat; the advance is what dismisses it).
+  private tallyTimer = 0
 
   // ── F7 pause state (F7 §5.3, Decisions D3/D4, AC4) ── `paused` gates update()'s gameplay block (the SAME
   // freeze idiom the gameOver branch uses — while paused the world is FULLY frozen but the FX pool still settles
@@ -201,6 +257,11 @@ export class GameScene extends Phaser.Scene {
   // consumed via input2.consumePause() so it can't re-open pause / leak a fire on the resume frame (D4).
   private paused = false
   private pauseOverlay: PauseOverlay | null = null
+
+  // ── F-touch-controls (touch-controls §2/§3, D3) ── the on-screen pad — RUN-scoped chrome (it outlives a stage
+  // rebuild, like input2). NULL on a non-touch device (built only when `device.input.touch`), so the merge in
+  // Input.sample() is skipped and desktop keyboard play is byte-identical to today (AC4). Wired as input2.touch.
+  private touchControls: TouchControls | null = null
 
   constructor() {
     super('Game')
@@ -252,6 +313,19 @@ export class GameScene extends Phaser.Scene {
     this.effects = new Effects(this)
     this.powerups = new PowerUpPool(this)
 
+    // ── F-touch-controls (touch-controls §2/§3, D3/D7, AC4) ── build the on-screen pad ONLY on a touch-capable
+    // device (Phaser's standard, file://-safe device probe — no asset, no network) and wire it as input2.touch so
+    // Input MERGES it into P1's intent inside sample() (no new movement path — DRY). On desktop the probe is false,
+    // touchControls stays null, input2.touch stays null, and sample() is byte-identical to the keyboard-only path
+    // (no interference). Register the SHUTDOWN teardown beside it so a scene shutdown removes the pad's pointer
+    // handlers + destroys its rects (no leaked listener / orphan rect — D7); the pad is RUN-scoped (survives a
+    // stage rebuild, like input2), so _teardownStage() never touches it.
+    if (this.sys.game.device.input.touch) {
+      this.touchControls = new TouchControls(this)
+      this.input2.touch = this.touchControls
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.touchControls?.destroy())
+    }
+
     // ── F6 (D6/D8, AC6) — the ONE audio owner + the M mute toggle ── construct the WebAudio façade once (the
     // reference's per-scene `new Sound(this)`); every resolution site below calls a `sound.*` method (the scene
     // orchestrates world events, the entities stay audio-free — D6). A NoAudio manager makes every call a safe
@@ -270,17 +344,47 @@ export class GameScene extends Phaser.Scene {
     const presentSlots = TWO_PLAYER ? [1, 2] : [1]
     for (const slot of presentSlots) this.upgrades[slot] = this.meta.getUpgrades(slot as 1 | 2)
 
-    // ── Construct the SINGLE RunState (F4 §5.4 + F5 §5.4, D5/D5b/D11) ── the run owner: a minted seed, and a
-    // PER-SLOT { [slot]: {lives, tier} } seed map (F5 D5b — replaces F4's scalar startLives). Each present slot's
-    // run-start lives/tier come from THAT slot's folded Hub spec (MetaState.startSpec): lives = START_LIVES +
-    // spec.startLivesBonus, tier = spec.startTier (the +startLife/+starStart upgrades land at run start — D7). A
-    // fresh meta yields {lives: START_LIVES, tier: 0} (the F4 behaviour, per-slot). The scene is its ONLY writer (D5).
+    // ── F-difficulty-select (difficulty-select §5.4, D3/D4, AC5/AC6) ── read the persisted Title preference ONCE,
+    // beside createMetaState() (the impure save boundary; loadSettings() degrades to DEFAULT_SETTINGS on a corrupt/
+    // disabled storage — never throws). Cache `this.difficulty` (passed to the two ramp reads — D4) + capture the
+    // start stage (threaded into createRunState — D5). A Normal / stage-0 preference is the IDENTITY (today's run).
+    const settings = loadSettings()
+    this.difficulty = settings.difficulty
+    const livesBonus = DIFFICULTY_LIVES_BONUS[this.difficulty] // the per-level run-start lives ADD (easy +1 … hard −1, D6).
+
+    // ── F-construction-mode (construction-mode §5.4, D2/D7, AC4/AC5) ── pick the FIRST stage's TERRAIN source ONCE.
+    // If the editor's PLAY set settings.playCustom AND a VALID saved grid exists (loadCustomMap returns null on a
+    // corrupt/missing blob), stash it as the one-shot _customGrid so the first _buildStage() builds from the AUTHORED
+    // map; else stay procedural (the identity). Then CLEAR playCustom back to false (saveSettings) so the flag is a
+    // true ONE-SHOT — the NEXT run (a Title-launched procedural run, or a retry) is procedural unless the editor sets
+    // it again (D2). A Normal/no-custom session is byte-identical to today (_customGrid stays null).
+    this._customGrid = settings.playCustom ? loadCustomMap() : null
+    // CLEAR the local flag (NOT a separate write — the seed write-back below spreads `settings`, so mutating it here
+    // makes that ONE write also persist playCustom=false; a second saveSettings would race/duplicate). One-shot consumed.
+    settings.playCustom = false
+
+    // ── Construct the SINGLE RunState (F4 §5.4 + F5 §5.4 + F-difficulty §5.4, D5/D5b/D11/D5/D6) ── the run owner: a
+    // minted seed, a PER-SLOT { [slot]: {lives, tier} } seed map (F5 D5b — replaces F4's scalar startLives), and the
+    // optional deep start stage (F-difficulty D5). Each present slot's run-start lives/tier come from THAT slot's
+    // folded Hub spec (MetaState.startSpec): lives = START_LIVES + spec.startLivesBonus + the difficulty bonus,
+    // CLAMPED ≥ 1 (D6 — Hard's −1 never zeroes a run), tier = spec.startTier (the +startLife/+starStart upgrades land
+    // at run start — D7). A fresh meta + Normal yields {lives: START_LIVES, tier: 0} (the F4 behaviour, per-slot).
     const seeds: Record<number, SlotSeed> = {}
     for (const slot of presentSlots) {
       const spec = this.meta.startSpec(slot as 1 | 2)
-      seeds[slot] = { lives: START_LIVES + (spec.startLivesBonus ?? 0), tier: spec.startTier ?? 0 }
+      seeds[slot] = {
+        lives: Math.max(1, START_LIVES + (spec.startLivesBonus ?? 0) + livesBonus),
+        tier: spec.startTier ?? 0,
+      }
     }
-    this.runState = createRunState(this._mintSeed(), seeds)
+    // ── F-seed-challenge (seed-challenge §5.4, D3/D4, AC4/AC5) ── pick the WHOLE-run seed ONCE: a PINNED seed
+    // (settings.seed, set on the Title) seeds a reproducible board; a null pin falls back to _mintSeed() (the
+    // IDENTITY — today's fresh-random run). Then WRITE the actually-used seed back into settings (mint OR pin —
+    // D4/AC5) so the Title can DISPLAY the last run's seed and a retry replays the SAME board. The verifier's §7f
+    // already proves a fixed start seed yields a deterministic advance() chain — that IS this feature's guarantee.
+    const runSeed = settings.seed != null ? settings.seed >>> 0 : this._mintSeed()
+    this.runState = createRunState(runSeed, seeds, settings.startStage)
+    saveSettings({ ...settings, seed: runSeed }) // write back the used seed (mint or pin — D4/AC5).
     this.shovelWasActive = false // F5 (D4a) — the shovel falling-edge latch starts clear.
 
     // ── Build the first stage via the SHARED builder (F4 §5.4, D7 — extracted so create() + every rebuild run
@@ -304,7 +408,18 @@ export class GameScene extends Phaser.Scene {
   // PRESENT players (D11). Leaves `enemies` empty (the staggered spawn loop streams them in update — AC1).
   private _buildStage(): void {
     const cfg = stageConfig(this.runState.stageIndex)
-    this.desc = generateStage(this.runState.seed, cfg)
+    // ── F-construction-mode (construction-mode §5.4, D1/D7, AC4/AC5) ── the ONE small branch: if a one-shot custom
+    // grid is set (the editor's PLAY launched this run), build the FIRST stage's TERRAIN from the AUTHORED map via the
+    // PURE buildCustomStage seam (the SAME StageDescription shape generateStage returns — so the eagle/spawns/combat
+    // below are UNCHANGED), then NULL the field so every later rebuild (advance()) falls through to generateStage (the
+    // custom grid seeds stage 0 only — D7). The roster/difficulty for stage 0 still come from stageConfig(0) below
+    // (only the terrain/base/spawns come from the grid). A null _customGrid is the procedural identity (today's path).
+    if (this._customGrid) {
+      this.desc = buildCustomStage(this._customGrid)
+      this._customGrid = null // one-shot — consumed; the next _buildStage falls through to the procedural generator.
+    } else {
+      this.desc = generateStage(this.runState.seed, cfg)
+    }
     this.tileMap = new TileMap(this, this.desc)
     this.stageLabel.setText(`STAGE ${this.runState.stageIndex + 1}`)
 
@@ -382,6 +497,7 @@ export class GameScene extends Phaser.Scene {
     // mirrors the centered "STAGE N" label to the HUD. The world is built + visible underneath (the player can move).
     this.curtainTimer = STAGE_INTRO_SEC
     this.sfx.stageStart() // the "start the game" fanfare — plays on the first build AND every advance (the scene owns audio, D6).
+    this.sfx.stageJingle() // [music] (D7) — the richer melodic stage flourish layered over the curtain, beside the SFX.
   }
 
   // ── _buildPlayer(slot,x,y) (F4 §5.4, D10/D11) ── build a present player FRESH for this stage. Construct it
@@ -399,7 +515,11 @@ export class GameScene extends Phaser.Scene {
     // the star re-fold uses (DRY — _refoldPlayerSpec).
     const tank = new Tank(this, x, y, 'player', this._playerSpec(slot))
     ;(tank.collider as TankCollider).tankRef = tank // the bullet×tank overlap reads the victim off this (DRY).
-    this._collideTankWithTerrain(tank) // AC10 (F2) — the tank stops at brick/steel/water/the eagle.
+    // F-ice-slide (ice-slide §3, D2/D7) — wire the tile-kind probe so a PLAYER glides on ICE. Enemies leave this
+    // null (no glide — their crisp grid-AI would fight a coast, out of scope). The closure does the SCREEN→GRID
+    // inverse via the one helper (the scene owns the tilemap; Tank.ts stays off TileMap — SOLID, keeps purity).
+    tank.onSampleTile = (px, py) => this._tileKindAt(px, py)
+    this._collideTankWithTerrain(tank, slot) // AC10 (F2) — the tank stops at brick/steel/water/the eagle (boat-drill: pass the slot so the boat window can skip the water block).
     this._registerTankOverlap(tank) // the bullet×tank damage funnel (F3 seam, side-generic — D9/AC9).
     this._registerPowerUpOverlap(slot, tank) // F5 (D1) — the player×pickup collect funnel (the new seam).
     tank.onDeath = () => this._onPlayerDeath(slot, tank)
@@ -417,11 +537,38 @@ export class GameScene extends Phaser.Scene {
     return tank
   }
 
+  // ── _tileKindAt(x,y) (F-ice-slide §3, D2/D3) ── the SCREEN→GRID inverse the player tanks' onSampleTile probe
+  // calls: map a world pixel to its grid cell (`col = floor((x − PLAYFIELD_X)/TILE_SIZE)`, same for the row) and
+  // read this stage's `desc.tiles[row][col]` (the row-major GRID-SPACE int grid F2 emits — the SAME source the
+  // base-surround scan at create() reads). Bounds-guarded → TILE.EMPTY off-grid (an out-of-playfield sample is
+  // conservatively NON-ice, never an index crash). The scene owns the tilemap, so this keeps Tank.ts off TileMap +
+  // off the grid math (SOLID, preserves the pure/coupled split — Tank only sees a tile-kind int, never Phaser).
+  private _tileKindAt(x: number, y: number): number {
+    const col = Math.floor((x - PLAYFIELD_X) / TILE_SIZE)
+    const row = Math.floor((y - PLAYFIELD_Y) / TILE_SIZE)
+    if (col < 0 || row < 0 || col >= this.desc.cols || row >= this.desc.rows) return TILE.EMPTY
+    return this.desc.tiles[row][col]
+  }
+
   // Collide a tank against BOTH tank-blocking body groups (F2 §5.4, D7/D11): `solidBodies` (STEEL + BASE +
   // every BRICK sub-cell — so a tank can't drive onto the eagle, AC6) AND `waterBodies` (WATER blocks tanks).
-  private _collideTankWithTerrain(tank: Tank): void {
+  //
+  // boat-drill (BOAT): the water collider takes an optional `slot` + a PROCESS callback that returns FALSE (skip
+  // the separation for that frame → the tank glides over water) while that player's boat window is active
+  // (RunState.boatTimer[slot] > 0). On expiry the timer hits 0, the callback returns true again, and water blocks
+  // anew — NO body add/remove, no terrain mutation (KISS — it can't desync). A build with NO slot (the enemy /
+  // boss tanks below) gets no process callback → water ALWAYS blocks (enemies are never amphibious — AC1).
+  private _collideTankWithTerrain(tank: Tank, slot?: number): void {
     this.physics.add.collider(tank.collider, this.tileMap.solidBodies)
-    this.physics.add.collider(tank.collider, this.tileMap.waterBodies)
+    this.physics.add.collider(
+      tank.collider,
+      this.tileMap.waterBodies,
+      undefined,
+      // The process callback runs BEFORE separation: returning false SKIPS the water block for this frame, so a
+      // player whose boat window is live drives over water. No slot (enemies) → no callback → always blocked.
+      slot === undefined ? undefined : () => !((this.runState.boatTimer[slot] ?? 0) > 0),
+      this,
+    )
   }
 
   // ── _registerTankOverlap(tank) (F4 §5.4, D9, AC9) ── register a tank's collider into the bullet×tank overlap
@@ -499,9 +646,9 @@ export class GameScene extends Phaser.Scene {
     if (kind) this._applyPowerUp(slot, kind)
   }
 
-  // ── _applyPowerUp(slot, kind) (F5 §5.4, D4/D10, AC2) ── the SIX effects in ONE switch. Each writes an EXISTING
-  // F4 run-economy seam (freezeTimer/shovelTimer/tier/lives/spawnIframe) + the ONE new shieldTimer field, not a
-  // new subsystem (KISS/DRY/YAGNI). DESTRUCTIVE effects (grenade kills enemies; shovel swaps the ring's bodies)
+  // ── _applyPowerUp(slot, kind) (F5 §5.4, D4/D10, AC2 + boat-drill) ── the EIGHT effects in ONE switch. Each
+  // writes an EXISTING run-economy seam (freezeTimer/shovelTimer/tier/lives/spawnIframe/shieldTimer) or one of the
+  // two boat-drill timers (boatTimer[slot]/drillTimer), not a new subsystem (KISS/DRY/YAGNI). DESTRUCTIVE effects (grenade kills enemies; shovel swaps the ring's bodies)
   // DEFER their body work out of this overlap callback via time.delayedCall(0) (the F3/F4 footgun discipline —
   // D10/AC10). The scene owns the run economy (SOLID — the pool reports a kind, the scene applies it).
   private _applyPowerUp(slot: number, kind: PowerUpKind): void {
@@ -554,6 +701,18 @@ export class GameScene extends Phaser.Scene {
         // +1 extra life for this slot (the shared per-slot life ledger — F4 D10). The HUD reads it live; a downed
         // player is NOT auto-respawned by a life gain (it respawns on its next death if a life remains — AC4).
         this.runState.lives[slot] = (this.runState.lives[slot] ?? 0) + 1
+        break
+      case 'boat':
+        // boat-drill (BOAT): arm this player's amphibious window. The tank×water collider's process callback reads
+        // boatTimer[slot] > 0 to SKIP the water block, so the tank drives over WATER for the window; tickTimers
+        // decays it + advance() resets it (no body churn — the block resumes the frame the timer hits 0 — AC1).
+        this.runState.boatTimer[slot] = BOAT_SAIL_SEC
+        break
+      case 'drill':
+        // boat-drill (DRILL): arm the shared player-fire drill window. update() sets each player tank's live
+        // `drill` flag from drillTimer > 0; BulletPool.acquire snapshots it onto the bullet, and a drill bullet
+        // PIERCES one brick layer (chips + continues, then stops on the second solid — _onBulletHitSolid — AC2).
+        this.runState.drillTimer = DRILL_PIERCE_SEC
         break
     }
   }
@@ -608,10 +767,23 @@ export class GameScene extends Phaser.Scene {
       activeKind = 'shovel'
       activeSecs = this.runState.shovelTimer
       activeMaxSecs = SHOVEL_FORTIFY_SEC
+    } else if (this.runState.drillTimer > 0) {
+      // boat-drill (DRILL) — the shared scalar drill window (mirrors freeze/shovel: read the scalar + its config max).
+      activeKind = 'drill'
+      activeSecs = this.runState.drillTimer
+      activeMaxSecs = DRILL_PIERCE_SEC
     } else {
+      // The two PER-SLOT windows (boat, shield) — surface the largest live timer across present slots (the HUD
+      // shows "this is up" + its seconds). boat takes priority over shield here (an arbitrary but stable order).
+      let maxBoat = 0
+      for (const slot of this.playerTanks.keys()) maxBoat = Math.max(maxBoat, this.runState.boatTimer[slot] ?? 0)
       let maxShield = 0
       for (const slot of this.playerTanks.keys()) maxShield = Math.max(maxShield, this.runState.shieldTimer[slot] ?? 0)
-      if (maxShield > 0) {
+      if (maxBoat > 0) {
+        activeKind = 'boat'
+        activeSecs = maxBoat
+        activeMaxSecs = BOAT_SAIL_SEC
+      } else if (maxShield > 0) {
         activeKind = 'helmet'
         activeSecs = maxShield
         activeMaxSecs = HELMET_SHIELD_SEC
@@ -627,10 +799,47 @@ export class GameScene extends Phaser.Scene {
     r.set('hud.banner', this.bannerTimer > 0 ? t('hud.stageCleared', { n: this.bannerStage }) : '')
     r.set('hud.muted', this.sfx.mute) // the mute cue (the HUD shows "MUTED" while true — D8).
 
+    // (extra-life §5.3, D5, AC5) — the centered 1UP "EXTRA LIFE" cue (the localised string while the timer is
+    // live, else ''), via its OWN registry key so it never clobbers the clear/intro banner. SAME registry-mirror
+    // pattern: the HUD renders it centered (GameScene owns WHEN, the HUD owns HOW). Decayed on the REAL dt in update().
+    r.set('hud.oneUp', this.oneUpTimer > 0 ? t('hud.oneUp') : '')
+
     // (D3/D5, AC2) — the STAGE-N intro-curtain label (the localised "STAGE N" while the curtain is up, else '').
     // SAME registry-mirror pattern as the clear banner: the HUD renders it centered (the intro beat). The human
     // stage number is stageIndex + 1. Its own key (NOT hud.banner) so the intro + clear render paths stay separate.
     r.set('hud.stageIntro', this.curtainTimer > 0 ? t('hud.stageIntro', { n: this.runState.stageIndex + 1 }) : '')
+
+    // F-stage-bonus (D5, AC2) — the between-stage bonus tally: while the window is up publish the FULLY-FORMATTED
+    // multi-line block to `hud.tally` ('' otherwise), so the HUD stays a pure mirror (it owns layout, GameScene owns
+    // the run data + formatting — SOLID). Its OWN key so it never clobbers the clear/intro banner. Built by
+    // _buildTallyString (DRY — the per-type points come from the SAME spec scoreValues banked on the kill).
+    r.set('hud.tally', this.tallyTimer > 0 ? this._buildTallyString() : '')
+  }
+
+  // ── _buildTallyString() (stage-bonus §5.3, D5, AC2) ── format the between-stage bonus block GameScene publishes
+  // to `hud.tally`. ONE newline-joined string (KISS — the HUD mirrors it into one Text): a title, one row PER enemy
+  // type KILLED this stage (`t('bonus.row', {name, count, points, sub})` — skipping a 0-count type so the panel
+  // shows only what was fought), the flat stage-clear bonus line, and the grand TOTAL. The per-type points read
+  // from ENEMY_SPECS[id].scoreValue (the boss from BOSS.scoreValue — DRY, the SAME numbers banked on the kill); the
+  // boss is the ONE id not in ENEMY_SPECS, so it is looked up separately. The displayed TOTAL = Σ(count × points)
+  // + STAGE_CLEAR_BONUS — exactly the points this clear added to runState.score (the per-kill banks + the bonus).
+  private _buildTallyString(): string {
+    const kills = this.runState.killsByStage
+    const lines: string[] = [t('bonus.title')]
+    let subtotalSum = 0
+    // Iterate the roster ids in a stable order (basic→fast→power→armor→stealth→boss) so the panel reads consistently.
+    // stealth-enemy (AC5): + `stealth` so a STEALTH-tank kill renders its own localized row (t('bonus.stealth')).
+    for (const id of ['basic', 'fast', 'power', 'armor', 'stealth', 'boss']) {
+      const count = kills[id] ?? 0
+      if (count <= 0) continue // skip a type that wasn't fought this stage (show only what was killed — KISS).
+      const points = id === 'boss' ? BOSS.scoreValue : ENEMY_SPECS[id].scoreValue
+      const sub = count * points
+      subtotalSum += sub
+      lines.push(t('bonus.row', { name: t(`bonus.${id}`), count, points, sub }))
+    }
+    lines.push(t('bonus.clearBonus', { pts: STAGE_CLEAR_BONUS }))
+    lines.push(t('bonus.total', { pts: subtotalSum + STAGE_CLEAR_BONUS }))
+    return lines.join('\n')
   }
 
   // ── bullet × terrain solids resolution (F3 §5.3, D1/D2/D3/D4, AC1/AC2/AC6/AC10) ── ONE callback over the
@@ -669,13 +878,24 @@ export class GameScene extends Phaser.Scene {
       return
     }
 
-    // ── BRICK / STEEL (D3/D4, AC1/AC2) ── a small impact spark + despawn the shot in BOTH cases. F6 (D6/AC6) — a
-    // dry crunch on a brick chip, a bright metallic clink off (indestructible) steel; the throttle collapses a
+    // ── BRICK / STEEL (D3/D4, AC1/AC2 + boat-drill) ── a small impact spark in BOTH cases. F6 (D6/AC6) — a dry
+    // crunch on a brick chip, a bright metallic clink off (indestructible) steel; the throttle collapses a
     // multi-brick frame into one transient.
     this.effects.explosion(bulletRect.x, bulletRect.y)
-    this.bullets.release(bulletRect)
-    if (kind === TILE.STEEL) this.sfx.steelClink()
-    else this.sfx.brickHit()
+    // boat-drill (DRILL): a drill bullet PIERCES exactly ONE brick layer — on a BRICK hit it chips the sub-cell
+    // but does NOT despawn the FIRST time, then is cleared so the SECOND brick (or any STEEL/BASE) stops it. So the
+    // shared release() below is GATED by !piercedThisHit; a STEEL/BASE hit despawns even a drill shot (drill pierces
+    // brick only — YAGNI: no drill-vs-steel). A non-drill bullet keeps the existing "a solid always stops it" path.
+    const piercedThisHit = kind === TILE.BRICK && bx.drill
+    if (!piercedThisHit) this.bullets.release(bulletRect)
+    else bx.drill = false // spent the one pierce — the NEXT brick stops it (pierces exactly one layer — AC2).
+    // Steel-break: a max-star (tier 3) PLAYER bullet carries `bx.canBreakSteel` (snapshotted at fire time in
+    // BulletPool.acquire). When such a bullet strikes STEEL we BREAK it — and signal the break with the brick
+    // crunch (`sfx.brickHit()`) rather than the metallic clink. A non-break steel hit (enemy/boss/sub-tier shot)
+    // still clinks. Brick always crunches.
+    const breaksSteel = kind === TILE.STEEL && bx.canBreakSteel
+    if (kind === TILE.STEEL && !breaksSteel) this.sfx.steelClink()
+    else this.sfx.brickHit() // a brick chip OR a steel break — the dry crunch reads as "this one broke".
 
     if (kind === TILE.BRICK) {
       // DEFER the body removal out of world.step (the footgun — D1/AC10). delayedCall(0) runs next tick, after
@@ -688,8 +908,19 @@ export class GameScene extends Phaser.Scene {
       if (col !== undefined && row !== undefined && sc !== undefined && sr !== undefined) {
         this.time.delayedCall(0, () => this.tileMap.destroyBrickSubCell(col, row, sc, sr))
       }
+    } else if (breaksSteel) {
+      // STEEL break (the steel-break seam): a max-star player's bullet destroys the WHOLE steel tile. DEFER the
+      // body removal out of world.step (the SAME footgun discipline as the brick chip — D1/AC10): delayedCall(0)
+      // runs next tick, after the step, so no Arcade body is destroyed mid-iteration on a multi-steel frame.
+      // destroySteelTile is idempotent (a missing tile is a no-op), so a same-tile double-overlap is safe. Capture
+      // the tags NOW (the body may be gone by the time the closure runs). The shared spark above reads as a break.
+      const col = solidRect.tileCol
+      const row = solidRect.tileRow
+      if (col !== undefined && row !== undefined) {
+        this.time.delayedCall(0, () => this.tileMap.destroySteelTile(col, row))
+      }
     }
-    // STEEL: NO terrain change (indestructible this phase — no bullet.power break-steel flag exists, D4).
+    // STEEL (non-break): NO terrain change — a normal/enemy bullet clinks off (indestructible for it).
   }
 
   // ── bullet × tank process filter (F3 §5.3, D7/D8, AC5/AC9) ── runs BEFORE the resolution: is this a valid,
@@ -774,6 +1005,7 @@ export class GameScene extends Phaser.Scene {
     this.paused = false
 
     this.sfx.gameOver() // F6 (D6/AC6) — the run-end knell (the single owner, under the one-shot guard).
+    this.sfx.gameOverSting() // [music] (D5) — the melodic descending sting layered over the knell.
 
     // Bank the run ONCE (F5 §5.3, D8/AC5) — the single writer under the gameOver guard. `stage` is the human
     // stage number reached (stageIndex + 1). bankRun returns the banked amount (the GameOver summary displays it).
@@ -806,6 +1038,7 @@ export class GameScene extends Phaser.Scene {
   private _openPause(): void {
     if (this.paused || this.gameOver || this.transitioning) return
     this.paused = true
+    this.touchControls?.reset() // F-touch (D6) — clear held bools + the fire edge + hide the pad (no input leaks on resume).
     this.sfx.uiSelect() // a small pause blip (the one audio owner — DRY; a no-op under NoAudio).
     this.pauseOverlay = new PauseOverlay(this, {
       getInfo: () => this._getRunInfo(),
@@ -824,6 +1057,7 @@ export class GameScene extends Phaser.Scene {
       this.pauseOverlay = null
     }
     this.paused = false
+    this.touchControls?.show() // F-touch (D6) — re-show the pad on resume (held bools already cleared by reset()).
     this.input2.consumePause() // swallow the pending P/ESC JustDown edge (the close→reopen race fix — D4).
     this.sfx.uiSelect() // the RESUME blip — pause toggles share one confirm blip (_openPause already blips on OPEN; D7).
   }
@@ -882,12 +1116,21 @@ export class GameScene extends Phaser.Scene {
     // scale the spec's bullet speed by the stage's monotone bulletSpeedScale (the enemy fire pressure, AC6).
     const id = rosterPick(this.stageRng, cfg.enemyWeights)
     const base = ENEMY_SPECS[id]
-    const spec = { ...base, bulletSpeed: Math.round(base.bulletSpeed * bulletSpeedScale(this.runState.stageIndex)) }
+    const spec = { ...base, bulletSpeed: Math.round(base.bulletSpeed * bulletSpeedScale(this.runState.stageIndex, this.difficulty)) }
 
     const enemy = new Tank(this, point.x, point.y, 'enemy', spec) // the WHOLE spec → all per-type stats (AC4).
     ;(enemy.collider as TankCollider).tankRef = enemy
+    // stealth-enemy (§5.4, D4) — wire the SAME tile-kind probe the player gets (DRY) so the STEALTH render cue can
+    // sample TREES under it. Inert for non-stealth enemies (only the gated stealth alpha branch reads it; the
+    // ice-glide path is a no-op for enemies — they release keys instantly via the AI intent — so this is harmless).
+    enemy.onSampleTile = (px, py) => this._tileKindAt(px, py)
     this._collideTankWithTerrain(enemy) // enemies stop at terrain too (F2 colliders — DRY).
     enemy.carrier = this.stageRng() < CARRIER_RATE // red-flash power-up carrier (AC7).
+    // F-smart-ai (smart-ai §2, D2) — the EAGLE-RUSH cohort coin flip: a fraction (AI_EAGLE_RUSH_RATE) of enemies
+    // hard-commit to rushing the eagle base (real base pressure). Rides the EXISTING stageRng stream the spawn loop
+    // already advances (the SAME `< RATE` pattern as carrier one line above — DRY), so cohort membership is a
+    // stage-seed fact while the in-tick wander/seek/aim rolls stay on runtime Math.random() (determinism pin intact).
+    enemy.aiRushEagle = this.stageRng() < AI_EAGLE_RUSH_RATE
     enemy.spawnIframe = SPAWN_BLINK_TIME // blink before active/lethal (AC2 — inert during the blink).
     enemy.onDeath = () => this._onEnemyKilled(enemy)
     // The drop-flag hook fires ONCE at death for a carrier (the F5 pickup seam — F4 marks the drop point only).
@@ -902,7 +1145,7 @@ export class GameScene extends Phaser.Scene {
     this.runState.enemiesAlive++
 
     // Re-arm the spawn timer at the stage-scaled cadence (deeper stages stream faster, never instant — D8/AC6).
-    this.spawnTimer = SPAWN_STAGGER_BASE * spawnIntervalScale(this.runState.stageIndex)
+    this.spawnTimer = SPAWN_STAGGER_BASE * spawnIntervalScale(this.runState.stageIndex, this.difficulty)
   }
 
   // ── _tickEnemies(gdt) (F4 §5.3, Decisions D2/D3, AC2/AC3) ── drive every LIVE enemy. A spawn-BLINKING enemy
@@ -948,6 +1191,34 @@ export class GameScene extends Phaser.Scene {
     this.effects.scorePopup(enemy.collider.x, enemy.collider.y, enemy.spec.scoreValue)
     this.sfx.explosion({ big: true }) // F6 (D6/AC6) — a big burst on an enemy/boss kill (the boss routes here too).
     this.runState.score += enemy.spec.scoreValue // bank the score (D10 — the HUD/Hub features render/spend it).
+    // F-stage-bonus (D1/AC1) — tally this kill by its enemy spec id into the per-stage kills-by-type ledger (the
+    // between-stage bonus screen reads it). The boss routes through THIS funnel too, so its kill tallies for FREE
+    // under the 'boss' id (DRY). One line beside the score bank — the SAME causal path that already holds the id.
+    this.runState.tallyKill(enemy.spec.id)
+
+    // ── F-extra-life 1UP milestone (extra-life §5.3, D1/D3/D4/D6, AC4/AC5) ── score is banked in EXACTLY this
+    // site, so the milestone check lives HERE (one causal path: a kill banks → maybe crosses → maybe 1UPs — D6),
+    // right after the add. The PURE extraLivesCrossed() counts how many EXTRA_LIFE_SCORE thresholds the new score
+    // reached past the carried `nextExtraLifeScore` (the `while` handles a single big jump — e.g. the boss —
+    // crossing TWO at once, D3) and returns the new (un-crossed) threshold. On a crossing: advance the carried
+    // threshold FIRST (so the SAME crossing never re-fires — once per crossing, AC4), grant +1 life PER milestone
+    // to EVERY present slot (the shared-score model — D4; in co-op both P1 and P2 gain it), play the oneUp() chime,
+    // and arm the centered HUD cue (a downed player is NOT auto-respawned — it respawns on its next death if a life
+    // remains, the SAME rule the `tank` pickup follows). lives>0 is the only branch that touches anything.
+    const { lives: extraLives, nextThreshold } = extraLivesCrossed(
+      this.runState.nextExtraLifeScore,
+      this.runState.score,
+      EXTRA_LIFE_SCORE,
+    )
+    if (extraLives > 0) {
+      this.runState.nextExtraLifeScore = nextThreshold // advance the carried threshold so the crossing fires once (AC4).
+      for (let i = 0; i < extraLives; i++) {
+        for (const slot of Object.keys(this.runState.lives)) this.runState.lives[Number(slot)] += 1 // +1 to every present slot (D4).
+      }
+      this.sfx.oneUp() // the three-note rising chime (the SAME chime the `tank` pickup uses — DRY, D5).
+      this.oneUpTimer = ONE_UP_BANNER_SEC // arm the centered "EXTRA LIFE" HUD cue (decayed on the real dt — AC5).
+    }
+
     this.runState.enemiesAlive = Math.max(0, this.runState.enemiesAlive - 1)
     this.runState.enemiesRemaining = this.runState.enemiesQueued + this.runState.enemiesAlive
     // A carrier drops a power-up: fire the hook ONCE with the death center (the F5 pickup seam — AC7). F4 marks
@@ -977,8 +1248,14 @@ export class GameScene extends Phaser.Scene {
         this.bannerTimer = STAGE_CLEARED_BANNER_SEC
         this.sfx.stageCleared()
       }
-      this.transitioning = true
-      this.time.delayedCall(0, () => this._advanceStage())
+      // F-stage-bonus (D3/D4, AC2/AC3/AC4) — KEEP the `transitioning` one-shot latch (so the clear fires EXACTLY
+      // once), but instead of advancing NOW, bank the flat stage-clear bonus ONCE and arm the bonus-tally overlay.
+      // `update()` HOLDS the deferred _advanceStage() until tallyTimer decays to 0 (or the player skips on fire),
+      // so the bonus screen sits BETWEEN the clear and the next stage's intro curtain. Banking here (under the
+      // one-shot) guarantees the bonus is added to the run score exactly once per clear (D4).
+      this.runState.score += STAGE_CLEAR_BONUS // the flat per-stage-clear bonus, banked once under the one-shot (D4).
+      this.transitioning = true // the one-shot clear latch (preserved verbatim — the advance is now HELD, not run).
+      this.tallyTimer = STAGE_BONUS_SEC // arm the bonus tally; update() fires _advanceStage when it elapses/skips (D3).
     }
   }
 
@@ -1027,11 +1304,14 @@ export class GameScene extends Phaser.Scene {
     this.sfx.itemDrop() // "an item appeared" cue (descending vs. powerUp's ascending collect — drop ≠ collect, D6).
   }
 
-  // ── _advanceStage() (F4 §5.3/§5.4, Decisions D5/D6/D7, AC5/AC10) ── the deferred stage→stage advance (run
-  // through delayedCall(0) out of the death callback — AC10). Advance the RunState (next seed + stageIndex++ +
-  // reseed the spawn ledger — D5/D6), tear down the per-stage world (leaks nothing — AC10), rebuild the next
-  // (harder) stage IN PLACE via the SHARED _buildStage (carrying lives/tier/score on the RunState — D10), and
-  // clear the one-shot guard. A guard re-check defends against a run-over racing the defer.
+  // ── _advanceStage() (F4 §5.3/§5.4 → stage-bonus §5.3, Decisions D5/D6/D7 + D3, AC5/AC10) ── the deferred stage→
+  // stage advance. F-stage-bonus (D3): it is now fired from update() when the between-stage bonus tally elapses/is
+  // skipped (NOT from a delayedCall out of the death callback) — but update() is NEVER inside a collision step, so
+  // the deferred-safety still holds (the body teardown below runs outside any overlap iteration). Advance the
+  // RunState (next seed + stageIndex++ + reseed the spawn ledger + reset the kills-by-type tally — D5/D6), tear down
+  // the per-stage world (leaks nothing — AC10), rebuild the next (harder) stage IN PLACE via the SHARED _buildStage
+  // (carrying lives/tier/score on the RunState — D10), and clear the one-shot guard. A guard re-check defends
+  // against a run-over racing the tally window (the gameOver re-check — AC4).
   private _advanceStage(): void {
     if (this.gameOver) {
       this.transitioning = false
@@ -1050,8 +1330,9 @@ export class GameScene extends Phaser.Scene {
   // duplicate overlap), destroy the tilemap (its solid/water bodies + decorations — TileMap.destroy, F2), and
   // destroy the eagle VISUAL (its blocking body rode inside the tilemap — already gone). The RUN-scoped
   // resources (Input, the bullet POOL itself, Effects, the RunState) survive; _buildStage rebuilds the rest.
-  // Runs OUTSIDE any overlap/death callback (called from _advanceStage's delayedCall(0) — AC10), so destroying
-  // bodies here is safe (no body destroyed mid-step). The run economy (lives/tier/score) is on RunState (D10).
+  // Runs OUTSIDE any overlap/death callback (called from _advanceStage, which fires from update() once the bonus
+  // tally elapses — never inside a collision step, AC10), so destroying bodies here is safe (no body destroyed
+  // mid-step). The run economy (lives/tier/score) is on RunState (D10).
   private _teardownStage(): void {
     this.bullets.releaseAll() // clear in-flight shots (F1 — no live-count decrement; a teardown is not a despawn).
     this.powerups.releaseAll() // F5 (AC10) — release any uncollected power-ups (they don't carry across stages).
@@ -1089,10 +1370,23 @@ export class GameScene extends Phaser.Scene {
     // bannerTimer > 0 to publish the string. Done BEFORE the gameOver early-return so the banner finishes showing.
     this.bannerTimer = Math.max(0, this.bannerTimer - dt)
 
+    // (extra-life §5.3, D5, AC5) — decay the 1UP "EXTRA LIFE" cue on the REAL dt (NOT gdt — the SAME contract as
+    // the clear banner: it shows through a clock freeze AND the run-end freeze beat). Clamped at 0. Done BEFORE
+    // the gameOver early-return so a milestone crossed on the run's last kill still finishes showing. NOT reset by
+    // _buildStage (a transient cue — it decays on its own; the carried threshold owns the once-per-crossing rule).
+    this.oneUpTimer = Math.max(0, this.oneUpTimer - dt)
+
     // (D3, AC2) — decay the STAGE-N intro curtain on the REAL dt (so it ends in real time regardless of the
     // gameplay-dt freeze). Clamped at 0. While curtainTimer > 0 the spawn loop + enemy tick are gated below, and
     // _publishHud mirrors the "STAGE N" label to the HUD. Decayed BEFORE the gameplay block so it counts down each frame.
     this.curtainTimer = Math.max(0, this.curtainTimer - dt)
+
+    // F-stage-bonus (D2/D3, AC2/AC3) — decay the bonus-tally overlay on the REAL dt (so it ends in real time
+    // through the world freeze, the SAME contract as the curtain/banner). Clamped at 0. While tallyTimer > 0 the
+    // enemy pair is gated below + _publishHud mirrors the formatted tally block; when it crosses to 0 with the
+    // clear pending (transitioning) the HELD _advanceStage() fires ONCE (below, after the input sample so the skip
+    // edge can end it early). Decayed BEFORE the gameplay block so it counts down each frame, incl. mid-transition.
+    this.tallyTimer = Math.max(0, this.tallyTimer - dt)
 
     // ── F5 power-up timers + the freeze boundary (F5 §5.3, D4/D5/AC3) ── decay freeze/shovel/shield on the
     // GAMEPLAY dt BEFORE the freeze is applied for the frame (so the freeze timer itself counts down in real
@@ -1120,6 +1414,21 @@ export class GameScene extends Phaser.Scene {
     // pause edge). Reading once keeps the JustDown flags consistent (the sole-owner invariant).
     const s = this.input2.sample()
 
+    // ── F-stage-bonus skip + held advance (stage-bonus §5.3, D3/D6, AC3/AC4) ── while the bonus tally is up
+    // (tallyTimer > 0) the P1 fire/start edge ends it EARLY (the natural "next" button — no new input owner; the
+    // edge is already in the sampled `s`, D6). When the tally window has elapsed (or was just skipped) AND the
+    // clear is pending (the `transitioning` one-shot latch is set), fire the HELD _advanceStage() ONCE — it runs
+    // from update() (never inside a collision step) so the deferred-safety holds (D3/AC4), re-checks gameOver (a
+    // run-end racing the tally cancels cleanly), and tears down + rebuilds the next stage. `return` after it so the
+    // gameplay block below does NOT run on the rebuild frame (no stray fire/tick against the half-swapped world).
+    if (!this.gameOver && this.transitioning) {
+      if (this.tallyTimer > 0 && s.p1.firePressed) this.tallyTimer = 0 // skip on the P1 fire/start edge (D6).
+      if (this.tallyTimer <= 0) {
+        this._advanceStage() // the HELD deferred advance — fires once (the `transitioning` latch is cleared inside).
+        return
+      }
+    }
+
     // ── F7 pause (F7 §5.3, D3/D4, AC4) ── on the P/ESC edge, when NOT gameOver/transitioning/already-paused,
     // OPEN the pause modal + freeze the world. Done BEFORE the gameOver early-return so pause is inert once the
     // run has ended (D3). _openPause re-guards the same conditions.
@@ -1145,6 +1454,13 @@ export class GameScene extends Phaser.Scene {
 
     // F5 (D2) — pulse every live power-up's kind colour (the classic blink). Cosmetic; off the scene clock.
     this.powerups.tick()
+
+    // boat-drill (DRILL): set each PRESENT player tank's live `drill` flag from the shared drillTimer (> 0 while
+    // the drill window is active), so the NEXT shot BulletPool.acquire snapshots a true `bx.drill` (the piercing
+    // bullet). Set every frame (decays to false the frame the timer hits 0). Enemies are never touched (the flag
+    // stays false on them — they leave owner.drill false). One scalar timer drives both present players (D4).
+    const drilling = this.runState.drillTimer > 0
+    for (const tank of this.playerTanks.values()) tank.drill = drilling
 
     // P1 — fire off the edge (the scene owns the pool, D12), then tick movement/facing/cooldown on `gdt`. A
     // dead-but-not-yet-respawned P1 isn't driven (Tank.update early-returns while !alive — defensive).
@@ -1175,6 +1491,9 @@ export class GameScene extends Phaser.Scene {
     // deferred stage rebuild is queued) we skip both too — the world is mid-teardown. (D4, AC2): while the STAGE-N
     // intro curtain is up (curtainTimer > 0) we skip both as well — no enemy spawns/acts during the intro beat (the
     // player + bullets stay live; only the enemy pair is gated, per the spec's "pause enemy spawning/AI").
+    // F-stage-bonus (D4): the bonus-tally window runs UNDER the `transitioning` latch (set at the clear, cleared in
+    // _advanceStage), so this SAME guard already excludes the tally — no extra term is needed (the stage is cleared,
+    // there are no enemies left anyway). The player + bullets stay live, consistent with the curtain.
     const frozen = this.runState.freezeTimer > 0
     const curtain = this.curtainTimer > 0
     if (!this.transitioning && !frozen && !curtain) {

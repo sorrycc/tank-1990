@@ -7,6 +7,10 @@ and simple shapes (Phaser `Graphics` + generated textures). There are **no exter
 image, font, or audio assets** — nothing is downloaded or bundled from third parties. The game
 runs fully offline (and from `file://`).
 
+Likewise **all sound is synthesized in code** via WebAudio — the sound effects and the music (a
+looping Title theme, a stage-start jingle, a game-over sting) are built from oscillators and noise
+through gain envelopes in `src/audio/Sound.ts`. No audio files are loaded or bundled.
+
 This is a deliberate constraint: zero asset licensing, zero network fetches, instant boot.
 
 ## Code & libraries

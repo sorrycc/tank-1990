@@ -16,10 +16,13 @@
 
 import type { RNG } from '../util/rng.js'
 
-// ── PowerUpKind (D1) ── the six classic power-up kinds. A stable union the scene's _applyPowerUp switch + the
-// HUD's active-power-up readout key off. NEVER subclassed — a kind is a TAG + a row (the reference's pickup-kind
-// stance, mirrored): the SAME pooled rect renders any kind; the SCENE owns the effect.
-export type PowerUpKind = 'helmet' | 'clock' | 'shovel' | 'star' | 'grenade' | 'tank'
+// ── PowerUpKind (D1) ── the power-up kinds. A stable union the scene's _applyPowerUp switch + the HUD's
+// active-power-up readout key off. NEVER subclassed — a kind is a TAG + a row (the reference's pickup-kind
+// stance, mirrored): the SAME pooled rect renders any kind; the SCENE owns the effect. The roster grew 6 → 8
+// with two more TIMED kinds (boat-drill): `boat` (amphibious — drive over WATER for a window) + `drill` (the
+// player bullet PIERCES one brick layer for a window). Both lean on existing seams (the tank×water collider's
+// process callback; the bullet's per-shot flag like `canBreakSteel`) — no new subsystem (KISS).
+export type PowerUpKind = 'helmet' | 'clock' | 'shovel' | 'star' | 'grenade' | 'tank' | 'boat' | 'drill'
 
 // ── PowerUpDef (D1) ── the canonical per-kind row. PLAIN DATA (no functions) so it is trivially comparable +
 // the verifier sweeps it headlessly. The coupled PowerUp pool reads `color` (its pulse fill); the scene reads
@@ -38,6 +41,9 @@ export interface PowerUpDef {
 export const HELMET_SHIELD_SEC = 8 // s — the helmet's timed shield / i-frame window (AC2).
 export const CLOCK_FREEZE_SEC = 6 // s — the clock's "freeze every enemy" window (AC2).
 export const SHOVEL_FORTIFY_SEC = 12 // s — the shovel's "fortify the eagle ring → steel" window (AC2).
+// boat-drill — the two NEW timed windows (DRY — the ONE owner the scene reads + the POWERUPS rows below seed).
+export const BOAT_SAIL_SEC = 12 // s — the boat's "drive over WATER tiles" amphibious window (RunState.boatTimer[slot]).
+export const DRILL_PIERCE_SEC = 12 // s — the drill's "player bullet pierces one brick layer" window (RunState.drillTimer).
 
 // ── POWERUPS (D1) ── the ordered def table (the verifier sweep source; mirrors tanks.ts ENEMY_ARCHETYPES). The
 // timed kinds carry their effect window from the tunables above (DRY); the instant kinds carry 0 (applied once).
@@ -50,14 +56,18 @@ export const POWERUPS: PowerUpDef[] = [
   { id: 'star', kind: 'star', color: 0xfeca57, durationSec: 0 }, // gold — upgrade your tank one tier (instant).
   { id: 'grenade', kind: 'grenade', color: 0xff6b6b, durationSec: 0 }, // orange — destroy every enemy (instant).
   { id: 'tank', kind: 'tank', color: 0x1dd1a1, durationSec: 0 }, // green — +1 extra life (instant).
+  // boat-drill — the two NEW timed kinds (durationSec > 0). boat = ocean-blue (drive over water); drill =
+  // slate-grey (the brick-piercing bit). Both carry their effect window from the tunables above (DRY).
+  { id: 'boat', kind: 'boat', color: 0x2e86de, durationSec: BOAT_SAIL_SEC }, // ocean-blue — amphibious (drive over WATER).
+  { id: 'drill', kind: 'drill', color: 0x8395a7, durationSec: DRILL_PIERCE_SEC }, // slate-grey — the bullet pierces one brick layer.
 ]
 
 // ── POWERUP_BY_ID (D1) ── id → def lookup (the HUD's active-power-up colour/duration readout, the i18n key
 // validation). DRY — one source, derived from POWERUPS (mirrors tanks.ts ENEMY_SPECS / the reference's *_BY_ID).
 export const POWERUP_BY_ID: Record<string, PowerUpDef> = Object.fromEntries(POWERUPS.map((p) => [p.id, p]))
 
-// ── POWERUP_KINDS (D3) ── the six kinds in order — the list `pickPowerUpKind` draws a uniform pick from (the
-// carrier-death drop). Derived from POWERUPS so it can never drift from the def table (DRY).
+// ── POWERUP_KINDS (D3) ── the eight kinds in order — the list `pickPowerUpKind` draws a uniform pick from (the
+// carrier-death drop now picks boat/drill too). Derived from POWERUPS so it can never drift from the def table (DRY).
 export const POWERUP_KINDS: PowerUpKind[] = POWERUPS.map((p) => p.kind)
 
 // ── pickPowerUpKind(rng) → PowerUpKind (D3, AC1) ── a PURE uniform pick over POWERUP_KINDS off the stage RNG.
