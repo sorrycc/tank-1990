@@ -2,8 +2,8 @@ import Phaser from 'phaser'
 
 // ── BootScene (F0 scaffold §5.3, Decision 4, AC6/AC11; [start-jingle]) ──
 // The FIRST registered scene, so it auto-starts. It preloads the project's ONE bundled asset file —
-// the Battle City "Game Start" jingle played once on the Title's Start gesture — then hands off to
-// Title. Everything else is programmer-art / synthesized WebAudio (runs offline / from file://, AC11).
+// the Battle City "Game Start" jingle played at the start of every stage (by GameScene) — then hands
+// off to Title. Everything else is programmer-art / synthesized WebAudio (runs offline / from file://, AC11).
 // Later features may bake a few solid-color primitive textures here via
 // make.graphics().generateTexture() for reuse (tank/brick/eagle sprites); that hook lives in create().
 export class BootScene extends Phaser.Scene {

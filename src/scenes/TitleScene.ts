@@ -318,12 +318,12 @@ export class TitleScene extends Phaser.Scene {
     const enterHub = () => {
       if (editingSeed || started) return // suppressed mid-entry / already started — no launch.
       started = true
-      // [start-jingle] — play the Battle City "Game Start" jingle ONCE on the start gesture. This gesture
-      // is the first user interaction, so it unlocks Phaser's audio context → the clip is reliably audible.
-      // It's a fire-and-forget one-shot on Phaser's GAME-level sound manager (this.sound), so it is not tied
-      // to the Title's lifecycle: it plays through this Title→Hub swap to its full ~5s and auto-destroys on
-      // complete (deliberately NOT stopped on SHUTDOWN). Honors global mute (M) + the Settings volume.
-      this.sound.play('startJingle')
+      // [stage-start-jingle] — the start gesture plays the small uiSelect confirm blip (matching the O/T nav
+      // gestures below). The Battle City "Game Start" jingle no longer lives here: it now plays at the start
+      // of EVERY stage (GameScene._buildStage()). This gesture's keydown/pointer still unlocks Phaser's audio
+      // context (WebAudioSoundManager binds resume() to body keydown/mousedown/etc., independent of any
+      // play()), so the first stage's jingle is reliably audible — even for keyboard-only starts.
+      sfx.uiSelect()
       this.scene.start('Hub')
     }
     this.input.keyboard!.on('keydown-SPACE', enterHub)

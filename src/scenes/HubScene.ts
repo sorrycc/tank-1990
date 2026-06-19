@@ -186,7 +186,7 @@ export class HubScene extends Phaser.Scene {
   // tree via startSpec(slot) into the run-start spec (the bought upgrades visibly change that player's tank next
   // run — AC6). `once`-free: the scene tears down on start, so a held key can't double-launch the same instance.
   private _startRun(): void {
-    this.sfx.uiSelect() // the start-run confirm blip (the Game's stageStart fanfare follows on the next scene — D6).
+    this.sfx.uiSelect() // the start-run confirm blip (the Game's stage-start jingle follows on the next scene — D6).
     this.scene.start('Game')
   }
 
